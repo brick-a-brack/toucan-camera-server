@@ -122,7 +122,7 @@ async fn run_server() {
         .route("/cameras/{id}/connect", put(cameras::connect_camera))
         .route("/cameras/{id}/disconnect", put(cameras::disconnect_camera))
         .route("/cameras/{id}/parameters", get(cameras::get_parameters))
-        .route("/cameras/{id}/settings", put(cameras::set_parameter))
+        .route("/cameras/{id}/parameters", put(cameras::set_parameter))
         .route("/cameras/{id}/liveview", get(cameras::live_view))
         .route("/cameras/{id}/capture", axum::routing::post(cameras::capture_photo))
         .with_state(state.clone())

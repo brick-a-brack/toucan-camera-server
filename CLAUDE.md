@@ -96,6 +96,7 @@ GET  /cameras                        — list all devices across all active back
 PUT  /cameras/{id}/connect           — open a session with a device
 PUT  /cameras/{id}/disconnect        — close a session with a device
 GET  /cameras/{id}/parameters        — list settable parameters with current value and allowed options (requires connected)
+PUT  /cameras/{id}/parameters        — set a parameter value (requires connected)
 GET  /cameras/{id}/liveview          — MJPEG stream (requires connected, returns 409 if not)
 ```
 
