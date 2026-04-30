@@ -7,7 +7,7 @@ edition = "2021"
 default = []
 backend-canon = []
 backend-webcam-macos = []
-backend-webcam-windows = ["dep:windows", "dep:image"]
+backend-webcam-windows = ["dep:windows", "dep:windows-core", "dep:image"]
 
 [dependencies]
 axum = "0.8"
@@ -21,7 +21,9 @@ tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tower-http = { version = "0.6", features = ["cors"] }
 image = { version = "0.25", optional = true, default-features = false, features = ["jpeg"] }
+windows-core = { version = "0.58", optional = true }
 windows = { version = "0.58", optional = true, features = [
+    "implement",
     "Win32_Foundation",
     "Win32_System_Com",
     "Win32_Media_MediaFoundation",

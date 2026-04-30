@@ -1,7 +1,12 @@
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 
-use windows::core::{Interface, GUID, PWSTR};
+// The `#[implement]` macro emits `::windows_core::...` paths, so windows_core
+// must be resolvable as a top-level crate name.
+extern crate windows_core;
+
+use windows::core::{implement, Interface, GUID, PWSTR};
 use windows::Win32::Media::DirectShow::{
     CameraControlProperty, IAMCameraControl, IAMVideoProcAmp,
     VideoProcAmpProperty,
@@ -13,21 +18,36 @@ use windows::Win32::Media::DirectShow::{
     VideoProcAmp_Hue, VideoProcAmp_Saturation, VideoProcAmp_Sharpness, VideoProcAmp_WhiteBalance,
 };
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFAttributes, IMFMediaSource, IMFMediaType, IMFSample, IMFSourceReader,
-    MFCreateAttributes, MFCreateSourceReaderFromMediaSource,
-    MFEnumDeviceSources, MFShutdown, MFStartup, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
-    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE,
-    MF_MT_SUBTYPE, MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING,
-    MF_SOURCE_READER_FIRST_VIDEO_STREAM, MFVideoFormat_MJPG, MFVideoFormat_YUY2,
+    IMFActivate, IMFAttributes, IMFCaptureSink, IMFCaptureEngine,
+    IMFCaptureEngineClassFactory, IMFCaptureEngineOnEventCallback,
+    IMFCaptureEngineOnEventCallback_Impl, IMFCaptureEngineOnSampleCallback,
+    IMFCaptureEngineOnSampleCallback_Impl, IMFCapturePhotoSink, IMFCaptureSource,
+    IMFMediaEvent, IMFMediaSource, IMFMediaType, IMFSample, IMFSourceReader,
+    MFCreateAttributes, MFCreateMediaType, MFCreateSourceReaderFromMediaSource,
+    MFEnumDeviceSources, MFShutdown, MFStartup,
+    MF_CAPTURE_ENGINE_INITIALIZED,
+    MF_CAPTURE_ENGINE_SINK_TYPE_PHOTO,
+    MF_CAPTURE_ENGINE_STREAM_CATEGORY_PHOTO_INDEPENDENT,
+    MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
+    MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_FRAME_RATE,
+    MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MFImageFormat_JPEG,
+    MFMediaType_Image, MFVideoFormat_MJPG, MFVideoFormat_YUY2,
+    MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
+    CLSID_MFCaptureEngineClassFactory,
 };
 use windows::Win32::Media::KernelStreaming::IKsControl;
-use windows::Win32::System::Com::{CoInitializeEx, CoTaskMemFree, CoUninitialize, COINIT_APARTMENTTHREADED};
-use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
+    COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+};
 
 use crate::camera::{
-    CameraBackend, CameraError, CameraParameter, DeviceId, DeviceInfo,
-    ParameterOption, ParameterType,
+    CameraBackend, CameraError, CameraParameter, DeviceId, DeviceInfo, ParameterOption,
+    ParameterType,
 };
 
 // MF_VERSION = (MF_SDK_VERSION << 16 | MF_API_VERSION) = (0x0002 << 16 | 0x0070)
@@ -72,6 +92,61 @@ fn video_stream() -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// COM callback: IMFCaptureEngine init event (used only for Path A photo)
+// ---------------------------------------------------------------------------
+
+#[implement(IMFCaptureEngineOnEventCallback)]
+struct EngineEventCallback {
+    init_tx: Mutex<Option<mpsc::SyncSender<Result<(), CameraError>>>>,
+}
+
+impl IMFCaptureEngineOnEventCallback_Impl for EngineEventCallback_Impl {
+    fn OnEvent(&self, pevent: Option<&IMFMediaEvent>) -> windows::core::Result<()> {
+        let Some(event) = pevent else { return Ok(()) };
+        let event_type = unsafe { event.GetExtendedType() }
+            .unwrap_or(windows::core::GUID::zeroed());
+
+        if event_type == MF_CAPTURE_ENGINE_INITIALIZED {
+            let hr = unsafe { event.GetStatus() }.unwrap_or(windows::core::HRESULT(-1));
+            let result = hr.ok().map_err(|e| CameraError::SdkError(e.code().0 as u32));
+            if let Ok(mut guard) = self.init_tx.lock() {
+                if let Some(tx) = guard.take() {
+                    let _ = tx.send(result);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// COM callback: photo sink sample (Path A — PHOTO_INDEPENDENT)
+// ---------------------------------------------------------------------------
+
+type PhotoReply = mpsc::SyncSender<Result<Vec<u8>, CameraError>>;
+type PendingPhoto = Arc<Mutex<Option<PhotoReply>>>;
+
+#[implement(IMFCaptureEngineOnSampleCallback)]
+struct PhotoSampleCallback {
+    pending: PendingPhoto,
+}
+
+impl IMFCaptureEngineOnSampleCallback_Impl for PhotoSampleCallback_Impl {
+    fn OnSample(&self, psample: Option<&IMFSample>) -> windows::core::Result<()> {
+        let result = match psample {
+            Some(sample) => extract_raw_buffer(sample),
+            None => Err(CameraError::SdkError(0xDEAD_0010)),
+        };
+        if let Ok(mut guard) = self.pending.lock() {
+            if let Some(tx) = guard.take() {
+                let _ = tx.send(result);
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
@@ -105,6 +180,10 @@ enum Command {
         value: String,
         reply: mpsc::Sender<Result<(), CameraError>>,
     },
+    CapturePhoto {
+        native_id: String,
+        reply: mpsc::Sender<Result<Vec<u8>, CameraError>>,
+    },
     Shutdown,
 }
 
@@ -134,31 +213,45 @@ impl VideoFormatInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Photo stream info for Path A (PHOTO_INDEPENDENT)
+// ---------------------------------------------------------------------------
+
+struct PhotoStreamInfo {
+    /// Stream index within the device (used by IMFCaptureEngine).
+    stream_idx:  u32,
+    /// Best available photo media type (highest resolution).
+    media_type:  IMFMediaType,
+    width:       u32,
+    height:      u32,
+}
+
+// ---------------------------------------------------------------------------
 // Per-device state — lives exclusively on the SDK thread
 // ---------------------------------------------------------------------------
 
 struct DeviceState {
+    /// SourceReader used for live view (polling-based, proven reliable).
     reader:              IMFSourceReader,
+    /// Underlying source kept for IAMVideoProcAmp / IAMCameraControl.
     source:              IMFMediaSource,
     video_proc_amp:      Option<IAMVideoProcAmp>,
     camera_control:      Option<IAMCameraControl>,
-    ks_control:     Option<IKsControl>,
+    ks_control:          Option<IKsControl>,
     formats:             Vec<VideoFormatInfo>,
     current_format_idx:  usize,
-    // Derived from formats[current_format_idx] for convenience:
-    is_mjpeg: bool,
-    width:    u32,
-    height:   u32,
+    is_mjpeg:            bool,
+    width:               u32,
+    height:              u32,
+    /// Path A: dedicated photo stream available (None → use Path B).
+    photo_stream:        Option<PhotoStreamInfo>,
+    /// The IMFActivate used to open this device (re-used for Path A engine).
+    activate:            IMFActivate,
 }
 
 // ---------------------------------------------------------------------------
 // Backend
 // ---------------------------------------------------------------------------
 
-/// Windows webcam backend using Media Foundation.
-///
-/// All Media Foundation and DirectShow COM calls are dispatched to a single
-/// dedicated OS thread (actor pattern), keeping them off the tokio thread pool.
 pub struct WebcamWindowsBackend {
     tx: mpsc::Sender<Command>,
 }
@@ -200,7 +293,6 @@ impl CameraBackend for WebcamWindowsBackend {
         self.tx
             .send(Command::ListDevices { reply: reply_tx })
             .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
-        eprintln!("[webcam-windows] ListDevices command sent, waiting for reply");
         let result = reply_rx.recv().unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)));
         eprintln!("[webcam-windows] list_devices() reply received");
         result
@@ -264,6 +356,14 @@ impl CameraBackend for WebcamWindowsBackend {
                 value: value.to_string(),
                 reply: reply_tx,
             })
+            .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
+        reply_rx.recv().unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)))
+    }
+
+    fn capture_photo(&self, native_id: &str) -> Result<Vec<u8>, CameraError> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(Command::CapturePhoto { native_id: native_id.to_string(), reply: reply_tx })
             .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
         reply_rx.recv().unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)))
     }
@@ -339,6 +439,13 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
                     .get_mut(&native_id)
                     .ok_or(CameraError::NotConnected)
                     .and_then(|state| set_parameter_impl(state, param_type, &value));
+                let _ = reply.send(result);
+            }
+            Ok(Command::CapturePhoto { native_id, reply }) => {
+                let result = connected
+                    .get(&native_id)
+                    .ok_or(CameraError::NotConnected)
+                    .and_then(capture_photo_impl);
                 let _ = reply.send(result);
             }
             Ok(Command::Shutdown) => break,
@@ -451,10 +558,16 @@ fn connect_impl(
         let width    = formats[best_idx].width;
         let height   = formats[best_idx].height;
 
-        // Query optional control interfaces via QueryInterface on the source.
-        let video_proc_amp  = source.cast::<IAMVideoProcAmp>().ok();
-        let camera_control  = source.cast::<IAMCameraControl>().ok();
-        let ks_control = source.cast::<IKsControl>().ok();
+        let video_proc_amp = source.cast::<IAMVideoProcAmp>().ok();
+        let camera_control = source.cast::<IAMCameraControl>().ok();
+        let ks_control     = source.cast::<IKsControl>().ok();
+
+        // Detect PHOTO_INDEPENDENT stream for Path A photo capture.
+        // We probe via a temporary IMFCaptureEngine on the same activate.
+        // This must happen after ActivateObject — on some drivers the activate
+        // can only be used once, so we probe BEFORE calling ActivateObject a
+        // second time (we actually call DetachObject to reset it first).
+        let photo_stream = probe_photo_stream(&activate);
 
         connected.insert(
             native_id.to_string(),
@@ -469,10 +582,127 @@ fn connect_impl(
                 is_mjpeg,
                 width,
                 height,
+                photo_stream,
+                activate,
             },
         );
         Ok(())
     }
+}
+
+/// Attempts to probe for a PHOTO_INDEPENDENT stream using IMFCaptureEngine.
+/// Returns `None` silently on any failure (probe is best-effort).
+fn probe_photo_stream(activate: &IMFActivate) -> Option<PhotoStreamInfo> {
+    // Some drivers disallow a second ActivateObject while the first session is
+    // open. We accept that: if probing fails, we fall back to Path B.
+    let result = unsafe { init_capture_engine_for_photo(activate) };
+    match result {
+        Ok(info) => {
+            eprintln!("[webcam-windows] PHOTO_INDEPENDENT stream found: {}×{}", info.width, info.height);
+            Some(info)
+        }
+        Err(e) => {
+            eprintln!("[webcam-windows] No PHOTO_INDEPENDENT stream (probe: {e}), using Path B");
+            None
+        }
+    }
+}
+
+/// Creates a temporary IMFCaptureEngine, waits for init, finds the best
+/// PHOTO_INDEPENDENT media type, then immediately shuts the engine down.
+unsafe fn init_capture_engine_for_photo(activate: &IMFActivate) -> Result<PhotoStreamInfo, CameraError> {
+    let factory: IMFCaptureEngineClassFactory =
+        CoCreateInstance(&CLSID_MFCaptureEngineClassFactory, None, CLSCTX_INPROC_SERVER)
+            .map_err(win_err)?;
+    let engine: IMFCaptureEngine = factory
+        .CreateInstance::<IMFCaptureEngine>(&CLSID_MFCaptureEngineClassFactory)
+        .map_err(win_err)?;
+
+    let (init_tx, init_rx) = mpsc::sync_channel::<Result<(), CameraError>>(1);
+    let event_cb: IMFCaptureEngineOnEventCallback = EngineEventCallback {
+        init_tx: Mutex::new(Some(init_tx)),
+    }
+    .into();
+
+    engine.Initialize(&event_cb, None, None, activate).map_err(win_err)?;
+
+    // Pump messages while waiting for MF_CAPTURE_ENGINE_INITIALIZED.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match init_rx.try_recv() {
+            Ok(Ok(())) => break,
+            Ok(Err(e)) => return Err(e),
+            Err(mpsc::TryRecvError::Disconnected) => return Err(CameraError::SdkError(0xDEAD_0020)),
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(CameraError::SdkError(0xDEAD_0020));
+        }
+        let mut msg = MSG::default();
+        while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+            let _ = TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    let cap_source: IMFCaptureSource = engine.GetSource().map_err(win_err)?;
+    let stream_count = cap_source.GetDeviceStreamCount().map_err(win_err)?;
+
+    let mut photo_idx: Option<u32> = None;
+    for i in 0..stream_count {
+        if let Ok(cat) = cap_source.GetDeviceStreamCategory(i) {
+            if cat == MF_CAPTURE_ENGINE_STREAM_CATEGORY_PHOTO_INDEPENDENT {
+                photo_idx = Some(i);
+                break;
+            }
+        }
+    }
+
+    let stream_idx = photo_idx.ok_or(CameraError::NotSupported)?;
+    let info = build_photo_stream_info(&cap_source, stream_idx)?;
+
+    // Engine drops here, releasing the device for IMFSourceReader.
+    drop(cap_source);
+    drop(engine);
+    drop(factory);
+
+    Ok(info)
+}
+
+/// Finds the highest-resolution media type on a PHOTO_INDEPENDENT stream.
+unsafe fn build_photo_stream_info(
+    cap_source: &IMFCaptureSource,
+    stream_idx: u32,
+) -> Result<PhotoStreamInfo, CameraError> {
+    let mut best_mt: Option<IMFMediaType> = None;
+    let mut best_pixels: u64 = 0;
+    let mut best_w = 0u32;
+    let mut best_h = 0u32;
+
+    let mut type_idx = 0u32;
+    loop {
+        let mut mt: Option<IMFMediaType> = None;
+        if cap_source
+            .GetAvailableDeviceMediaType(stream_idx, type_idx, Some(&mut mt))
+            .is_err()
+        {
+            break;
+        }
+        type_idx += 1;
+        let Some(mt) = mt else { continue };
+        let (w, h) = frame_size(&mt);
+        let pixels = w as u64 * h as u64;
+        if pixels > best_pixels {
+            best_pixels = pixels;
+            best_w = w;
+            best_h = h;
+            best_mt = Some(mt);
+        }
+    }
+
+    let media_type = best_mt.ok_or(CameraError::SdkError(0xA102_0005))?;
+    Ok(PhotoStreamInfo { stream_idx, media_type, width: best_w, height: best_h })
 }
 
 fn disconnect_impl(
@@ -527,7 +757,125 @@ fn get_live_view_frame_impl(state: &DeviceState) -> Result<Vec<u8>, CameraError>
         return yuyv_to_jpeg(&data, state.width, state.height);
     }
 
-    Err(CameraError::SdkError(0xA102_0002)) // no frame after retries
+    Err(CameraError::SdkError(0xA102_0002))
+}
+
+fn capture_photo_impl(state: &DeviceState) -> Result<Vec<u8>, CameraError> {
+    if let Some(photo_stream) = &state.photo_stream {
+        capture_photo_path_a(state, photo_stream)
+    } else {
+        // Path B: grab the current preview frame.
+        get_live_view_frame_impl(state)
+    }
+}
+
+/// Path A: spin up a temporary IMFCaptureEngine on the PHOTO_INDEPENDENT
+/// stream, fire TakePhoto(), collect the JPEG, then shut the engine down.
+///
+/// The IMFSourceReader (live view) stays running on the VIDEO stream;
+/// the engine only touches the PHOTO_INDEPENDENT stream. Both can coexist
+/// on devices that expose separate streams.
+fn capture_photo_path_a(state: &DeviceState, photo: &PhotoStreamInfo) -> Result<Vec<u8>, CameraError> {
+    unsafe {
+        let factory: IMFCaptureEngineClassFactory =
+            CoCreateInstance(&CLSID_MFCaptureEngineClassFactory, None, CLSCTX_INPROC_SERVER)
+                .map_err(win_err)?;
+        let engine: IMFCaptureEngine = factory
+            .CreateInstance::<IMFCaptureEngine>(&CLSID_MFCaptureEngineClassFactory)
+            .map_err(win_err)?;
+
+        let (init_tx, init_rx) = mpsc::sync_channel::<Result<(), CameraError>>(1);
+        let event_cb: IMFCaptureEngineOnEventCallback = EngineEventCallback {
+            init_tx: Mutex::new(Some(init_tx)),
+        }
+        .into();
+
+        engine.Initialize(&event_cb, None, None, &state.activate).map_err(win_err)?;
+
+        // Pump messages while waiting for init.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            match init_rx.try_recv() {
+                Ok(Ok(())) => break,
+                Ok(Err(e)) => return Err(e),
+                Err(mpsc::TryRecvError::Disconnected) => return Err(CameraError::SdkError(0xDEAD_0020)),
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(CameraError::SdkError(0xDEAD_0020));
+            }
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        // Configure source to use the photo stream's media type.
+        let cap_source: IMFCaptureSource = engine.GetSource().map_err(win_err)?;
+        cap_source
+            .SetCurrentDeviceMediaType(photo.stream_idx, &photo.media_type)
+            .map_err(win_err)?;
+
+        // Build the JPEG sink media type.
+        let sink_mt: IMFMediaType = MFCreateMediaType().map_err(win_err)?;
+        sink_mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Image).map_err(win_err)?;
+        sink_mt.SetGUID(&MF_MT_SUBTYPE, &MFImageFormat_JPEG).map_err(win_err)?;
+        let frame_size_packed = ((photo.width as u64) << 32) | (photo.height as u64);
+        sink_mt.SetUINT64(&MF_MT_FRAME_SIZE, frame_size_packed).map_err(win_err)?;
+
+        // Configure photo sink.
+        let sink_raw: IMFCaptureSink =
+            engine.GetSink(MF_CAPTURE_ENGINE_SINK_TYPE_PHOTO).map_err(win_err)?;
+        let photo_sink: IMFCapturePhotoSink = sink_raw.cast().map_err(win_err)?;
+        photo_sink.RemoveAllStreams().map_err(win_err)?;
+
+        let mut dw_index: u32 = 0;
+        photo_sink
+            .AddStream(photo.stream_idx, &sink_mt, None, Some(&mut dw_index))
+            .map_err(win_err)?;
+
+        let pending: PendingPhoto = Arc::new(Mutex::new(None));
+        let (photo_tx, photo_rx) = mpsc::sync_channel::<Result<Vec<u8>, CameraError>>(1);
+        *pending.lock().unwrap() = Some(photo_tx);
+
+        let photo_cb: IMFCaptureEngineOnSampleCallback = PhotoSampleCallback {
+            pending: pending.clone(),
+        }
+        .into();
+        photo_sink.SetSampleCallback(&photo_cb).map_err(win_err)?;
+
+        engine.TakePhoto().map_err(win_err)?;
+
+        // Pump messages while waiting for the photo callback (up to 10s).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let result = loop {
+            match photo_rx.try_recv() {
+                Ok(result) => break result,
+                Err(mpsc::TryRecvError::Disconnected) => break Err(CameraError::SdkError(0xDEAD_0011)),
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                break Err(CameraError::SdkError(0xDEAD_0021));
+            }
+            let mut msg = MSG::default();
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+
+        // Engine drops here, releasing the PHOTO_INDEPENDENT stream.
+        drop(photo_cb);
+        drop(photo_sink);
+        drop(sink_raw);
+        drop(cap_source);
+        drop(engine);
+
+        result
+    }
 }
 
 fn get_parameters_impl(state: &DeviceState) -> Result<Vec<CameraParameter>, CameraError> {
@@ -884,10 +1232,22 @@ fn select_best_format_index(formats: &[VideoFormatInfo]) -> usize {
 
 /// Extracts (width, height) from an MF_MT_FRAME_SIZE attribute (width<<32 | height).
 unsafe fn frame_size(mt: &IMFMediaType) -> (u32, u32) {
-    let packed = mt.GetUINT64(&MF_MT_FRAME_SIZE).unwrap_or(0x0000_0280_0000_01E0); // 640×480
+    let packed = mt.GetUINT64(&MF_MT_FRAME_SIZE).unwrap_or(0x0000_0280_0000_01E0);
     let w = (packed >> 32) as u32;
     let h = (packed & 0xFFFF_FFFF) as u32;
     (w.max(1), h.max(1))
+}
+
+fn extract_raw_buffer(sample: &IMFSample) -> Result<Vec<u8>, CameraError> {
+    unsafe {
+        let buffer = sample.ConvertToContiguousBuffer().map_err(win_err)?;
+        let mut data_ptr: *mut u8 = std::ptr::null_mut();
+        let mut current_len: u32 = 0;
+        buffer.Lock(&mut data_ptr, None, Some(&mut current_len)).map_err(win_err)?;
+        let bytes = std::slice::from_raw_parts(data_ptr, current_len as usize).to_vec();
+        let _ = buffer.Unlock();
+        Ok(bytes)
+    }
 }
 
 /// Converts a YUY2 (YUYV) frame to a JPEG buffer.

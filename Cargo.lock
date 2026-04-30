@@ -812,6 +812,7 @@ dependencies = [
  "tower-http",
  "uuid",
  "windows",
+ "windows-core",
  "winresource",
 ]
 
