@@ -28,19 +28,19 @@ Open the printed URL in a browser to access the web UI. The token is already inc
 
 **Options**
 
-| Flag | Description |
-| --- | --- |
-| `--port <port>` | Port to listen on (default: `8040`, falls back to a free port if in use) |
-| `--token <token>` | Authentication token (default: auto-generated UUID v4) |
+| Flag              | Description                                                              |
+| ----------------- | ------------------------------------------------------------------------ |
+| `--port <port>`   | Port to listen on (default: `8040`, falls back to a free port if in use) |
+| `--token <token>` | Authentication token (default: auto-generated UUID v4)                   |
 
 ## Authentication
 
 Every request must include the token, either as a header or a query parameter:
 
-| Method | Example |
-| --- | --- |
-| `Authorization` header | `Authorization: Bearer <token>` |
-| `token` query parameter | `GET /cameras?token=<token>` |
+| Method                  | Example                         |
+| ----------------------- | ------------------------------- |
+| `Authorization` header  | `Authorization: Bearer <token>` |
+| `token` query parameter | `GET /cameras?token=<token>`    |
 
 Requests with an invalid or missing token receive a `403 Forbidden` response.
 
