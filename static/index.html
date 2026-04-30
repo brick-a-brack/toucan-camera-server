@@ -434,7 +434,7 @@
 
       select.disabled = true;
       try {
-        await api('PUT', `/cameras/${deviceId}/settings`, { type: kind, value });
+        await api('PUT', `/cameras/${deviceId}/parameters`, { type: kind, value });
       } catch (e) {
         alert(`Failed to set ${formatParamName(kind)}: ${e.message}`);
       } finally {
@@ -449,7 +449,7 @@
 
       input.disabled = true;
       try {
-        await api('PUT', `/cameras/${deviceId}/settings`, { type: kind, value });
+        await api('PUT', `/cameras/${deviceId}/parameters`, { type: kind, value });
       } catch (e) {
         alert(`Failed to set ${formatParamName(kind)}: ${e.message}`);
       } finally {
