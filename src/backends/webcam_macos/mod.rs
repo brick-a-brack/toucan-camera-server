@@ -60,6 +60,11 @@ extern "C" {
         out_data: *mut *mut u8,
         out_size: *mut usize,
     ) -> c_int;
+    fn wc_capture_photo(
+        handle:   *mut c_void,
+        out_data: *mut *mut u8,
+        out_size: *mut usize,
+    ) -> c_int;
     fn wc_free_frame(data: *mut u8);
     fn wc_get_parameters(handle: *mut c_void, out: *mut WcParamDesc, capacity: c_int) -> c_int;
     fn wc_set_parameter(handle: *mut c_void, kind: *const c_char, value: c_int) -> c_int;
@@ -96,6 +101,10 @@ enum Command {
         reply: mpsc::Sender<Result<(), CameraError>>,
     },
     GetLiveViewFrame {
+        device_id: String,
+        reply: mpsc::Sender<Result<Vec<u8>, CameraError>>,
+    },
+    CapturePhoto {
         device_id: String,
         reply: mpsc::Sender<Result<Vec<u8>, CameraError>>,
     },
@@ -218,6 +227,17 @@ impl CameraBackend for WebcamMacosBackend {
             .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
         reply_rx.recv().unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)))
     }
+
+    fn capture_photo(&self, native_id: &str) -> Result<Vec<u8>, CameraError> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx
+            .send(Command::CapturePhoto {
+                device_id: native_id.to_string(),
+                reply: reply_tx,
+            })
+            .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
+        reply_rx.recv().unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +279,9 @@ fn actor_thread(rx: mpsc::Receiver<Command>) {
             }
             Ok(Command::GetLiveViewFrame { device_id, reply }) => {
                 let _ = reply.send(capture_frame_impl(&device_id, &sessions));
+            }
+            Ok(Command::CapturePhoto { device_id, reply }) => {
+                let _ = reply.send(capture_photo_impl(&device_id, &sessions));
             }
             Ok(Command::Shutdown) | Err(_) => break,
         }
@@ -503,6 +526,30 @@ fn capture_frame_impl(
 
     if ret != 0 || data_ptr.is_null() {
         return Err(CameraError::SdkError(0xFFFF_FFFE));
+    }
+
+    let bytes = unsafe { std::slice::from_raw_parts(data_ptr, size).to_vec() };
+    unsafe { wc_free_frame(data_ptr) };
+
+    Ok(bytes)
+}
+
+fn capture_photo_impl(
+    device_id: &str,
+    sessions: &HashMap<String, SessionHandle>,
+) -> Result<Vec<u8>, CameraError> {
+    let handle = sessions
+        .get(device_id)
+        .ok_or(CameraError::NotConnected)?
+        .0;
+
+    let mut data_ptr: *mut u8 = std::ptr::null_mut();
+    let mut size: usize = 0;
+
+    let ret = unsafe { wc_capture_photo(handle, &mut data_ptr, &mut size) };
+
+    if ret != 0 || data_ptr.is_null() {
+        return Err(CameraError::SdkError(0xFFFF_FFFD));
     }
 
     let bytes = unsafe { std::slice::from_raw_parts(data_ptr, size).to_vec() };

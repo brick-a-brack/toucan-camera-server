@@ -46,7 +46,13 @@ void wc_close_session(void *handle);
 // Returns 0 on success, -1 on error.
 int wc_capture_frame(void *handle, uint8_t **out_data, size_t *out_size);
 
-// Free a buffer returned by wc_capture_frame.
+// Capture a full-resolution still photo as JPEG into a heap-allocated buffer.
+// Uses AVCapturePhotoOutput at the device's active format (set to the
+// highest-resolution format at session-open time). The caller must release
+// the buffer with wc_free_frame. Returns 0 on success, -1 on error.
+int wc_capture_photo(void *handle, uint8_t **out_data, size_t *out_size);
+
+// Free a buffer returned by wc_capture_frame or wc_capture_photo.
 void wc_free_frame(uint8_t *data);
 
 // Enumerate settable parameters for the connected device.

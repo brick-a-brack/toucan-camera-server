@@ -96,6 +96,37 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 @end
 
 // ---------------------------------------------------------------------------
+// WcPhotoDelegate — AVCapturePhotoCaptureDelegate that returns the JPEG bytes
+// from a single still capture.
+// ---------------------------------------------------------------------------
+
+@interface WcPhotoDelegate : NSObject <AVCapturePhotoCaptureDelegate>
+@property (nonatomic, strong, nullable) NSData  *jpegData;
+@property (nonatomic, strong, nullable) NSError *error;
+@property (nonatomic, strong) dispatch_semaphore_t doneSem;
+@end
+
+@implementation WcPhotoDelegate
+- (instancetype)init {
+    if ((self = [super init])) {
+        _doneSem = dispatch_semaphore_create(0);
+    }
+    return self;
+}
+
+- (void)captureOutput:(AVCapturePhotoOutput *)output
+didFinishProcessingPhoto:(AVCapturePhoto *)photo
+                error:(nullable NSError *)error {
+    if (error) {
+        _error = error;
+    } else {
+        _jpegData = [photo fileDataRepresentation];
+    }
+    dispatch_semaphore_signal(_doneSem);
+}
+@end
+
+// ---------------------------------------------------------------------------
 // UVC direct I/O layer (IOKit ControlRequest)
 // ---------------------------------------------------------------------------
 
@@ -337,10 +368,11 @@ static const int kControlCount = (int)(sizeof(kControls) / sizeof(kControls[0]))
 // ---------------------------------------------------------------------------
 
 @interface WcSessionHandle : NSObject
-@property (nonatomic, strong) AVCaptureSession *session;
-@property (nonatomic, strong) AVCaptureDevice  *device;
-@property (nonatomic, strong) WcFrameDelegate  *delegate;
-@property (nonatomic, strong) dispatch_queue_t  captureQueue;
+@property (nonatomic, strong) AVCaptureSession      *session;
+@property (nonatomic, strong) AVCaptureDevice       *device;
+@property (nonatomic, strong) WcFrameDelegate       *delegate;
+@property (nonatomic, strong) dispatch_queue_t       captureQueue;
+@property (nonatomic, strong, nullable) AVCapturePhotoOutput *photoOutput;
 - (void)setCmioDeviceID:(uint32_t)devID;
 - (uint32_t)cmioDeviceID;
 - (void)setUvcInterface:(IOUSBInterfaceInterface190 **)intf
@@ -644,12 +676,55 @@ void *wc_open_session(const char *unique_id) {
     [output setSampleBufferDelegate:delegate queue:q];
 
     AVCaptureSession *session = [[AVCaptureSession alloc] init];
-    session.sessionPreset = AVCaptureSessionPreset1280x720;
+    // macOS does not expose AVCaptureSessionPresetInputPriority. We leave the
+    // session preset at its default (high) and override with device.activeFormat
+    // below — on macOS the session adapts to the device's active format.
     if (![session canAddInput:input] || ![session canAddOutput:output])
         return NULL;
 
     [session addInput:input];
     [session addOutput:output];
+
+    // Add a photo output for full-resolution still capture. Optional: if the
+    // device or session refuses it, we silently fall back to no photo support.
+    AVCapturePhotoOutput *photoOutput = [[AVCapturePhotoOutput alloc] init];
+    if ([session canAddOutput:photoOutput]) {
+        [session addOutput:photoOutput];
+        // Default maxPhotoQualityPrioritization is .balanced, which makes
+        // per-shot .quality settings throw at capture time. Raise it here.
+        if (@available(macOS 13.0, *)) {
+            photoOutput.maxPhotoQualityPrioritization =
+                AVCapturePhotoQualityPrioritizationQuality;
+        }
+    } else {
+        photoOutput = nil;
+    }
+
+    // Switch the device to its highest-resolution format so AVCapturePhotoOutput
+    // captures at native maximum. Must happen after the input is added.
+    AVCaptureDeviceFormat *bestFormat = nil;
+    int64_t bestPixels = 0;
+    for (AVCaptureDeviceFormat *f in device.formats) {
+        CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(f.formatDescription);
+        int64_t pixels = (int64_t)dim.width * (int64_t)dim.height;
+        if (pixels > bestPixels) {
+            bestPixels = pixels;
+            bestFormat = f;
+        }
+    }
+    if (bestFormat) {
+        NSError *lockErr = nil;
+        if ([device lockForConfiguration:&lockErr]) {
+            device.activeFormat = bestFormat;
+            [device unlockForConfiguration];
+            CMVideoDimensions dim =
+                CMVideoFormatDescriptionGetDimensions(bestFormat.formatDescription);
+            NSLog(@"[wc] activeFormat set to %dx%d", dim.width, dim.height);
+        } else {
+            NSLog(@"[wc] lockForConfiguration failed: %@", lockErr);
+        }
+    }
+
     [session startRunning];
 
     WcSessionHandle *handle = [[WcSessionHandle alloc] init];
@@ -657,6 +732,7 @@ void *wc_open_session(const char *unique_id) {
     handle.device       = device;
     handle.delegate     = delegate;
     handle.captureQueue = q;
+    handle.photoOutput  = photoOutput;
 
     CMIOObjectID cmioID = cmio_find_device(device.uniqueID);
     if (cmioID != kCMIOObjectUnknown) [handle setCmioDeviceID:(uint32_t)cmioID];
@@ -690,6 +766,63 @@ int wc_capture_frame(void *handle, uint8_t **out_data, size_t *out_size) {
 }
 
 void wc_free_frame(uint8_t *data) { free(data); }
+
+int wc_capture_photo(void *handle, uint8_t **out_data, size_t *out_size) {
+    if (!handle || !out_data || !out_size) return -1;
+    WcSessionHandle *h = (__bridge WcSessionHandle *)handle;
+
+    AVCapturePhotoOutput *photoOutput = h.photoOutput;
+    if (!photoOutput) {
+        NSLog(@"[wc] capture_photo: no photo output available");
+        return -1;
+    }
+
+    // Build photo settings: prefer JPEG codec when supported, fall back to
+    // the default encoder (which on UVC webcams also produces JPEG).
+    AVCapturePhotoSettings *settings;
+    NSArray<AVVideoCodecType> *codecs = photoOutput.availablePhotoCodecTypes;
+    if ([codecs containsObject:AVVideoCodecTypeJPEG]) {
+        settings = [AVCapturePhotoSettings photoSettingsWithFormat:@{
+            AVVideoCodecKey: AVVideoCodecTypeJPEG
+        }];
+    } else {
+        settings = [AVCapturePhotoSettings photoSettings];
+    }
+
+    // Ask the encoder to prioritize quality over speed (macOS 13+).
+    if (@available(macOS 13.0, *)) {
+        settings.photoQualityPrioritization = AVCapturePhotoQualityPrioritizationQuality;
+    }
+
+    WcPhotoDelegate *delegate = [[WcPhotoDelegate alloc] init];
+    @try {
+        [photoOutput capturePhotoWithSettings:settings delegate:delegate];
+    } @catch (NSException *e) {
+        NSLog(@"[wc] capturePhotoWithSettings threw: %@", e);
+        return -1;
+    }
+
+    long timedOut = dispatch_semaphore_wait(delegate.doneSem,
+        dispatch_time(DISPATCH_TIME_NOW, 10LL * NSEC_PER_SEC));
+    if (timedOut != 0) {
+        NSLog(@"[wc] capture_photo: timed out waiting for delegate");
+        return -1;
+    }
+    if (delegate.error) {
+        NSLog(@"[wc] capture_photo error: %@", delegate.error);
+        return -1;
+    }
+
+    NSData *jpeg = delegate.jpegData;
+    if (!jpeg || jpeg.length == 0) return -1;
+
+    uint8_t *buf = (uint8_t *)malloc(jpeg.length);
+    if (!buf) return -1;
+    memcpy(buf, jpeg.bytes, jpeg.length);
+    *out_data = buf;
+    *out_size = jpeg.length;
+    return 0;
+}
 
 // ---------------------------------------------------------------------------
 // C interface — parameter enumeration
