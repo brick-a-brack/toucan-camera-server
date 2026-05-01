@@ -373,6 +373,10 @@ static const int kControlCount = (int)(sizeof(kControls) / sizeof(kControls[0]))
 @property (nonatomic, strong) WcFrameDelegate       *delegate;
 @property (nonatomic, strong) dispatch_queue_t       captureQueue;
 @property (nonatomic, strong, nullable) AVCapturePhotoOutput *photoOutput;
+// Deduped list of available video formats sorted by pixel area (descending).
+// Each entry is the highest-framerate format at that resolution. The integer
+// value reported via the "video_format" parameter is the index into this array.
+@property (nonatomic, strong, nullable) NSArray<AVCaptureDeviceFormat *> *videoFormats;
 - (void)setCmioDeviceID:(uint32_t)devID;
 - (uint32_t)cmioDeviceID;
 - (void)setUvcInterface:(IOUSBInterfaceInterface190 **)intf
@@ -620,6 +624,64 @@ static void push_option(WcParamDesc *p, int value, const char *label) {
 }
 
 // ---------------------------------------------------------------------------
+// Video format helpers
+// ---------------------------------------------------------------------------
+
+static Float64 max_fps_for_format(AVCaptureDeviceFormat *fmt) {
+    Float64 best = 0;
+    for (AVFrameRateRange *r in fmt.videoSupportedFrameRateRanges) {
+        if (r.maxFrameRate > best) best = r.maxFrameRate;
+    }
+    return best;
+}
+
+// Builds a deduped list of formats grouped by (width, height). Within each
+// group, keeps the format with the highest max framerate. The result is sorted
+// by pixel area descending (highest resolution first).
+static NSArray<AVCaptureDeviceFormat *> *build_video_format_list(AVCaptureDevice *device) {
+    NSMutableArray<AVCaptureDeviceFormat *> *list = [NSMutableArray array];
+    for (AVCaptureDeviceFormat *f in device.formats) {
+        CMVideoDimensions d = CMVideoFormatDescriptionGetDimensions(f.formatDescription);
+        NSUInteger existingIdx = NSNotFound;
+        for (NSUInteger i = 0; i < list.count; i++) {
+            CMVideoDimensions ed =
+                CMVideoFormatDescriptionGetDimensions(list[i].formatDescription);
+            if (ed.width == d.width && ed.height == d.height) { existingIdx = i; break; }
+        }
+        if (existingIdx == NSNotFound) {
+            [list addObject:f];
+        } else if (max_fps_for_format(f) > max_fps_for_format(list[existingIdx])) {
+            list[existingIdx] = f;
+        }
+    }
+    [list sortUsingComparator:^NSComparisonResult(AVCaptureDeviceFormat *a,
+                                                   AVCaptureDeviceFormat *b) {
+        CMVideoDimensions ad = CMVideoFormatDescriptionGetDimensions(a.formatDescription);
+        CMVideoDimensions bd = CMVideoFormatDescriptionGetDimensions(b.formatDescription);
+        int64_t ap = (int64_t)ad.width * (int64_t)ad.height;
+        int64_t bp = (int64_t)bd.width * (int64_t)bd.height;
+        if (ap > bp) return NSOrderedAscending;
+        if (ap < bp) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+    return list;
+}
+
+// Index of the format in `formats` whose dimensions match the device's current
+// activeFormat. Returns 0 (highest-res) if no match is found.
+static int active_format_index(AVCaptureDevice *device,
+                                NSArray<AVCaptureDeviceFormat *> *formats) {
+    AVCaptureDeviceFormat *active = device.activeFormat;
+    if (!active || formats.count == 0) return 0;
+    CMVideoDimensions ad = CMVideoFormatDescriptionGetDimensions(active.formatDescription);
+    for (NSUInteger i = 0; i < formats.count; i++) {
+        CMVideoDimensions d = CMVideoFormatDescriptionGetDimensions(formats[i].formatDescription);
+        if (d.width == ad.width && d.height == ad.height) return (int)i;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // C interface — session management
 // ---------------------------------------------------------------------------
 
@@ -700,18 +762,11 @@ void *wc_open_session(const char *unique_id) {
         photoOutput = nil;
     }
 
-    // Switch the device to its highest-resolution format so AVCapturePhotoOutput
-    // captures at native maximum. Must happen after the input is added.
-    AVCaptureDeviceFormat *bestFormat = nil;
-    int64_t bestPixels = 0;
-    for (AVCaptureDeviceFormat *f in device.formats) {
-        CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(f.formatDescription);
-        int64_t pixels = (int64_t)dim.width * (int64_t)dim.height;
-        if (pixels > bestPixels) {
-            bestPixels = pixels;
-            bestFormat = f;
-        }
-    }
+    // Build the deduped format list and switch the device to its highest-
+    // resolution format so AVCapturePhotoOutput captures at native maximum.
+    // The user can override this later via the "video_format" parameter.
+    NSArray<AVCaptureDeviceFormat *> *videoFormats = build_video_format_list(device);
+    AVCaptureDeviceFormat *bestFormat = videoFormats.firstObject;
     if (bestFormat) {
         NSError *lockErr = nil;
         if ([device lockForConfiguration:&lockErr]) {
@@ -733,6 +788,7 @@ void *wc_open_session(const char *unique_id) {
     handle.delegate     = delegate;
     handle.captureQueue = q;
     handle.photoOutput  = photoOutput;
+    handle.videoFormats = videoFormats;
 
     CMIOObjectID cmioID = cmio_find_device(device.uniqueID);
     if (cmioID != kCMIOObjectUnknown) [handle setCmioDeviceID:(uint32_t)cmioID];
@@ -840,6 +896,31 @@ int wc_get_parameters(void *handle, WcParamDesc *out, int capacity) {
         cmioMap = cmio_build_class_map(cmioID);
 
     int count = 0;
+
+    // Video format selector — emitted first so it appears at the top of the UI.
+    NSArray<AVCaptureDeviceFormat *> *vf = h.videoFormats;
+    if (vf.count >= 2 && count < capacity) {
+        WcParamDesc *p = &out[count];
+        memset(p, 0, sizeof(*p));
+        strlcpy(p->kind, "video_format", WC_MAX_KIND);
+        p->is_range = 0;
+        p->current  = active_format_index(h.device, vf);
+
+        int n = (int)MIN(vf.count, (NSUInteger)WC_MAX_OPTIONS);
+        for (int i = 0; i < n; i++) {
+            CMVideoDimensions d = CMVideoFormatDescriptionGetDimensions(vf[i].formatDescription);
+            Float64 fps = max_fps_for_format(vf[i]);
+            char label[WC_MAX_LABEL];
+            if (fps > 0) {
+                snprintf(label, sizeof(label), "%dx%d %.0ffps", d.width, d.height, fps);
+            } else {
+                snprintf(label, sizeof(label), "%dx%d", d.width, d.height);
+            }
+            push_option(p, i, label);
+        }
+        count++;
+    }
+
     for (int i = 0; i < kControlCount && count < capacity; i++) {
         const ControlDesc *d = &kControls[i];
         WcParamDesc *p = &out[count];
@@ -938,6 +1019,49 @@ int wc_get_parameters(void *handle, WcParamDesc *out, int capacity) {
 int wc_set_parameter(void *handle, const char *kind, int value) {
     if (!handle || !kind) return -1;
     WcSessionHandle *h = (__bridge WcSessionHandle *)handle;
+
+    // Video format switch — does not go through UVC, just changes activeFormat.
+    // We stop the session before reconfiguring: changing activeFormat while
+    // the session is running with both VideoDataOutput and PhotoOutput
+    // attached can throw NSExceptions or silently fail on built-in cameras.
+    if (strcmp(kind, "video_format") == 0) {
+        NSArray<AVCaptureDeviceFormat *> *vf = h.videoFormats;
+        if (!vf || value < 0 || (NSUInteger)value >= vf.count) {
+            NSLog(@"[wc] video_format: invalid index %d (count=%lu)",
+                  value, (unsigned long)vf.count);
+            return -1;
+        }
+        AVCaptureDeviceFormat *fmt = vf[(NSUInteger)value];
+        CMVideoDimensions d = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription);
+
+        BOOL wasRunning = h.session.isRunning;
+        if (wasRunning) [h.session stopRunning];
+
+        NSError *lockErr = nil;
+        if (![h.device lockForConfiguration:&lockErr]) {
+            if (wasRunning) [h.session startRunning];
+            NSLog(@"[wc] video_format: lockForConfiguration failed: %@", lockErr);
+            return -1;
+        }
+
+        BOOL ok = YES;
+        @try {
+            h.device.activeFormat = fmt;
+        } @catch (NSException *e) {
+            NSLog(@"[wc] video_format: setting activeFormat threw: %@", e);
+            ok = NO;
+        }
+        [h.device unlockForConfiguration];
+
+        if (wasRunning) [h.session startRunning];
+
+        if (ok) {
+            NSLog(@"[wc] video_format set to index %d (%dx%d)", value, d.width, d.height);
+            return 0;
+        }
+        return -1;
+    }
+
     if (![h uvcAvailable]) return -1;
 
     // Look up descriptor.

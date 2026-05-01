@@ -4,8 +4,8 @@
 
 #define WC_MAX_STR      256
 #define WC_MAX_DEVICES   32
-#define WC_MAX_PARAMS    20
-#define WC_MAX_OPTIONS    4
+#define WC_MAX_PARAMS    32
+#define WC_MAX_OPTIONS   32
 #define WC_MAX_KIND      32
 #define WC_MAX_LABEL     32
 

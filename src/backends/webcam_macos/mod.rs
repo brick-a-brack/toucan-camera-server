@@ -14,8 +14,8 @@ use crate::camera::{
 
 const WC_MAX_STR: usize = 256;
 const WC_MAX_DEVICES: usize = 32;
-const WC_MAX_PARAMS: usize = 20;
-const WC_MAX_OPTIONS: usize = 4;
+const WC_MAX_PARAMS: usize = 32;
+const WC_MAX_OPTIONS: usize = 32;
 const WC_MAX_KIND: usize = 32;
 const WC_MAX_LABEL: usize = 32;
 
@@ -475,6 +475,7 @@ fn hide_value_params_in_auto_mode(params: Vec<CameraParameter>) -> Vec<CameraPar
 /// Returns None for unknown kinds, which causes the parameter to be silently skipped.
 fn c_kind_to_param_type(kind: &str) -> Option<ParameterType> {
     match kind {
+        "video_format"              => Some(ParameterType::VideoFormat),
         "brightness"                => Some(ParameterType::Brightness),
         "contrast"                  => Some(ParameterType::Contrast),
         "hue"                       => Some(ParameterType::Hue),
@@ -494,6 +495,7 @@ fn c_kind_to_param_type(kind: &str) -> Option<ParameterType> {
 /// Maps a ParameterType back to the C bridge string expected by wc_set_parameter.
 fn param_type_to_c_kind(pt: ParameterType) -> Option<&'static str> {
     match pt {
+        ParameterType::VideoFormat          => Some("video_format"),
         ParameterType::Brightness           => Some("brightness"),
         ParameterType::Contrast             => Some("contrast"),
         ParameterType::Hue                  => Some("hue"),
