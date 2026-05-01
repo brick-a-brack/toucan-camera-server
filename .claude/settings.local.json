@@ -22,7 +22,8 @@
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d['crate']['newest_version']\\)\")",
       "Bash(grep \"no \\\\`\")",
       "Bash(cargo metadata *)",
-      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(p['name'],p['version']\\) for p in d['packages']]\")"
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(p['name'],p['version']\\) for p in d['packages']]\")",
+      "Bash(cargo clippy *)"
     ]
   }
 }
