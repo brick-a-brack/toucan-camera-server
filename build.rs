@@ -17,6 +17,7 @@ fn main() {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
         link_canon_sdk(&manifest_dir);
         copy_canon_dlls(&manifest_dir);
+        copy_canon_so(&manifest_dir);
     }
 
     if cfg!(target_os = "macos")
@@ -63,11 +64,34 @@ fn link_canon_sdk(manifest_dir: &str) {
 
     #[cfg(target_os = "linux")]
     {
+        let arch_dir = canon_linux_arch_dir();
         println!(
-            "cargo:rustc-link-search=native={}/external/EDSDK/EDSDKv132010L",
-            manifest_dir
+            "cargo:rustc-link-search=native={}/external/EDSDK/EDSDKv132010L/Linux/EDSDK/Library/{}",
+            manifest_dir, arch_dir
         );
         println!("cargo:rustc-link-lib=EDSDK");
+        // libEDSDK.so is shipped next to the binary. $ORIGIN tells the dynamic
+        // loader to look in the directory of the executable at runtime, so the
+        // bundle is relocatable.
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    }
+}
+
+/// Maps the Cargo TARGET triple to the Canon Linux SDK's library subdirectory.
+#[cfg(target_os = "linux")]
+fn canon_linux_arch_dir() -> &'static str {
+    let target = std::env::var("TARGET").unwrap_or_default();
+    if target.starts_with("x86_64-") {
+        "x86_64"
+    } else if target.starts_with("aarch64-") {
+        "ARM64"
+    } else if target.starts_with("arm") {
+        "ARM32"
+    } else {
+        panic!(
+            "unsupported Linux target for Canon EDSDK: {target} \
+             (supported: x86_64, aarch64, arm)"
+        );
     }
 }
 
@@ -95,5 +119,38 @@ fn copy_canon_dlls(manifest_dir: &str) {
                 println!("cargo:warning=Canon DLL not found, skipping copy: {}", src.display());
             }
         }
+    }
+}
+
+/// Copies libEDSDK.so next to the output binary on Linux so the binary can be
+/// shipped as a relocatable bundle (binary + libEDSDK.so).
+fn copy_canon_so(manifest_dir: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+        let profile_dir = Path::new(&out_dir)
+            .ancestors()
+            .nth(3)
+            .expect("unexpected OUT_DIR structure")
+            .to_path_buf();
+
+        let arch_dir = canon_linux_arch_dir();
+        let src = Path::new(manifest_dir)
+            .join("external/EDSDK/EDSDKv132010L/Linux/EDSDK/Library")
+            .join(arch_dir)
+            .join("libEDSDK.so");
+        let dst = profile_dir.join("libEDSDK.so");
+
+        if src.exists() {
+            std::fs::copy(&src, &dst)
+                .unwrap_or_else(|e| panic!("failed to copy libEDSDK.so to {dst:?}: {e}"));
+            println!("cargo:warning=Copied libEDSDK.so to {}", profile_dir.display());
+        } else {
+            println!("cargo:warning=libEDSDK.so not found, skipping copy: {}", src.display());
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = manifest_dir;
     }
 }

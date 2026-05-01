@@ -151,13 +151,84 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # Linux — x86_64
+  # Canon's Linux SDK ships only as libEDSDK.so (dynamic, glibc-bound) for
+  # x86_64 / ARM64 / ARM32. There is no 32-bit x86 build, and a fully static
+  # binary is not possible — libEDSDK.so cannot be linked statically. We
+  # build on ubuntu-22.04 for older-glibc compatibility (glibc 2.35+) and
+  # ship the binary alongside libEDSDK.so, found at runtime via rpath=$ORIGIN.
+  # Runtime requirements on the target Linux host:
+  #   - libusb-1.0 (typically pre-installed)
+  #   - read/write permissions on the camera USB node (see Canon udev rules)
+  # ---------------------------------------------------------------------------
+  build-linux:
+    name: Build (Linux x86_64)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build and runtime dependencies
+        # libusb-1.0-0 is a transitive runtime dep of libEDSDK.so; we install
+        # it on the runner so the post-build `ldd` sanity check can resolve
+        # the full dependency graph and catch any breakage early.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config unzip libusb-1.0-0
+
+      - name: Install Canon EDSDK
+        run: |
+          mkdir -p external/EDSDK
+          curl -fsSL "${{ env.CANON_EDSDK_LINUX_URL }}" -o canon_sdk.zip
+          unzip -q canon_sdk.zip -d external/EDSDK/
+          # Validate expected layout so the build fails early with a clear
+          # message if Canon repackages the archive.
+          test -f "external/EDSDK/EDSDKv132010L/Linux/EDSDK/Library/x86_64/libEDSDK.so" \
+            || { echo "ERROR: libEDSDK.so missing from Canon archive"; exit 1; }
+
+      - name: Build x86_64
+        run: |
+          cargo build --release \
+            --target x86_64-unknown-linux-gnu \
+            --features backend-canon
+
+      - name: Package
+        run: |
+          OUT="dist/toucan-camera-server-linux"
+          mkdir -p "$OUT"
+          cp target/x86_64-unknown-linux-gnu/release/toucan-camera-server "$OUT/"
+          cp target/x86_64-unknown-linux-gnu/release/libEDSDK.so "$OUT/"
+          # Sanity checks against the bundled layout:
+          #  1. The binary must resolve libEDSDK.so via rpath=$ORIGIN.
+          #  2. No dependency in the full transitive graph may be missing.
+          cd "$OUT"
+          ldd ./toucan-camera-server > /tmp/ldd.txt
+          echo "--- ldd output ---"; cat /tmp/ldd.txt; echo "------------------"
+          grep -F 'libEDSDK.so' /tmp/ldd.txt > /dev/null \
+            || { echo "ERROR: libEDSDK.so not in dependency list"; exit 1; }
+          grep -F 'libEDSDK.so => not found' /tmp/ldd.txt \
+            && { echo "ERROR: libEDSDK.so present but unresolved (rpath broken)"; exit 1; }
+          if grep -F 'not found' /tmp/ldd.txt; then
+            echo "ERROR: at least one transitive dependency missing"; exit 1
+          fi
+          cd -
+          tar czf dist/toucan-camera-server-linux.tar.gz -C dist toucan-camera-server-linux
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toucan-camera-server-linux
+          path: dist/toucan-camera-server-linux.tar.gz
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # Attach to current draft release
   # Runs on master/dev pushes. Finds the most recent draft release and uploads
   # built binaries to it. Does nothing if no draft release exists.
   # ---------------------------------------------------------------------------
   release:
     name: Attach to draft release
-    needs: [build-macos, build-windows]
+    needs: [build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -172,6 +243,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: toucan-camera-server-windows
+          path: dist/
+
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toucan-camera-server-linux
           path: dist/
 
       - name: Attach assets to current draft release
@@ -189,6 +266,7 @@ jobs:
             gh release upload "$DRAFT_TAG" \
               dist/toucan-camera-server-macos.zip \
               dist/toucan-camera-server-windows.zip \
+              dist/toucan-camera-server-linux.tar.gz \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
           else
