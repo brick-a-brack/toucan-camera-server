@@ -23,7 +23,13 @@
       "Bash(grep \"no \\\\`\")",
       "Bash(cargo metadata *)",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(p['name'],p['version']\\) for p in d['packages']]\")",
-      "Bash(cargo clippy *)"
+      "Bash(cargo clippy *)",
+      "WebFetch(domain:docs.rs)",
+      "Bash(~/.cargo/bin/cargo search *)",
+      "Bash(~/.cargo/bin/cargo info *)",
+      "Bash(brew list *)",
+      "Bash(pkg-config --modversion libgphoto2)",
+      "Bash(~/.cargo/bin/cargo check *)"
     ]
   }
 }
