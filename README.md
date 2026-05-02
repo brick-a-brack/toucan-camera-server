@@ -57,7 +57,7 @@ Feel free to make pull-requests or report issues 😉
 | Webcams Linux (V4L2)                 | 🔴      | 🔴    | 🟠    |
 | Canon EOS (EDSDK)                    | 🟢      | 🟢    | 🟠    |
 | Nikon (Nikon SDKs)                   | 🟠      | 🟠    | 🔴    |
-| Various cameras (libgphoto2)         | 🔴      | 🟠    | 🟠    |
+| Various cameras (libgphoto2)         | 🔴      | 🟢    | 🟢    |
 
 🟢 - Supported  
 🟠 - Planned  

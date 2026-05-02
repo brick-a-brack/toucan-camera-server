@@ -20,6 +20,11 @@ fn main() {
         copy_canon_so(&manifest_dir);
     }
 
+    // backend-gphoto2 needs `libgphoto2` discoverable via pkg-config:
+    //   - macOS: brew install libgphoto2 pkg-config
+    //   - Linux: apt install libgphoto2-dev pkg-config
+    // The `gphoto2-sys` crate handles linking; nothing to do here.
+
     if cfg!(target_os = "macos")
         && std::env::var_os("CARGO_FEATURE_BACKEND_WEBCAM_MACOS").is_some()
     {
