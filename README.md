@@ -55,7 +55,7 @@ Feel free to make pull-requests or report issues 😉
 | Webcams macOS (AVFoundation / IOKit) | 🔴      | 🟢    | 🔴    |
 | Webcams Windows (MediaFoundation)    | 🟢      | 🔴    | 🔴    |
 | Webcams Linux (V4L2)                 | 🔴      | 🔴    | 🟠    |
-| Canon EOS (EDSDK)                    | 🟢      | 🟢    | 🟠    |
+| Canon EOS (EDSDK)                    | 🟢      | 🟢    | 🟢    |
 | Nikon (Nikon SDKs)                   | 🟠      | 🟠    | 🔴    |
 | Various cameras (libgphoto2)         | 🔴      | 🟠    | 🟠    |
 
