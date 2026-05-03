@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = []
 backend-canon = []
+backend-webcam-linux = ["dep:v4l"]
 backend-webcam-macos = []
 backend-webcam-windows = ["dep:windows", "dep:windows-core", "dep:image"]
 
@@ -31,6 +32,9 @@ windows = { version = "0.58", optional = true, features = [
     "Win32_Media_KernelStreaming",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+v4l = { version = "0.14", optional = true }
 
 [build-dependencies]
 cc = "1"

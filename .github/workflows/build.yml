@@ -160,6 +160,8 @@ jobs:
   # Runtime requirements on the target Linux host:
   #   - libusb-1.0 (typically pre-installed)
   #   - read/write permissions on the camera USB node (see Canon udev rules)
+  #   - webcam access: shipped install.sh sets up a uaccess udev rule so the
+  #     active desktop user gets ACL access to /dev/video* without group changes
   # ---------------------------------------------------------------------------
   build-linux:
     name: Build (Linux x86_64)
@@ -190,7 +192,7 @@ jobs:
         run: |
           cargo build --release \
             --target x86_64-unknown-linux-gnu \
-            --features backend-canon
+            --features backend-canon,backend-webcam-linux
 
       - name: Package
         run: |
@@ -198,6 +200,11 @@ jobs:
           mkdir -p "$OUT"
           cp target/x86_64-unknown-linux-gnu/release/toucan-camera-server "$OUT/"
           cp target/x86_64-unknown-linux-gnu/release/libEDSDK.so "$OUT/"
+          # Webcam permissions setup — udev rule + install script.
+          # End-user runs ./install.sh once after extraction (uses sudo).
+          cp packaging/linux/99-toucan-camera.rules "$OUT/"
+          cp packaging/linux/install.sh "$OUT/"
+          chmod +x "$OUT/install.sh"
           # Sanity checks against the bundled layout:
           #  1. The binary must resolve libEDSDK.so via rpath=$ORIGIN.
           #  2. No dependency in the full transitive graph may be missing.
