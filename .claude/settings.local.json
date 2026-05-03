@@ -23,7 +23,12 @@
       "Bash(grep \"no \\\\`\")",
       "Bash(cargo metadata *)",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(p['name'],p['version']\\) for p in d['packages']]\")",
-      "Bash(cargo clippy *)"
+      "Bash(cargo clippy *)",
+      "Bash(~/.cargo/bin/cargo search *)",
+      "WebFetch(domain:docs.rs)",
+      "Bash(chmod +x /Users/mbaco/Documents/dev/brickabrack/bird-camera-server/packaging/linux/install.sh)",
+      "Bash(~/.cargo/bin/cargo check *)",
+      "Bash(~/.cargo/bin/cargo fetch *)"
     ]
   }
 }
