@@ -75,7 +75,9 @@ pub enum ParameterType {
     // --- Shared: focus & zoom ---
     Focus,
     FocusMode,         // auto / manual toggle
-    Zoom,
+    LiveViewZoom,
+    LiveViewZoomPositionX,
+    LiveViewZoomPositionY,
 
     // --- Webcam: format ---
     VideoFormat,

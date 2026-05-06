@@ -63,6 +63,9 @@ const PROP_IMAGE_QUALITY:        u32 = 0x00000100; // kEdsPropID_ImageQuality
 const PROP_WHITE_BALANCE:        u32 = 0x00000106; // kEdsPropID_WhiteBalance
 const PROP_COLOR_TEMPERATURE:    u32 = 0x00000107; // kEdsPropID_ColorTemperature
 const PROP_ASPECT:               u32 = 0x01000431; // kEdsPropID_Aspect
+const PROP_EVF_ZOOM:             u32 = 0x00000507; // kEdsPropID_Evf_Zoom
+const PROP_EVF_ZOOM_POSITION:    u32 = 0x00000508; // kEdsPropID_Evf_ZoomPosition
+const PROP_EVF_COORDINATE_SYS:   u32 = 0x00000540; // kEdsPropID_Evf_CoordinateSystem
 
 #[repr(C)]
 struct EdsDirectoryItemInfo {
@@ -80,6 +83,18 @@ struct EdsCapacity {
     number_of_free_clusters: i32,
     bytes_per_sector:        i32,
     reset:                   u32, // EdsBool
+}
+
+#[repr(C)]
+struct EdsPoint {
+    x: i32,
+    y: i32,
+}
+
+#[repr(C)]
+struct EdsSize {
+    width:  i32,
+    height: i32,
 }
 
 #[repr(C)]
@@ -230,6 +245,12 @@ enum Command {
         device_id: String,
         reply: mpsc::Sender<Result<Vec<u8>, CameraError>>,
     },
+    SetEvfZoomAxis {
+        device_id: String,
+        axis_is_x: bool,
+        value: i32,
+        reply: mpsc::Sender<Result<(), CameraError>>,
+    },
     Shutdown,
 }
 
@@ -359,8 +380,28 @@ impl CameraBackend for CanonBackend {
         param_type: ParameterType,
         value: &str,
     ) -> Result<(), CameraError> {
-        let prop_id = type_to_prop_id(param_type).ok_or(CameraError::NotSupported)?;
         let value: i32 = value.parse().map_err(|_| CameraError::NotSupported)?;
+
+        // Zoom position axes are composite (EdsPoint) — handled via a dedicated command.
+        match param_type {
+            ParameterType::LiveViewZoomPositionX | ParameterType::LiveViewZoomPositionY => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                self.tx
+                    .send(Command::SetEvfZoomAxis {
+                        device_id: native_id.to_string(),
+                        axis_is_x: param_type == ParameterType::LiveViewZoomPositionX,
+                        value,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
+                return reply_rx
+                    .recv()
+                    .unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)));
+            }
+            _ => {}
+        }
+
+        let prop_id = type_to_prop_id(param_type).ok_or(CameraError::NotSupported)?;
         let (reply_tx, reply_rx) = mpsc::channel();
         self.tx
             .send(Command::SetParameter {
@@ -387,6 +428,7 @@ impl CameraBackend for CanonBackend {
             .recv()
             .unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)))
     }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -443,6 +485,9 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
             }
             Ok(Command::CapturePhoto { device_id, reply }) => {
                 let _ = reply.send(capture_photo_impl(&device_id, &connected));
+            }
+            Ok(Command::SetEvfZoomAxis { device_id, axis_is_x, value, reply }) => {
+                let _ = reply.send(set_evf_zoom_axis_impl(&device_id, axis_is_x, value, &connected));
             }
             Ok(Command::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -787,6 +832,90 @@ fn get_parameters_impl(
         }
     }
 
+    // EVF zoom position — read coordinate system for max range, current point for value.
+    // Only exposed when zoom > 1 (position is meaningless at fit view).
+    // EVF zoom level + position must be read from an evfImageRef (not cameraRef).
+    // On many bodies (e.g. 600D), reading them from cameraRef returns NOT_SUPPORTED.
+    // Zoom Select is always added; position Range only when coordinate system is readable.
+    let mut evf_zoom: u32 = 1;
+    let mut coord_sys = EdsSize { width: 0, height: 0 };
+    let mut pos = EdsPoint { x: 0, y: 0 };
+    let mut coord_sys_ok = false;
+
+    let mut stream: EdsStreamRef = std::ptr::null_mut();
+    if unsafe { EdsCreateMemoryStream(0, &mut stream) } == EDS_ERR_OK {
+        let mut evf_image: EdsEvfImageRef = std::ptr::null_mut();
+        if unsafe { EdsCreateEvfImageRef(stream, &mut evf_image) } == EDS_ERR_OK {
+            // Retry once on OBJECT_NOTREADY (0xA102) — the EVF may still be
+            // updating after a recent zoom change.
+            let mut dl_err = unsafe { EdsDownloadEvfImage(camera_ref, evf_image) };
+            if dl_err == 0x0000_A102 {
+                unsafe { EdsGetEvent() };
+                std::thread::sleep(Duration::from_millis(32));
+                dl_err = unsafe { EdsDownloadEvfImage(camera_ref, evf_image) };
+            }
+            if dl_err == EDS_ERR_OK {
+                unsafe {
+                    EdsGetPropertyData(
+                        evf_image, PROP_EVF_ZOOM, 0,
+                        std::mem::size_of::<u32>() as u32,
+                        &mut evf_zoom as *mut u32 as *mut std::ffi::c_void,
+                    )
+                };
+
+                let cs_err = unsafe {
+                    EdsGetPropertyData(
+                        evf_image, PROP_EVF_COORDINATE_SYS, 0,
+                        std::mem::size_of::<EdsSize>() as u32,
+                        &mut coord_sys as *mut EdsSize as *mut std::ffi::c_void,
+                    )
+                };
+
+                if cs_err == EDS_ERR_OK && coord_sys.width > 0 && coord_sys.height > 0 {
+                    unsafe {
+                        EdsGetPropertyData(
+                            evf_image, PROP_EVF_ZOOM_POSITION, 0,
+                            std::mem::size_of::<EdsPoint>() as u32,
+                            &mut pos as *mut EdsPoint as *mut std::ffi::c_void,
+                        )
+                    };
+                    coord_sys_ok = true;
+                }
+            }
+            unsafe { EdsRelease(evf_image) };
+        }
+        unsafe { EdsRelease(stream) };
+    }
+
+    result.push(CameraParameter::Select {
+        param_type: ParameterType::LiveViewZoom,
+        current: evf_zoom.to_string(),
+        options: vec![
+            ParameterOption { label: "Fit".to_string(), value: "1".to_string() },
+            ParameterOption { label: "5x".to_string(),  value: "5".to_string() },
+            ParameterOption { label: "6x".to_string(),  value: "6".to_string() },
+            ParameterOption { label: "10x".to_string(), value: "10".to_string() },
+            ParameterOption { label: "15x".to_string(), value: "15".to_string() },
+        ],
+    });
+
+    if coord_sys_ok {
+        result.push(CameraParameter::Range {
+            param_type: ParameterType::LiveViewZoomPositionX,
+            current: pos.x,
+            min: 0,
+            max: coord_sys.width,
+            step: 1,
+        });
+        result.push(CameraParameter::Range {
+            param_type: ParameterType::LiveViewZoomPositionY,
+            current: pos.y,
+            min: 0,
+            max: coord_sys.height,
+            step: 1,
+        });
+    }
+
     Ok(result)
 }
 
@@ -909,6 +1038,7 @@ fn type_to_prop_id(param_type: ParameterType) -> Option<u32> {
         ParameterType::DriveMode           => Some(PROP_DRIVE_MODE),
         ParameterType::ExposureCompensation=> Some(PROP_EXPOSURE_COMP),
         ParameterType::Aspect              => Some(PROP_ASPECT),
+        ParameterType::LiveViewZoom                => Some(PROP_EVF_ZOOM),
         _ => None,
     }
 }
@@ -934,6 +1064,61 @@ fn set_parameter_impl(
         )
     };
 
+    if err != EDS_ERR_OK {
+        return Err(CameraError::SdkError(err));
+    }
+
+    // After changing the EVF zoom level the camera needs a moment to update its
+    // EVF output. Pump events for ~150 ms so the next get_parameters call sees
+    // the new zoom value rather than a stale frame.
+    if prop_id == PROP_EVF_ZOOM {
+        for _ in 0..10 {
+            unsafe { EdsGetEvent() };
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    }
+
+    Ok(())
+}
+
+fn set_evf_zoom_axis_impl(
+    device_id: &str,
+    axis_is_x: bool,
+    value: i32,
+    connected: &HashMap<String, EdsCameraRef>,
+) -> Result<(), CameraError> {
+    let camera_ref = connected
+        .get(device_id)
+        .copied()
+        .ok_or(CameraError::NotConnected)?;
+
+    // Read the current position so we only update one axis.
+    let mut current = EdsPoint { x: 0, y: 0 };
+    unsafe {
+        EdsGetPropertyData(
+            camera_ref,
+            PROP_EVF_ZOOM_POSITION,
+            0,
+            std::mem::size_of::<EdsPoint>() as u32,
+            &mut current as *mut EdsPoint as *mut std::ffi::c_void,
+        )
+    };
+
+    let point = if axis_is_x {
+        EdsPoint { x: value, y: current.y }
+    } else {
+        EdsPoint { x: current.x, y: value }
+    };
+
+    let err = unsafe {
+        EdsSetPropertyData(
+            camera_ref,
+            PROP_EVF_ZOOM_POSITION,
+            0,
+            std::mem::size_of::<EdsPoint>() as u32,
+            &point as *const EdsPoint as *const std::ffi::c_void,
+        )
+    };
     if err != EDS_ERR_OK {
         return Err(CameraError::SdkError(err));
     }
@@ -1251,6 +1436,18 @@ fn decode_image_quality(code: i32) -> String {
         0x02640012 => "SRAW + L Normal",
         0x02640010 => "SRAW + L JPEG",
         _ => return format!("{code:#010x}"),
+    };
+    label.to_string()
+}
+
+fn decode_evf_zoom(code: i32) -> String {
+    let label = match code {
+        1  => "Fit",
+        5  => "5x",
+        6  => "6x",
+        10 => "10x",
+        15 => "15x",
+        _ => return format!("{code}x"),
     };
     label.to_string()
 }
