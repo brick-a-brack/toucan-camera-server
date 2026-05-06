@@ -1149,9 +1149,15 @@ fn decode_wb(code: i32) -> String {
         10 => "Custom WB 1",
         11 => "Custom WB 2",
         12 => "Custom WB 3",
+        15 => "White paper 2",
+        16 => "White paper 3",
+        18 => "White paper 4",
+        19 => "White paper 5",
         20 => "Custom WB 4",
         21 => "Custom WB 5",
-        -1 => "Auto (white priority)",
+        23 => "Auto white priority", // kEdsWhiteBalance_AwbWhite
+        -1 => "Click WB",             // kEdsWhiteBalance_Click
+        -2 => "Pasted",               // kEdsWhiteBalance_Pasted
         _ => return format!("0x{code:02X}"),
     };
     label.to_string()
