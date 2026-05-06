@@ -61,6 +61,7 @@ pub enum ParameterType {
     MeteringMode,
     AfMode,
     DriveMode,
+    Aspect,
 
     // --- Shared: white balance ---
     WhiteBalance,

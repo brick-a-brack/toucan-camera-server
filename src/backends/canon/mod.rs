@@ -62,6 +62,7 @@ const PROP_EXPOSURE_COMP:        u32 = 0x00000407; // kEdsPropID_ExposureCompens
 const PROP_IMAGE_QUALITY:        u32 = 0x00000100; // kEdsPropID_ImageQuality
 const PROP_WHITE_BALANCE:        u32 = 0x00000106; // kEdsPropID_WhiteBalance
 const PROP_COLOR_TEMPERATURE:    u32 = 0x00000107; // kEdsPropID_ColorTemperature
+const PROP_ASPECT:               u32 = 0x01000431; // kEdsPropID_Aspect
 
 #[repr(C)]
 struct EdsDirectoryItemInfo {
@@ -737,6 +738,7 @@ fn get_parameters_impl(
         (ParameterType::MeteringMode,    PROP_METERING_MODE,     decode_metering),
         (ParameterType::AfMode,          PROP_AF_MODE,           decode_af),
         (ParameterType::DriveMode,       PROP_DRIVE_MODE,        decode_drive),
+        (ParameterType::Aspect,          PROP_ASPECT,            decode_aspect),
     ];
 
     let mut result = Vec::new();
@@ -906,6 +908,7 @@ fn type_to_prop_id(param_type: ParameterType) -> Option<u32> {
         ParameterType::AfMode              => Some(PROP_AF_MODE),
         ParameterType::DriveMode           => Some(PROP_DRIVE_MODE),
         ParameterType::ExposureCompensation=> Some(PROP_EXPOSURE_COMP),
+        ParameterType::Aspect              => Some(PROP_ASPECT),
         _ => None,
     }
 }
@@ -1248,6 +1251,18 @@ fn decode_image_quality(code: i32) -> String {
         0x02640012 => "SRAW + L Normal",
         0x02640010 => "SRAW + L JPEG",
         _ => return format!("{code:#010x}"),
+    };
+    label.to_string()
+}
+
+fn decode_aspect(code: i32) -> String {
+    let label = match code {
+        0 => "3:2",
+        1 => "1:1",
+        2 => "4:3",
+        7 => "16:9",
+        8 => "1.375:1",
+        _ => return format!("0x{code:02X}"),
     };
     label.to_string()
 }
