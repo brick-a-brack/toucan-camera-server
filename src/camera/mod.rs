@@ -52,59 +52,81 @@ impl DeviceId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParameterType {
-    // --- Canon: image quality & capture ---
+    // Unsorted ---
     ImageQuality,
     Aperture,
     ShutterSpeed,
     Iso,
-    ExposureCompensation,
     MeteringMode,
     AfMode,
     DriveMode,
     Aspect,
-
-    // --- Shared: white balance ---
-    WhiteBalance,
-    WhiteBalanceMode,  // auto / manual toggle
     ColorTemperature,
 
-    // --- Shared: exposure ---
-    Exposure,
-    ExposureMode,      // auto / manual toggle
-
-    // --- Shared: focus & zoom ---
-    Focus,
-    FocusMode,         // auto / manual toggle
     LiveViewZoom,
     LiveViewZoomPositionX,
     LiveViewZoomPositionY,
-
-    // --- Webcam: format ---
     VideoFormat,
 
-    // --- Webcam: image adjustments ---
-    Brightness,
-    BrightnessMode,
-    Contrast,
-    ContrastMode,
-    Hue,
-    HueMode,
-    Saturation,
-    SaturationMode,
-    Sharpness,
-    Gamma,
     BacklightCompensation,
-    Gain,
-    GainMode,
     PowerLineFrequency,
 
-    // --- Webcam: camera geometry ---
+    // Camera white balance
+    WhiteBalance,
+    WhiteBalanceAuto,
+
+    // Camera sharpness
+    Sharpness,
+    SharpnessAuto,
+
+    // Camera gamma
+    Gamma,
+    GammaAuto,
+
+    // Camera exposure
+    Exposure,
+    ExposureAuto,
+    ExposureCompensation,
+
+    // Camera focus
+    Focus,
+    FocusAuto,
+
+    // Camera saturation
+    Saturation,
+    SaturationAuto,
+
+    // Camera brightness
+    Brightness,
+    BrightnessAuto,
+
+    // Camera contrast
+    Contrast,
+    ContrastAuto,
+
+    // Camera hue
+    Hue,
+    HueAuto,
+
+    // Camera Gain
+    Gain,
+    GainAuto,
+
+    // Camera Pan
     Pan,
-    PanMode,
+    PanAuto,
+
+    // Camera Tilt
     Tilt,
-    TiltMode,
+    TiltAuto,
+
+    // Camera Roll
     Roll,
-    RollMode,
+    RollAuto,
+
+    // Camera Zoom
+    Zoom,
+    ZoomAuto,
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +157,12 @@ pub struct ParameterOption {
 
 /// A camera parameter, discriminated by its representation kind.
 ///
+/// Every variant carries `disabled: bool`.  When `true` the parameter is
+/// read-only in the current camera state (e.g. focus value while auto-focus
+/// is active) and the client should render it as greyed-out.  It is still
+/// always included in the response so the client has a complete picture.
+///
+/// - `boolean`      — on/off toggle; `current` is a bool. Value sent to `set_parameter` is `"true"` or `"false"`.
 /// - `range`        — continuous numeric value (slider); `current`, `min`, `max`, `step` are integers.
 /// - `select`       — arbitrary discrete choices; `current` matches one `option.value`.
 /// - `range_select` — ordered discrete values with numeric progression (ISO, aperture);
@@ -142,6 +170,13 @@ pub struct ParameterOption {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CameraParameter {
+    Boolean {
+        #[serde(rename = "type")]
+        param_type: ParameterType,
+        current: bool,
+        #[serde(default)]
+        disabled: bool,
+    },
     Range {
         #[serde(rename = "type")]
         param_type: ParameterType,
@@ -149,18 +184,24 @@ pub enum CameraParameter {
         min: i32,
         max: i32,
         step: i32,
+        #[serde(default)]
+        disabled: bool,
     },
     Select {
         #[serde(rename = "type")]
         param_type: ParameterType,
         current: String,
         options: Vec<ParameterOption>,
+        #[serde(default)]
+        disabled: bool,
     },
     RangeSelect {
         #[serde(rename = "type")]
         param_type: ParameterType,
         current: String,
         options: Vec<ParameterOption>,
+        #[serde(default)]
+        disabled: bool,
     },
 }
 
@@ -219,9 +260,9 @@ pub trait CameraBackend: Send + Sync {
     /// Sets a parameter by its type and value.
     ///
     /// `value` is always a string:
+    /// - Boolean params:            `"true"` or `"false"`
     /// - Range params:              stringified integer (e.g. `"42"`)
     /// - Select / RangeSelect:      opaque key from `ParameterOption.value` (e.g. `"77"`)
-    /// - Mode (auto/manual) params: `"1"` = auto, `"0"` = manual
     fn set_parameter(
         &self,
         native_id: &str,

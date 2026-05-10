@@ -377,13 +377,22 @@ fn get_parameters_impl(
                 .to_string_lossy();
             let param_type = c_kind_to_param_type(&c_kind)?;
 
+            if is_boolean_param(param_type) {
+                return Some(CameraParameter::Boolean {
+                    param_type,
+                    current:  d.current != 0,
+                    disabled: false,
+                });
+            }
+
             if d.is_range != 0 {
                 Some(CameraParameter::Range {
                     param_type,
-                    current: d.current,
-                    min: d.min,
-                    max: d.max,
-                    step: if d.step > 0 { d.step } else { 1 },
+                    current:  d.current,
+                    min:      d.min,
+                    max:      d.max,
+                    step:     if d.step > 0 { d.step } else { 1 },
+                    disabled: false, // updated below by disable_value_params_in_auto_mode
                 })
             } else {
                 let num_options = d.num_options as usize;
@@ -397,12 +406,12 @@ fn get_parameters_impl(
                     })
                     .collect();
                 let current = d.current.to_string();
-                Some(CameraParameter::Select { param_type, current, options })
+                Some(CameraParameter::Select { param_type, current, options, disabled: false })
             }
         })
         .collect();
 
-    Ok(hide_value_params_in_auto_mode(params))
+    Ok(disable_value_params_in_auto_mode(params))
 }
 
 fn set_parameter_impl(
@@ -414,61 +423,90 @@ fn set_parameter_impl(
     let handle = sessions.get(device_id).ok_or(CameraError::NotConnected)?.0;
     let c_kind = param_type_to_c_kind(param_type).ok_or(CameraError::NotSupported)?;
     let c_kind = CString::new(c_kind).map_err(|_| CameraError::NotSupported)?;
-    let int_val: i32 = value.parse().map_err(|_| CameraError::NotSupported)?;
+
+    let int_val: i32 = match value {
+        "true"  => 1,
+        "false" => 0,
+        v       => v.parse().map_err(|_| CameraError::NotSupported)?,
+    };
 
     let ret = unsafe { wc_set_parameter(handle, c_kind.as_ptr(), int_val) };
     if ret != 0 { Err(CameraError::NotSupported) } else { Ok(()) }
 }
 
-/// Removes value parameters whose corresponding *_mode parameter is set to "auto" ("1").
-fn hide_value_params_in_auto_mode(params: Vec<CameraParameter>) -> Vec<CameraParameter> {
-    // (value_type, mode_type): hide value_type when mode_type current == "1" (auto)
+/// Sets `disabled: true` on value parameters whose corresponding *_auto is currently active.
+fn disable_value_params_in_auto_mode(mut params: Vec<CameraParameter>) -> Vec<CameraParameter> {
+    // (value_type, auto_type): disable value_type when auto_type current == true
     const PAIRS: &[(ParameterType, ParameterType)] = &[
-        (ParameterType::WhiteBalance, ParameterType::WhiteBalanceMode),
-        (ParameterType::Exposure,     ParameterType::ExposureMode),
-        (ParameterType::Gain,         ParameterType::GainMode),
-        (ParameterType::Brightness,   ParameterType::BrightnessMode),
-        (ParameterType::Contrast,     ParameterType::ContrastMode),
-        (ParameterType::Hue,          ParameterType::HueMode),
-        (ParameterType::Saturation,   ParameterType::SaturationMode),
-        (ParameterType::Focus,        ParameterType::FocusMode),
-        (ParameterType::Pan,          ParameterType::PanMode),
-        (ParameterType::Tilt,         ParameterType::TiltMode),
-        (ParameterType::Roll,         ParameterType::RollMode),
+        (ParameterType::WhiteBalance, ParameterType::WhiteBalanceAuto),
+        (ParameterType::Exposure,     ParameterType::ExposureAuto),
+        (ParameterType::Gain,         ParameterType::GainAuto),
+        (ParameterType::Brightness,   ParameterType::BrightnessAuto),
+        (ParameterType::Contrast,     ParameterType::ContrastAuto),
+        (ParameterType::Hue,          ParameterType::HueAuto),
+        (ParameterType::Saturation,   ParameterType::SaturationAuto),
+        (ParameterType::Focus,        ParameterType::FocusAuto),
+        (ParameterType::Pan,          ParameterType::PanAuto),
+        (ParameterType::Tilt,         ParameterType::TiltAuto),
+        (ParameterType::Roll,         ParameterType::RollAuto),
     ];
 
-    // Collect the mode types that are currently in auto mode.
-    let auto_modes: Vec<ParameterType> = params
+    // Collect auto types that are currently enabled.
+    let active_autos: Vec<ParameterType> = params
         .iter()
         .filter_map(|p| {
-            if let CameraParameter::Select { param_type, current, .. } = p {
+            if let CameraParameter::Boolean { param_type, current: true, .. } = p {
                 PAIRS
                     .iter()
-                    .find(|&&(_, mode_type)| mode_type == *param_type && current == "1")
-                    .map(|&(_, mode_type)| mode_type)
+                    .find(|&&(_, auto_type)| auto_type == *param_type)
+                    .map(|&(_, auto_type)| auto_type)
             } else {
                 None
             }
         })
         .collect();
 
-    if auto_modes.is_empty() {
+    if active_autos.is_empty() {
         return params;
     }
 
-    params
-        .into_iter()
-        .filter(|p| {
-            let pt = match p {
-                CameraParameter::Range { param_type, .. }
-                | CameraParameter::Select { param_type, .. }
-                | CameraParameter::RangeSelect { param_type, .. } => *param_type,
-            };
-            !PAIRS
+    for p in &mut params {
+        let should_disable = match p {
+            CameraParameter::Range { param_type, .. }
+            | CameraParameter::Select { param_type, .. }
+            | CameraParameter::RangeSelect { param_type, .. } => PAIRS
                 .iter()
-                .any(|&(value_type, mode_type)| pt == value_type && auto_modes.contains(&mode_type))
-        })
-        .collect()
+                .any(|&(vt, at)| *param_type == vt && active_autos.contains(&at)),
+            CameraParameter::Boolean { .. } => false,
+        };
+        if should_disable {
+            match p {
+                CameraParameter::Range { disabled, .. }
+                | CameraParameter::Select { disabled, .. }
+                | CameraParameter::RangeSelect { disabled, .. } => *disabled = true,
+                CameraParameter::Boolean { .. } => {}
+            }
+        }
+    }
+    params
+}
+
+/// Returns true for ParameterTypes that represent a boolean auto/manual toggle.
+fn is_boolean_param(pt: ParameterType) -> bool {
+    matches!(
+        pt,
+        ParameterType::WhiteBalanceAuto
+            | ParameterType::ExposureAuto
+            | ParameterType::FocusAuto
+            | ParameterType::BrightnessAuto
+            | ParameterType::ContrastAuto
+            | ParameterType::HueAuto
+            | ParameterType::SaturationAuto
+            | ParameterType::GainAuto
+            | ParameterType::PanAuto
+            | ParameterType::TiltAuto
+            | ParameterType::RollAuto
+    )
 }
 
 /// Maps a C bridge kind string (from wc_get_parameters) to a ParameterType.
@@ -483,11 +521,12 @@ fn c_kind_to_param_type(kind: &str) -> Option<ParameterType> {
         "sharpness"                 => Some(ParameterType::Sharpness),
         "gain"                      => Some(ParameterType::Gain),
         "backlight_compensation"    => Some(ParameterType::BacklightCompensation),
+        "power_line_frequency"      => Some(ParameterType::PowerLineFrequency),
         "zoom_absolute"             => Some(ParameterType::Zoom),
         "white_balance_temperature" => Some(ParameterType::WhiteBalance),
-        "white_balance_auto"        => Some(ParameterType::WhiteBalanceMode),
+        "white_balance_auto"        => Some(ParameterType::WhiteBalanceAuto),
         "exposure_time_absolute"    => Some(ParameterType::Exposure),
-        "exposure_auto"             => Some(ParameterType::ExposureMode),
+        "exposure_auto"             => Some(ParameterType::ExposureAuto),
         _ => None,
     }
 }
@@ -503,11 +542,12 @@ fn param_type_to_c_kind(pt: ParameterType) -> Option<&'static str> {
         ParameterType::Sharpness            => Some("sharpness"),
         ParameterType::Gain                 => Some("gain"),
         ParameterType::BacklightCompensation=> Some("backlight_compensation"),
+        ParameterType::PowerLineFrequency   => Some("power_line_frequency"),
         ParameterType::Zoom                 => Some("zoom_absolute"),
         ParameterType::WhiteBalance         => Some("white_balance_temperature"),
-        ParameterType::WhiteBalanceMode     => Some("white_balance_auto"),
+        ParameterType::WhiteBalanceAuto     => Some("white_balance_auto"),
         ParameterType::Exposure             => Some("exposure_time_absolute"),
-        ParameterType::ExposureMode         => Some("exposure_auto"),
+        ParameterType::ExposureAuto         => Some("exposure_auto"),
         _ => None,
     }
 }

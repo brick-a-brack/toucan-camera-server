@@ -825,9 +825,9 @@ fn get_parameters_impl(
                 .collect();
 
             result.push(if is_range_select {
-                CameraParameter::RangeSelect { param_type, current, options }
+                CameraParameter::RangeSelect { param_type, current, options, disabled: false }
             } else {
-                CameraParameter::Select { param_type, current, options }
+                CameraParameter::Select { param_type, current, options, disabled: false }
             });
         }
     }
@@ -897,22 +897,17 @@ fn get_parameters_impl(
             ParameterOption { label: "10x".to_string(), value: "10".to_string() },
             ParameterOption { label: "15x".to_string(), value: "15".to_string() },
         ],
+        disabled: false,
     });
 
     if coord_sys_ok {
         result.push(CameraParameter::Range {
             param_type: ParameterType::LiveViewZoomPositionX,
-            current: pos.x,
-            min: 0,
-            max: coord_sys.width,
-            step: 1,
+            current: pos.x, min: 0, max: coord_sys.width, step: 1, disabled: false,
         });
         result.push(CameraParameter::Range {
             param_type: ParameterType::LiveViewZoomPositionY,
-            current: pos.y,
-            min: 0,
-            max: coord_sys.height,
-            step: 1,
+            current: pos.y, min: 0, max: coord_sys.height, step: 1, disabled: false,
         });
     }
 

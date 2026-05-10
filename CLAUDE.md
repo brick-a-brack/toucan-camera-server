@@ -24,8 +24,7 @@ The API is consumed locally — it binds exclusively to `127.0.0.1`, no authenti
 
 ### CameraBackend trait
 - Every backend must implement the `CameraBackend` trait defined in `src/camera/mod.rs`.
-- Current trait methods: `backend_id`, `list_devices`, `connect`, `disconnect`, `is_connected`, `get_parameters`, `get_live_view_frame`.
-- Future methods: `capture_photo`, `set_parameter`.
+- Current trait methods: `backend_id`, `list_devices`, `connect`, `disconnect`, `is_connected`, `get_parameters`, `get_live_view_frame`, `set_parameter`, `capture_photo`.
 - `backend_id()` returns the backend's unique name (e.g. `"canon"`). It is used to build opaque device IDs and to key the backend registry.
 - Route handlers must only interact with the `CameraBackend` trait — never with a concrete backend type.
 
@@ -36,8 +35,8 @@ The API is consumed locally — it binds exclusively to `127.0.0.1`, no authenti
 - Backends are registered at startup in `build_backends()` in `main.rs`.
 - If a backend fails to initialize (e.g. SDK DLL not found), it is skipped with an error log — the server starts anyway.
 - Each backend is gated behind a Cargo feature flag: `backend-canon`, `backend-nikon`, `backend-webcam-linux`, `backend-webcam-windows`, `backend-webcam-macos`.
-- Backend code lives in `src/backends/<name>.rs` (`#[cfg(feature = "backend-<name>")]`).
-- Currently in scope: `backend-canon` only. Others will be added later.
+- Backend code lives in `src/backends/<name>/mod.rs` (`#[cfg(feature = "backend-<name>")]`).
+- Active backends: `backend-canon` (Windows / macOS / Linux), `backend-webcam-windows` (Windows), `backend-webcam-macos` (macOS).
 
 ### Canon SDK thread
 - The EDSDK relies on Windows messages internally and does not work on tokio worker threads.
@@ -95,9 +94,10 @@ GET  /health                         — healthcheck JSON
 GET  /cameras                        — list all devices across all active backends (includes connected: bool)
 PUT  /cameras/{id}/connect           — open a session with a device
 PUT  /cameras/{id}/disconnect        — close a session with a device
-GET  /cameras/{id}/parameters        — list settable parameters with current value and allowed options (requires connected)
+GET  /cameras/{id}/parameters        — list all parameters with current value, allowed options, and disabled flag (requires connected)
 PUT  /cameras/{id}/parameters        — set a parameter value (requires connected)
 GET  /cameras/{id}/liveview          — MJPEG stream (requires connected, returns 409 if not)
+POST /cameras/{id}/capture           — capture a single JPEG photo, returns raw bytes (requires connected)
 ```
 
 ### Web UI
@@ -164,8 +164,13 @@ src/
                         CameraParameter, ParameterOption
   backends/
     mod.rs            — feature-gated module declarations
-    canon.rs          — FFI bindings + impl CameraBackend for CanonBackend
+    canon/
+      mod.rs          — FFI bindings + impl CameraBackend for CanonBackend
                         (actor pattern, SDK thread, code→label decode tables)
+    webcam_windows/
+      mod.rs          — MediaFoundation + DirectShow backend (Windows webcams)
+    webcam_macos/
+      mod.rs          — AVFoundation/CMIO/IOKit backend (macOS webcams)
   routes/
     mod.rs
     cameras.rs        — AppState, BackendState, LiveViewSenders, route handlers
