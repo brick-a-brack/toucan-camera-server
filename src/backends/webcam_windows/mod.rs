@@ -409,7 +409,14 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
                 let _ = reply.send(disconnect_impl(&native_id, &mut connected));
             }
             Ok(Command::IsConnected { native_id, reply }) => {
-                let _ = reply.send(connected.contains_key(&native_id));
+                let alive = connected
+                    .get(&native_id)
+                    .map(|s| is_source_alive(&s.source))
+                    .unwrap_or(false);
+                if !alive {
+                    force_disconnect(&native_id, &mut connected);
+                }
+                let _ = reply.send(alive);
             }
             Ok(Command::GetParameters { native_id, reply }) => {
                 let result = connected
@@ -423,6 +430,16 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
                     .get(&native_id)
                     .ok_or(CameraError::NotConnected)
                     .and_then(get_live_view_frame_impl);
+                if result.is_err() {
+                    // Probe the source only on failure to avoid per-frame overhead.
+                    let dead = connected
+                        .get(&native_id)
+                        .map(|s| !is_source_alive(&s.source))
+                        .unwrap_or(false);
+                    if dead {
+                        force_disconnect(&native_id, &mut connected);
+                    }
+                }
                 let _ = reply.send(result);
             }
             Ok(Command::SetParameter { native_id, param_type, value, reply }) => {
@@ -459,6 +476,21 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
 
 fn win_err(e: windows::core::Error) -> CameraError {
     CameraError::SdkError(e.code().0 as u32)
+}
+
+/// Returns false if the underlying media source is no longer functional
+/// (device unplugged, system sleep, driver reset, etc.).
+/// `GetCharacteristics` is a lightweight COM call that fails immediately
+/// when the source has been invalidated.
+fn is_source_alive(source: &IMFMediaSource) -> bool {
+    unsafe { source.GetCharacteristics() }.is_ok()
+}
+
+/// Removes a device from `connected` and shuts down its source.
+fn force_disconnect(native_id: &str, connected: &mut HashMap<String, DeviceState>) {
+    if let Some(state) = connected.remove(native_id) {
+        unsafe { let _ = state.source.Shutdown(); }
+    }
 }
 
 fn list_devices_impl(
