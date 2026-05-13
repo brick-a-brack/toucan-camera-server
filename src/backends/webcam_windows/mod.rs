@@ -930,6 +930,12 @@ fn get_parameters_impl(state: &DeviceState) -> Result<Vec<CameraParameter>, Came
         });
     }
 
+    let exposure_is_auto = state.camera_control.as_ref().map_or(false, |cc| {
+        let mut val = 0i32; let mut flags = 0i32;
+        unsafe { cc.Get(CameraControl_Exposure.0, &mut val, &mut flags) }.is_ok()
+            && flags & CameraControl_Flags_Auto.0 != 0
+    });
+
     if let Some(vpa) = &state.video_proc_amp {
         let specs: &[(VideoProcAmpProperty, ParameterType, Option<ParameterType>)] = &[
             (VideoProcAmp_Brightness,           ParameterType::Brightness,           Some(ParameterType::BrightnessAuto)),
@@ -960,7 +966,7 @@ fn get_parameters_impl(state: &DeviceState) -> Result<Vec<CameraParameter>, Came
 
             params.push(CameraParameter::Range {
                 param_type, current, min, max, step,
-                disabled: is_auto,
+                disabled: is_auto || (param_type == ParameterType::Gain && exposure_is_auto),
             });
 
             if let Some(auto_param_type) = auto_type {
@@ -984,6 +990,15 @@ fn get_parameters_impl(state: &DeviceState) -> Result<Vec<CameraParameter>, Came
             });
         }
     }
+
+    let zoom_is_min = state.camera_control.as_ref().map_or(false, |cc| {
+        let mut min = 0i32; let mut max = 0i32;
+        let mut step = 0i32; let mut default = 0i32; let mut caps = 0i32;
+        let mut cur = 0i32; let mut flags = 0i32;
+        unsafe { cc.GetRange(CameraControl_Zoom.0, &mut min, &mut max, &mut step, &mut default, &mut caps) }.is_ok()
+            && unsafe { cc.Get(CameraControl_Zoom.0, &mut cur, &mut flags) }.is_ok()
+            && cur == min
+    });
 
     if let Some(cc) = &state.camera_control {
         let specs: &[(CameraControlProperty, ParameterType, Option<ParameterType>)] = &[
@@ -1012,7 +1027,8 @@ fn get_parameters_impl(state: &DeviceState) -> Result<Vec<CameraParameter>, Came
 
             params.push(CameraParameter::Range {
                 param_type, current, min, max, step,
-                disabled: is_auto,
+                disabled: is_auto
+                    || (matches!(param_type, ParameterType::Pan | ParameterType::Tilt) && zoom_is_min),
             });
 
             if let Some(auto_param_type) = auto_type {
