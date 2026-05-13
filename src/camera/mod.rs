@@ -52,8 +52,7 @@ impl DeviceId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParameterType {
-    // Unsorted ---
-    ImageQuality,
+    // Unsorted yet
     Aperture,
     ShutterSpeed,
     MeteringMode,
@@ -62,10 +61,9 @@ pub enum ParameterType {
     Aspect,
     ColorTemperature,
 
-    
-    VideoFormat,
-
-    BacklightCompensation,
+    // Stream format and quality
+    ImageQuality,
+    VideoStreamFormat,
     PowerLineFrequency,
 
     // Camera white balance
@@ -84,6 +82,7 @@ pub enum ParameterType {
     Exposure,
     ExposureAuto,
     ExposureCompensation,
+    BacklightCompensation,
 
     // Camera focus
     Focus,

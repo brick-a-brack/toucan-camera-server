@@ -513,7 +513,7 @@ fn is_boolean_param(pt: ParameterType) -> bool {
 /// Returns None for unknown kinds, which causes the parameter to be silently skipped.
 fn c_kind_to_param_type(kind: &str) -> Option<ParameterType> {
     match kind {
-        "video_format"              => Some(ParameterType::VideoFormat),
+        "video_format"              => Some(ParameterType::VideoStreamFormat),
         "brightness"                => Some(ParameterType::Brightness),
         "contrast"                  => Some(ParameterType::Contrast),
         "hue"                       => Some(ParameterType::Hue),
@@ -534,7 +534,7 @@ fn c_kind_to_param_type(kind: &str) -> Option<ParameterType> {
 /// Maps a ParameterType back to the C bridge string expected by wc_set_parameter.
 fn param_type_to_c_kind(pt: ParameterType) -> Option<&'static str> {
     match pt {
-        ParameterType::VideoFormat          => Some("video_format"),
+        ParameterType::VideoStreamFormat          => Some("video_format"),
         ParameterType::Brightness           => Some("brightness"),
         ParameterType::Contrast             => Some("contrast"),
         ParameterType::Hue                  => Some("hue"),

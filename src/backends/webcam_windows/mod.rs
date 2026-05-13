@@ -923,7 +923,7 @@ fn get_parameters_impl(state: &DeviceState) -> Result<Vec<CameraParameter>, Came
             .map(|(i, f)| ParameterOption { label: f.label(), value: i.to_string() })
             .collect();
         params.push(CameraParameter::Select {
-            param_type: ParameterType::VideoFormat,
+            param_type: ParameterType::VideoStreamFormat,
             current:    state.current_format_idx.to_string(),
             options,
             disabled:   false,
@@ -991,15 +991,6 @@ fn get_parameters_impl(state: &DeviceState) -> Result<Vec<CameraParameter>, Came
         }
     }
 
-    let zoom_is_min = state.camera_control.as_ref().map_or(false, |cc| {
-        let mut min = 0i32; let mut max = 0i32;
-        let mut step = 0i32; let mut default = 0i32; let mut caps = 0i32;
-        let mut cur = 0i32; let mut flags = 0i32;
-        unsafe { cc.GetRange(CameraControl_Zoom.0, &mut min, &mut max, &mut step, &mut default, &mut caps) }.is_ok()
-            && unsafe { cc.Get(CameraControl_Zoom.0, &mut cur, &mut flags) }.is_ok()
-            && cur == min
-    });
-
     if let Some(cc) = &state.camera_control {
         let specs: &[(CameraControlProperty, ParameterType, Option<ParameterType>)] = &[
             (CameraControl_Pan,      ParameterType::Pan,      Some(ParameterType::PanAuto)),
@@ -1009,6 +1000,8 @@ fn get_parameters_impl(state: &DeviceState) -> Result<Vec<CameraParameter>, Came
             (CameraControl_Exposure, ParameterType::Exposure, Some(ParameterType::ExposureAuto)),
             (CameraControl_Focus,    ParameterType::Focus,    Some(ParameterType::FocusAuto)),
         ];
+
+        let cc_start = params.len();
 
         for &(prop, param_type, auto_type) in specs {
             let mut min = 0i32; let mut max = 0i32;
@@ -1027,8 +1020,7 @@ fn get_parameters_impl(state: &DeviceState) -> Result<Vec<CameraParameter>, Came
 
             params.push(CameraParameter::Range {
                 param_type, current, min, max, step,
-                disabled: is_auto
-                    || (matches!(param_type, ParameterType::Pan | ParameterType::Tilt) && zoom_is_min),
+                disabled: is_auto,
             });
 
             if let Some(auto_param_type) = auto_type {
@@ -1038,6 +1030,23 @@ fn get_parameters_impl(state: &DeviceState) -> Result<Vec<CameraParameter>, Came
                         current:    is_auto,
                         disabled:   false,
                     });
+                }
+            }
+        }
+
+        // Disable Pan/Tilt/Roll when zoom is at its minimum (no room to pan/tilt).
+        // Computed from the loop values to avoid a separate driver call.
+        let zoom_is_min = params[cc_start..].iter().any(|p| {
+            matches!(p, CameraParameter::Range {
+                param_type: ParameterType::Zoom, current, min, ..
+            } if current <= min)
+        });
+        if zoom_is_min {
+            for p in &mut params[cc_start..] {
+                if let CameraParameter::Range { param_type, disabled, .. } = p {
+                    if matches!(param_type, ParameterType::Pan | ParameterType::Tilt | ParameterType::Roll) {
+                        *disabled = true;
+                    }
                 }
             }
         }
@@ -1088,7 +1097,7 @@ fn set_parameter_impl(
     value: &str,
 ) -> Result<(), CameraError> {
     // Format switch — value is the format index as a string.
-    if param_type == ParameterType::VideoFormat {
+    if param_type == ParameterType::VideoStreamFormat {
         let idx: usize = value.parse().map_err(|_| CameraError::NotSupported)?;
         let fmt = state.formats.get(idx).ok_or(CameraError::NotSupported)?;
         unsafe {
