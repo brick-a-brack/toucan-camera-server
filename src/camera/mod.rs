@@ -56,16 +56,13 @@ pub enum ParameterType {
     ImageQuality,
     Aperture,
     ShutterSpeed,
-    Iso,
     MeteringMode,
     AfMode,
     DriveMode,
     Aspect,
     ColorTemperature,
 
-    LiveViewZoom,
-    LiveViewZoomPositionX,
-    LiveViewZoomPositionY,
+    
     VideoFormat,
 
     BacklightCompensation,
@@ -127,6 +124,16 @@ pub enum ParameterType {
     // Camera Zoom
     Zoom,
     ZoomAuto,
+
+    // ISO
+    Iso,
+    IsoAuto,
+
+    // Live view controls
+    LiveViewZoom,
+    LiveViewPan,
+    LiveViewTilt,
+    LiveViewRoll,
 }
 
 // ---------------------------------------------------------------------------

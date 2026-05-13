@@ -384,12 +384,12 @@ impl CameraBackend for CanonBackend {
 
         // Zoom position axes are composite (EdsPoint) — handled via a dedicated command.
         match param_type {
-            ParameterType::LiveViewZoomPositionX | ParameterType::LiveViewZoomPositionY => {
+            ParameterType::LiveViewPan | ParameterType::LiveViewTilt => {
                 let (reply_tx, reply_rx) = mpsc::channel();
                 self.tx
                     .send(Command::SetEvfZoomAxis {
                         device_id: native_id.to_string(),
-                        axis_is_x: param_type == ParameterType::LiveViewZoomPositionX,
+                        axis_is_x: param_type == ParameterType::LiveViewPan,
                         value,
                         reply: reply_tx,
                     })
@@ -902,11 +902,11 @@ fn get_parameters_impl(
 
     if coord_sys_ok {
         result.push(CameraParameter::Range {
-            param_type: ParameterType::LiveViewZoomPositionX,
+            param_type: ParameterType::LiveViewPan,
             current: pos.x, min: 0, max: coord_sys.width, step: 1, disabled: false,
         });
         result.push(CameraParameter::Range {
-            param_type: ParameterType::LiveViewZoomPositionY,
+            param_type: ParameterType::LiveViewTilt,
             current: pos.y, min: 0, max: coord_sys.height, step: 1, disabled: false,
         });
     }
