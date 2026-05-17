@@ -380,7 +380,24 @@ impl CameraBackend for CanonBackend {
         param_type: ParameterType,
         value: &str,
     ) -> Result<(), CameraError> {
-        let value: i32 = value.parse().map_err(|_| CameraError::NotSupported)?;
+        // IsoAuto maps to PROP_ISO: 0x00 = auto, 0x48 (ISO 100) when switching to manual.
+        if param_type == ParameterType::IsoAuto {
+            let iso_value: i32 = if value == "true" { 0x00 } else { 0x48 };
+            let (reply_tx, reply_rx) = mpsc::channel();
+            self.tx
+                .send(Command::SetParameter {
+                    device_id: native_id.to_string(),
+                    prop_id: PROP_ISO,
+                    value: iso_value,
+                    reply: reply_tx,
+                })
+                .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
+            return reply_rx
+                .recv()
+                .unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)));
+        }
+
+let value: i32 = value.parse().map_err(|_| CameraError::NotSupported)?;
 
         // Zoom position axes are composite (EdsPoint) — handled via a dedicated command.
         match param_type {
@@ -644,6 +661,18 @@ fn connect_impl(
         return Err(CameraError::SdkError(err));
     }
 
+    // Force single-shot drive mode — stop motion captures one frame at a time.
+    let drive_single: i32 = 0;
+    unsafe {
+        EdsSetPropertyData(
+            camera_ref,
+            PROP_DRIVE_MODE,
+            0,
+            std::mem::size_of::<i32>() as u32,
+            &drive_single as *const i32 as *const std::ffi::c_void,
+        )
+    };
+
     // Direct captured photos to the host so that DirItemRequestTransfer fires.
     let save_to: u32 = SAVE_TO_HOST;
     unsafe {
@@ -771,8 +800,6 @@ fn get_parameters_impl(
 
     let range_select_specs: &[Spec] = &[
         (ParameterType::Aperture,             PROP_AV,            decode_av),
-        (ParameterType::ShutterSpeed,         PROP_TV,            decode_tv),
-        (ParameterType::Iso,                  PROP_ISO,           decode_iso),
         (ParameterType::ExposureCompensation, PROP_EXPOSURE_COMP, decode_ev),
     ];
 
@@ -782,7 +809,6 @@ fn get_parameters_impl(
         (ParameterType::ColorTemperature,PROP_COLOR_TEMPERATURE, decode_color_temp),
         (ParameterType::MeteringMode,    PROP_METERING_MODE,     decode_metering),
         (ParameterType::AfMode,          PROP_AF_MODE,           decode_af),
-        (ParameterType::DriveMode,       PROP_DRIVE_MODE,        decode_drive),
         (ParameterType::Aspect,          PROP_ASPECT,            decode_aspect),
     ];
 
@@ -828,6 +854,86 @@ fn get_parameters_impl(
                 CameraParameter::RangeSelect { param_type, current, options, disabled: false }
             } else {
                 CameraParameter::Select { param_type, current, options, disabled: false }
+            });
+        }
+    }
+
+    // ShutterSpeed: Bulb (0x0C) excluded — not usable for stop motion.
+    {
+        let mut tv_desc = EdsPropertyDesc { form: 0, access: 0, num_elements: 0, prop_desc: [0; 128] };
+        let tv_err = unsafe { EdsGetPropertyDesc(camera_ref, PROP_TV, &mut tv_desc) };
+        if tv_err == EDS_ERR_OK && tv_desc.num_elements > 0 && tv_desc.access != 0 {
+            let mut current_code: i32 = 0;
+            let read_err = unsafe {
+                EdsGetPropertyData(
+                    camera_ref, PROP_TV, 0,
+                    std::mem::size_of::<i32>() as u32,
+                    &mut current_code as *mut i32 as *mut std::ffi::c_void,
+                )
+            };
+            if read_err != EDS_ERR_OK { current_code = 0; }
+
+            let options: Vec<ParameterOption> = tv_desc.prop_desc[..tv_desc.num_elements as usize]
+                .iter()
+                .filter(|&&code| code != 0x0C)
+                .map(|&code| ParameterOption {
+                    label: decode_tv(code),
+                    value: code.to_string(),
+                })
+                .collect();
+
+            result.push(CameraParameter::RangeSelect {
+                param_type: ParameterType::ShutterSpeed,
+                current: current_code.to_string(),
+                options,
+                disabled: false,
+            });
+        }
+    }
+
+    // ISO: IsoAuto boolean + Iso RangeSelect (disabled when auto, 0x00 excluded from options).
+    {
+        let mut iso_desc = EdsPropertyDesc { form: 0, access: 0, num_elements: 0, prop_desc: [0; 128] };
+        let iso_err = unsafe { EdsGetPropertyDesc(camera_ref, PROP_ISO, &mut iso_desc) };
+        if iso_err == EDS_ERR_OK && iso_desc.num_elements > 0 && iso_desc.access != 0 {
+            let mut current_code: i32 = 0;
+            let read_err = unsafe {
+                EdsGetPropertyData(
+                    camera_ref, PROP_ISO, 0,
+                    std::mem::size_of::<i32>() as u32,
+                    &mut current_code as *mut i32 as *mut std::ffi::c_void,
+                )
+            };
+            if read_err != EDS_ERR_OK { current_code = 0; }
+
+            let iso_auto = current_code == 0x00;
+
+            result.push(CameraParameter::Boolean {
+                param_type: ParameterType::IsoAuto,
+                current: iso_auto,
+                disabled: false,
+            });
+
+            let options: Vec<ParameterOption> = iso_desc.prop_desc[..iso_desc.num_elements as usize]
+                .iter()
+                .filter(|&&code| code != 0x00)
+                .map(|&code| ParameterOption {
+                    label: decode_iso(code),
+                    value: code.to_string(),
+                })
+                .collect();
+
+            let iso_current = if iso_auto {
+                options.first().map(|o| o.value.clone()).unwrap_or_default()
+            } else {
+                current_code.to_string()
+            };
+
+            result.push(CameraParameter::RangeSelect {
+                param_type: ParameterType::Iso,
+                current: iso_current,
+                options,
+                disabled: iso_auto,
             });
         }
     }
