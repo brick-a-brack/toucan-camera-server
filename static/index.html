@@ -684,7 +684,7 @@
       const err = document.getElementById(`lv-err-${id}`);
 
       err.textContent = '';
-      img.src = `/cameras/${id}/liveview?token=${encodeURIComponent(TOKEN)}`;
+      img.src = `/cameras/${id}/liveview?t=${Date.now()}&token=${encodeURIComponent(TOKEN)}`;
       img.onerror = () => {
         err.textContent = 'Stream interrupted — camera may have disconnected.';
         stopLiveView(id);
