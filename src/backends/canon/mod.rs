@@ -198,6 +198,12 @@ thread_local! {
     static PENDING_DIR_ITEM: RefCell<Option<EdsDirectoryItemRef>> = RefCell::new(None);
     // Camera refs that have reported a shutdown/disconnect state event.
     static SHUTDOWN_CAMERA_REFS: RefCell<Vec<EdsCameraRef>> = RefCell::new(Vec::new());
+    // Last zoom level set via set_parameter_impl, keyed by device_id.
+    // Used as fallback in get_parameters_impl when the EVF frame is not yet ready.
+    static EVF_ZOOM_CACHE: RefCell<std::collections::HashMap<String, u32>> = RefCell::new(std::collections::HashMap::new());
+    // Last known coordinate system and position from a successful EVF download,
+    // keyed by device_id: (coord_width, coord_height, pos_x, pos_y).
+    static EVF_COORD_CACHE: RefCell<std::collections::HashMap<String, (i32, i32, i32, i32)>> = RefCell::new(std::collections::HashMap::new());
 }
 
 /// Called by the EDSDK on the SDK thread when a camera state event fires.
@@ -785,6 +791,9 @@ fn disconnect_impl(
         .remove(device_id)
         .ok_or_else(|| CameraError::DeviceNotFound(device_id.to_string()))?;
 
+    EVF_ZOOM_CACHE.with(|c| c.borrow_mut().remove(device_id));
+    EVF_COORD_CACHE.with(|c| c.borrow_mut().remove(device_id));
+
     unsafe {
         EdsCloseSession(camera_ref);
         EdsRelease(camera_ref);
@@ -1005,11 +1014,15 @@ fn get_parameters_impl(
     }
 
     // EVF zoom position — read coordinate system for max range, current point for value.
-    // Only exposed when zoom > 1 (position is meaningless at fit view).
     // EVF zoom level + position must be read from an evfImageRef (not cameraRef).
     // On many bodies (e.g. 600D), reading them from cameraRef returns NOT_SUPPORTED.
     // Zoom Select is always added; position Range only when coordinate system is readable.
-    let mut evf_zoom: u32 = 1;
+    //
+    // evf_zoom is pre-seeded from the cache set by set_parameter_impl so that a
+    // stale or unavailable EVF frame (OBJECT_NOTREADY) does not falsely report Fit.
+    let mut evf_zoom: u32 = EVF_ZOOM_CACHE.with(|c| {
+        c.borrow().get(device_id).copied().unwrap_or(1)
+    });
     let mut coord_sys = EdsSize { width: 0, height: 0 };
     let mut pos = EdsPoint { x: 0, y: 0 };
     let mut coord_sys_ok = false;
@@ -1018,22 +1031,35 @@ fn get_parameters_impl(
     if unsafe { EdsCreateMemoryStream(0, &mut stream) } == EDS_ERR_OK {
         let mut evf_image: EdsEvfImageRef = std::ptr::null_mut();
         if unsafe { EdsCreateEvfImageRef(stream, &mut evf_image) } == EDS_ERR_OK {
-            // Retry once on OBJECT_NOTREADY (0xA102) — the EVF may still be
-            // updating after a recent zoom change.
+            // Retry a few times on OBJECT_NOTREADY — the live view loop may have
+            // just consumed the latest frame leaving none buffered yet.
             let mut dl_err = unsafe { EdsDownloadEvfImage(camera_ref, evf_image) };
-            if dl_err == 0x0000_A102 {
+            let mut retries = 0;
+            while dl_err == 0x0000_A102 && retries < 4 {
                 unsafe { EdsGetEvent() };
-                std::thread::sleep(Duration::from_millis(32));
+                std::thread::sleep(Duration::from_millis(16));
                 dl_err = unsafe { EdsDownloadEvfImage(camera_ref, evf_image) };
+                retries += 1;
             }
             if dl_err == EDS_ERR_OK {
-                unsafe {
+                // Read zoom from EVF as the primary source.
+                // Guard: if EVF reports Fit (1) but the cache holds a non-1 value,
+                // the EVF frame is stale (mid-transition) — keep the cached value.
+                let mut reported_zoom: u32 = 0;
+                let zoom_err = unsafe {
                     EdsGetPropertyData(
                         evf_image, PROP_EVF_ZOOM, 0,
                         std::mem::size_of::<u32>() as u32,
-                        &mut evf_zoom as *mut u32 as *mut std::ffi::c_void,
+                        &mut reported_zoom as *mut u32 as *mut std::ffi::c_void,
                     )
                 };
+                if zoom_err == EDS_ERR_OK {
+                    let cached = EVF_ZOOM_CACHE.with(|c| c.borrow().get(device_id).copied());
+                    // Trust EVF value unless it says Fit while cache says otherwise
+                    if reported_zoom != 1 || cached.is_none() || cached == Some(1) {
+                        evf_zoom = reported_zoom;
+                    }
+                }
 
                 let cs_err = unsafe {
                     EdsGetPropertyData(
@@ -1052,11 +1078,29 @@ fn get_parameters_impl(
                         )
                     };
                     coord_sys_ok = true;
+                    EVF_COORD_CACHE.with(|c| {
+                        c.borrow_mut().insert(
+                            device_id.to_string(),
+                            (coord_sys.width, coord_sys.height, pos.x, pos.y),
+                        );
+                    });
                 }
             }
             unsafe { EdsRelease(evf_image) };
         }
         unsafe { EdsRelease(stream) };
+    }
+
+    // If the EVF download failed, fall back to the last known coord_sys so
+    // pan/tilt controls don't disappear on a transient OBJECT_NOTREADY.
+    if !coord_sys_ok {
+        EVF_COORD_CACHE.with(|c| {
+            if let Some(&(cw, ch, px, py)) = c.borrow().get(device_id) {
+                coord_sys = EdsSize { width: cw, height: ch };
+                pos = EdsPoint { x: px, y: py };
+                coord_sys_ok = true;
+            }
+        });
     }
 
     result.push(CameraParameter::Select {
@@ -1073,13 +1117,14 @@ fn get_parameters_impl(
     });
 
     if coord_sys_ok {
+        let pan_tilt_disabled = evf_zoom == 1;
         result.push(CameraParameter::Range {
             param_type: ParameterType::LiveViewPan,
-            current: pos.x, min: 0, max: coord_sys.width, step: 1, disabled: false,
+            current: pos.x, min: 0, max: coord_sys.width, step: 1, disabled: pan_tilt_disabled,
         });
         result.push(CameraParameter::Range {
             param_type: ParameterType::LiveViewTilt,
-            current: pos.y, min: 0, max: coord_sys.height, step: 1, disabled: false,
+            current: pos.y, min: 0, max: coord_sys.height, step: 1, disabled: pan_tilt_disabled,
         });
     }
 
@@ -1235,13 +1280,75 @@ fn set_parameter_impl(
         return Err(CameraError::SdkError(err));
     }
 
-    // After changing the EVF zoom level the camera needs a moment to update its
-    // EVF output. Pump events for ~150 ms so the next get_parameters call sees
-    // the new zoom value rather than a stale frame.
     if prop_id == PROP_EVF_ZOOM {
-        for _ in 0..10 {
+        let target_zoom = value as u32;
+
+        // Cache the zoom immediately so get_parameters_impl can report the
+        // correct value even if the EVF frame is not yet ready (OBJECT_NOTREADY
+        // is common right after the live view loop has drained available frames).
+        EVF_ZOOM_CACHE.with(|c| c.borrow_mut().insert(device_id.to_string(), target_zoom));
+
+        // Poll the EVF until it confirms the new zoom level (up to 500 ms),
+        // then center the position. Checking actual_zoom guards against using
+        // a stale coord_sys (zoom=1 range) which would set an out-of-range
+        // position and cause some bodies to silently reset the zoom to Fit.
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        loop {
             unsafe { EdsGetEvent() };
-            std::thread::sleep(Duration::from_millis(15));
+            std::thread::sleep(Duration::from_millis(32));
+
+            let mut stream: EdsStreamRef = std::ptr::null_mut();
+            if unsafe { EdsCreateMemoryStream(0, &mut stream) } != EDS_ERR_OK {
+                break;
+            }
+            let mut evf_image: EdsEvfImageRef = std::ptr::null_mut();
+            let evf_created = unsafe { EdsCreateEvfImageRef(stream, &mut evf_image) } == EDS_ERR_OK;
+            let mut confirmed = false;
+            if evf_created && unsafe { EdsDownloadEvfImage(camera_ref, evf_image) } == EDS_ERR_OK {
+                let mut actual_zoom: u32 = 0;
+                unsafe {
+                    EdsGetPropertyData(
+                        evf_image, PROP_EVF_ZOOM, 0,
+                        std::mem::size_of::<u32>() as u32,
+                        &mut actual_zoom as *mut u32 as *mut std::ffi::c_void,
+                    )
+                };
+                if actual_zoom == target_zoom {
+                    // Zoom confirmed — center position if zoomed in.
+                    if target_zoom > 1 {
+                        let mut coord_sys = EdsSize { width: 0, height: 0 };
+                        let cs_err = unsafe {
+                            EdsGetPropertyData(
+                                evf_image, PROP_EVF_COORDINATE_SYS, 0,
+                                std::mem::size_of::<EdsSize>() as u32,
+                                &mut coord_sys as *mut EdsSize as *mut std::ffi::c_void,
+                            )
+                        };
+                        if cs_err == EDS_ERR_OK && coord_sys.width > 0 && coord_sys.height > 0 {
+                            let center = EdsPoint {
+                                x: coord_sys.width / 2,
+                                y: coord_sys.height / 2,
+                            };
+                            unsafe {
+                                EdsSetPropertyData(
+                                    camera_ref, PROP_EVF_ZOOM_POSITION, 0,
+                                    std::mem::size_of::<EdsPoint>() as u32,
+                                    &center as *const EdsPoint as *const std::ffi::c_void,
+                                )
+                            };
+                        }
+                    }
+                    confirmed = true;
+                }
+            }
+            if evf_created {
+                unsafe { EdsRelease(evf_image) };
+            }
+            unsafe { EdsRelease(stream) };
+
+            if confirmed || std::time::Instant::now() >= deadline {
+                break;
+            }
         }
     }
 
@@ -1544,22 +1651,6 @@ fn decode_af(code: i32) -> String {
     label.to_string()
 }
 
-fn decode_drive(code: i32) -> String {
-    let label = match code {
-        0  => "Single",
-        1  => "Continuous high",
-        2  => "Video",
-        4  => "Self-timer 2s",
-        5  => "Self-timer 10s",
-        6  => "Silent single",
-        7  => "AF servo high",
-        10 => "Continuous low",
-        16 => "Silent continuous",
-        17 => "Silent continuous low",
-        _ => return format!("0x{code:02X}"),
-    };
-    label.to_string()
-}
 
 fn decode_image_quality(code: i32) -> String {
     let label = match code as u32 {
@@ -1603,18 +1694,6 @@ fn decode_image_quality(code: i32) -> String {
         0x02640012 => "SRAW + L Normal",
         0x02640010 => "SRAW + L JPEG",
         _ => return format!("{code:#010x}"),
-    };
-    label.to_string()
-}
-
-fn decode_evf_zoom(code: i32) -> String {
-    let label = match code {
-        1  => "Fit",
-        5  => "5x",
-        6  => "6x",
-        10 => "10x",
-        15 => "15x",
-        _ => return format!("{code}x"),
     };
     label.to_string()
 }
