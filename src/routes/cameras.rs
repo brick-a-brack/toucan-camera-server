@@ -259,10 +259,18 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
     };
 
     // Convert the broadcast receiver into an HTTP body stream.
-    let stream = BroadcastStream::new(rx).filter_map(|res| match res {
-        Ok(frame) => Some(Ok::<Bytes, std::io::Error>((*frame).clone())),
-        Err(_) => None, // lagged frames — just skip
-    });
+    // When the broadcast channel closes (capture loop stopped), chain a deliberate
+    // IO error so axum resets the TCP connection instead of ending the response
+    // cleanly. A clean end is invisible to the browser (onerror never fires on the
+    // <img> element), leaving the live view panel frozen with the last frame.
+    let stream = BroadcastStream::new(rx)
+        .filter_map(|res| match res {
+            Ok(frame) => Some(Ok::<Bytes, std::io::Error>((*frame).clone())),
+            Err(_) => None, // lagged frames — just skip
+        })
+        .chain(tokio_stream::iter(std::iter::once(Err::<Bytes, std::io::Error>(
+            std::io::Error::new(std::io::ErrorKind::ConnectionReset, "live view stream closed"),
+        ))));
 
     Response::builder()
         .header(
