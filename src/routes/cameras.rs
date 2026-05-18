@@ -26,7 +26,9 @@ pub type BackendState = Arc<HashMap<String, Arc<dyn CameraBackend>>>;
 
 /// One broadcast sender per active live-view device.
 /// The key is the opaque (encoded) device ID.
-type LiveViewSenders = Arc<Mutex<HashMap<String, broadcast::Sender<Arc<Bytes>>>>>;
+/// Wrapped in Arc so the capture loop can use ptr_eq to avoid removing a
+/// sender that was replaced by a newer connection while the loop was exiting.
+type LiveViewSenders = Arc<Mutex<HashMap<String, Arc<broadcast::Sender<Arc<Bytes>>>>>>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -124,10 +126,13 @@ pub async fn get_parameters(
 }
 
 pub async fn disconnect_camera(
-    State(backends): State<BackendState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    dispatch(&backends, &id, |b, native_id| b.disconnect(native_id))
+    // Drop the live-view sender before disconnecting so the capture loop stops
+    // and the next connection always starts with a fresh sender.
+    state.live_views.lock().await.remove(&id);
+    dispatch(&state.backends, &id, |b, native_id| b.disconnect(native_id))
 }
 
 pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -174,10 +179,9 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
     let rx = {
         let mut senders = state.live_views.lock().await;
         let sender = senders.entry(id.clone()).or_insert_with(|| {
-            // Buffer a few frames to absorb jitter without adding latency.
             let (tx, _) = broadcast::channel::<Arc<Bytes>>(4);
-            tx
-        });
+            Arc::new(tx)
+        }).clone();
 
         let rx = sender.subscribe();
 
@@ -187,6 +191,8 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
             let tx = sender.clone();
             let backend_loop = backend.clone();
             let native_id = dev_id.native_id.clone();
+            let live_views_loop = state.live_views.clone();
+            let opaque_id_loop = id.clone();
 
             tokio::spawn(async move {
                 // Cap at 30 fps (≈32 ms/frame). Backends slower than this run
@@ -235,6 +241,15 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                     let elapsed = tick.elapsed();
                     if elapsed < frame_interval {
                         tokio::time::sleep(frame_interval - elapsed).await;
+                    }
+                }
+
+                // Remove the sender only if it is still ours. A reconnect may have
+                // already replaced it with a new sender — in that case, leave it alone.
+                let mut senders = live_views_loop.lock().await;
+                if let Some(current) = senders.get(&opaque_id_loop) {
+                    if Arc::ptr_eq(current, &tx) {
+                        senders.remove(&opaque_id_loop);
                     }
                 }
             });

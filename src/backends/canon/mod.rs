@@ -41,6 +41,11 @@ const SHUTTER_OFF: i32 = 0x00000000;
 const OBJ_EVENT_ALL: u32 = 0x00000200;
 const OBJ_EVENT_DIR_ITEM_REQUEST_TRANSFER: u32 = 0x00000208;
 
+// kEdsStateEvent_All / kEdsStateEvent_Shutdown / kEdsStateEvent_WillSoonShutDown
+const STATE_EVENT_ALL: u32 = 0x00000300;
+const STATE_EVENT_SHUTDOWN: u32 = 0x00000301;
+const STATE_EVENT_WILL_SOON_SHUTDOWN: u32 = 0x00000303;
+
 // kEdsPropID_SaveTo / kEdsSaveTo_Host
 const PROP_SAVE_TO: u32 = 0x0000000b;
 const SAVE_TO_HOST: u32 = 2;
@@ -164,6 +169,12 @@ extern "C" {
         in_handler: Option<unsafe extern "C" fn(u32, EdsBaseRef, *mut std::ffi::c_void) -> u32>,
         in_context: *mut std::ffi::c_void,
     ) -> u32;
+    fn EdsSetCameraStateEventHandler(
+        in_camera_ref: EdsCameraRef,
+        in_event: u32,
+        in_handler: Option<unsafe extern "C" fn(u32, u32, *mut std::ffi::c_void) -> u32>,
+        in_context: *mut std::ffi::c_void,
+    ) -> u32;
     fn EdsGetDirectoryItemInfo(
         in_dir_item_ref: EdsDirectoryItemRef,
         out_dir_item_info: *mut EdsDirectoryItemInfo,
@@ -182,10 +193,30 @@ extern "C" {
 // Object event callback
 // ---------------------------------------------------------------------------
 
-// Stores the EdsDirectoryItemRef received in the object event callback.
 // Only accessed on the canon-sdk thread.
 thread_local! {
     static PENDING_DIR_ITEM: RefCell<Option<EdsDirectoryItemRef>> = RefCell::new(None);
+    // Camera refs that have reported a shutdown/disconnect state event.
+    static SHUTDOWN_CAMERA_REFS: RefCell<Vec<EdsCameraRef>> = RefCell::new(Vec::new());
+}
+
+/// Called by the EDSDK on the SDK thread when a camera state event fires.
+///
+/// On `kEdsStateEvent_Shutdown` or `kEdsStateEvent_WillSoonShutDown` the camera
+/// has physically disconnected. We record its ref (passed as context) so the
+/// SDK thread loop can remove it from the connected map on the next tick.
+unsafe extern "C" fn state_event_callback(
+    event: u32,
+    _event_data: u32,
+    context: *mut std::ffi::c_void,
+) -> u32 {
+    if event == STATE_EVENT_SHUTDOWN || event == STATE_EVENT_WILL_SOON_SHUTDOWN {
+        let camera_ref = context as EdsCameraRef;
+        if !camera_ref.is_null() {
+            SHUTDOWN_CAMERA_REFS.with(|s| s.borrow_mut().push(camera_ref));
+        }
+    }
+    EDS_ERR_OK
 }
 
 /// Called by the EDSDK on the SDK thread when a camera object event fires.
@@ -470,6 +501,24 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
     loop {
         unsafe { EdsGetEvent() };
 
+        // Remove cameras that have physically disconnected (state event fired).
+        SHUTDOWN_CAMERA_REFS.with(|s| {
+            for stale_ref in s.borrow_mut().drain(..) {
+                if let Some(device_id) = connected
+                    .iter()
+                    .find(|(_, &r)| r == stale_ref)
+                    .map(|(id, _)| id.clone())
+                {
+                    eprintln!("[canon] camera {device_id} disconnected unexpectedly");
+                    connected.remove(&device_id);
+                    unsafe {
+                        EdsCloseSession(stale_ref);
+                        EdsRelease(stale_ref);
+                    }
+                }
+            }
+        });
+
         // Reset the auto-power-off timer for every connected camera every 30 s.
         if last_keepalive.elapsed() >= KEEPALIVE_INTERVAL {
             for &camera_ref in connected.values() {
@@ -630,8 +679,14 @@ fn connect_impl(
     device_id: &str,
     connected: &mut HashMap<String, EdsCameraRef>,
 ) -> Result<(), CameraError> {
-    if connected.contains_key(device_id) {
-        return Ok(()); // idempotent
+    // Close any existing session before opening a new one. This ensures that a
+    // reconnect after a physical disconnect (stale ref) or after the camera was
+    // already logically connected always results in a clean, fresh session.
+    if let Some(old_ref) = connected.remove(device_id) {
+        unsafe {
+            EdsCloseSession(old_ref); // may fail if camera already gone — ignore
+            EdsRelease(old_ref);
+        }
     }
 
     let camera_ref = find_camera_ref(device_id)?;
@@ -704,6 +759,17 @@ fn connect_impl(
             OBJ_EVENT_ALL,
             Some(object_event_callback),
             std::ptr::null_mut(),
+        )
+    };
+
+    // Register the state event handler to detect physical disconnects.
+    // Pass camera_ref as context so the callback can identify which camera disconnected.
+    unsafe {
+        EdsSetCameraStateEventHandler(
+            camera_ref,
+            STATE_EVENT_ALL,
+            Some(state_event_callback),
+            camera_ref,
         )
     };
 
