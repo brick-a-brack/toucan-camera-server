@@ -223,7 +223,7 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # Android — arm64-v8a + armeabi-v7a
+  # Android — arm64-v8a
   # Builds the Rust cdylib with cargo-ndk, then assembles a debug APK and a
   # debug AAB with Gradle. Release signing can be added later via secrets.
   # ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
 
       - name: Install Rust targets
-        run: rustup target add aarch64-linux-android armv7-linux-androideabi
+        run: rustup target add aarch64-linux-android
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -255,7 +255,6 @@ jobs:
         run: |
           cargo ndk \
             -t arm64-v8a \
-            -t armeabi-v7a \
             -o android/app/src/main/jniLibs \
             build --release --features backend-camera2-android
 
