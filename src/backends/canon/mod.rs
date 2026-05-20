@@ -278,6 +278,10 @@ enum Command {
         value: i32, // already parsed from the string value at the trait boundary
         reply: mpsc::Sender<Result<(), CameraError>>,
     },
+    SetIsoManual {
+        device_id: String,
+        reply: mpsc::Sender<Result<(), CameraError>>,
+    },
     CapturePhoto {
         device_id: String,
         reply: mpsc::Sender<Result<Vec<u8>, CameraError>>,
@@ -417,18 +421,28 @@ impl CameraBackend for CanonBackend {
         param_type: ParameterType,
         value: &str,
     ) -> Result<(), CameraError> {
-        // IsoAuto maps to PROP_ISO: 0x00 = auto, 0x48 (ISO 100) when switching to manual.
+        // IsoAuto maps to PROP_ISO: 0x00 = auto; switching to manual uses the first available
+        // non-auto ISO value queried live from the camera (avoids hardcoding a value the camera
+        // may not support).
         if param_type == ParameterType::IsoAuto {
-            let iso_value: i32 = if value == "true" { 0x00 } else { 0x48 };
             let (reply_tx, reply_rx) = mpsc::channel();
-            self.tx
-                .send(Command::SetParameter {
-                    device_id: native_id.to_string(),
-                    prop_id: PROP_ISO,
-                    value: iso_value,
-                    reply: reply_tx,
-                })
-                .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
+            if value == "true" {
+                self.tx
+                    .send(Command::SetParameter {
+                        device_id: native_id.to_string(),
+                        prop_id: PROP_ISO,
+                        value: 0x00,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
+            } else {
+                self.tx
+                    .send(Command::SetIsoManual {
+                        device_id: native_id.to_string(),
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
+            }
             return reply_rx
                 .recv()
                 .unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)));
@@ -554,6 +568,9 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
             }
             Ok(Command::SetParameter { device_id, prop_id, value, reply }) => {
                 let _ = reply.send(set_parameter_impl(&device_id, prop_id, value, &connected));
+            }
+            Ok(Command::SetIsoManual { device_id, reply }) => {
+                let _ = reply.send(set_iso_manual_impl(&device_id, &connected));
             }
             Ok(Command::CapturePhoto { device_id, reply }) => {
                 let _ = reply.send(capture_photo_impl(&device_id, &connected));
@@ -1352,6 +1369,42 @@ fn set_parameter_impl(
         }
     }
 
+    Ok(())
+}
+
+fn set_iso_manual_impl(
+    device_id: &str,
+    connected: &HashMap<String, EdsCameraRef>,
+) -> Result<(), CameraError> {
+    let camera_ref = connected
+        .get(device_id)
+        .copied()
+        .ok_or(CameraError::NotConnected)?;
+
+    let mut desc = EdsPropertyDesc { form: 0, access: 0, num_elements: 0, prop_desc: [0; 128] };
+    let err = unsafe { EdsGetPropertyDesc(camera_ref, PROP_ISO, &mut desc) };
+    if err != EDS_ERR_OK {
+        return Err(CameraError::SdkError(err));
+    }
+
+    let first_manual = desc.prop_desc[..desc.num_elements as usize]
+        .iter()
+        .copied()
+        .find(|&v| v != 0x00)
+        .ok_or(CameraError::NotSupported)?;
+
+    let err = unsafe {
+        EdsSetPropertyData(
+            camera_ref,
+            PROP_ISO,
+            0,
+            std::mem::size_of::<i32>() as u32,
+            &first_manual as *const i32 as *const std::ffi::c_void,
+        )
+    };
+    if err != EDS_ERR_OK {
+        return Err(CameraError::SdkError(err));
+    }
     Ok(())
 }
 
