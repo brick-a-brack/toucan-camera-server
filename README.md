@@ -50,15 +50,22 @@ Feel free to make pull-requests or report issues 😉
 
 ## Compatibility
 
-| Backend                              | Windows | macOS | Linux |
-| ------------------------------------ | ------- | ----- | ----- |
-| Webcams macOS (AVFoundation / IOKit) | 🔴      | 🟢    | 🔴    |
-| Webcams Windows (MediaFoundation)    | 🟢      | 🔴    | 🔴    |
-| Webcams Linux (V4L2)                 | 🔴      | 🔴    | 🟠    |
-| Canon EOS (EDSDK)                    | 🟢      | 🟢    | 🟢    |
-| Nikon (Nikon SDKs)                   | 🟠      | 🟠    | 🔴    |
-| Various cameras (libgphoto2)         | 🔴      | 🟠    | 🟠    |
+| Backend                      | Windows | macOS | Linux | Android |
+| ---------------------------- | ------- | ----- | ----- | ------- |
+| Webcams / Cameras            | 🟢¹     | 🟢²   | 🟠³   | 🟢⁴     |
+| Canon EOS (EDSDK)            | 🟢      | 🟢    | 🟢    | 🔴      |
+| Nikon (Nikon SDKs)           | 🟠      | 🟠    | 🔴    | 🔴      |
+| Various cameras (libgphoto2) | 🔴      | 🟠    | 🟠    | 🟠      |
 
 🟢 - Supported  
 🟠 - Planned  
 🔴 - Not compatible / possible
+
+1. Using MediaFoundation
+2. Using AVFoundation and IOKit
+3. Using V4L2
+4. Using camera2
+
+$env:PATH = "C:\Users\mbaco\AppData\Local\Android\Sdk\ndk\28.0.12674087\toolchains\llvm\prebuilt\windows-x86_64\bin;" + $env:PATH
+$env:ANDROID_NDK_HOME = "C:\Users\mbaco\AppData\Local\Android\Sdk\ndk\28.0.12674087"
+// cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build --lib --release --features backend-camera2-android

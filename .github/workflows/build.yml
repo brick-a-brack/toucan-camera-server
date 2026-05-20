@@ -5,6 +5,7 @@ on:
     branches:
       - master
       - dev
+      - feature/android
   workflow_dispatch:
 
 env:
@@ -222,13 +223,83 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # Android — arm64-v8a + armeabi-v7a
+  # Builds the Rust cdylib with cargo-ndk, then assembles a debug APK and a
+  # debug AAB with Gradle. Release signing can be added later via secrets.
+  # ---------------------------------------------------------------------------
+  build-android:
+    name: Build (Android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Android NDK
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;27.2.12479018" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
+
+      - name: Install Rust targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build Rust library
+        run: |
+          cargo ndk \
+            -t arm64-v8a \
+            -t armeabi-v7a \
+            -o android/app/src/main/jniLibs \
+            build --release --features backend-camera2-android
+
+      - name: Build APK
+        run: |
+          chmod +x android/gradlew
+          cd android && ./gradlew assembleDebug
+
+      - name: Build AAB
+        run: cd android && ./gradlew bundleDebug
+
+      - name: Package outputs
+        run: |
+          mkdir -p android-app
+          cp android/app/build/outputs/apk/debug/app-debug.apk \
+             android-app/toucan-camera-server.apk
+          cp android/app/build/outputs/bundle/debug/app-debug.aab \
+             android-app/toucan-camera-server.aab
+          zip -r toucan-camera-server-android-app.zip android-app/
+          zip -r toucan-camera-server-android-lib.zip \
+            android/app/src/main/jniLibs/
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toucan-camera-server-android-app
+          path: toucan-camera-server-android-app.zip
+          if-no-files-found: error
+
+      - name: Upload lib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toucan-camera-server-android-lib
+          path: toucan-camera-server-android-lib.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # Attach to current draft release
   # Runs on master/dev pushes. Finds the most recent draft release and uploads
   # built binaries to it. Does nothing if no draft release exists.
   # ---------------------------------------------------------------------------
   release:
     name: Attach to draft release
-    needs: [build-macos, build-windows, build-linux]
+    needs: [build-macos, build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -251,6 +322,18 @@ jobs:
           name: toucan-camera-server-linux
           path: dist/
 
+      - name: Download Android app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toucan-camera-server-android-app
+          path: dist/
+
+      - name: Download Android lib artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toucan-camera-server-android-lib
+          path: dist/
+
       - name: Attach assets to current draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -267,6 +350,8 @@ jobs:
               dist/toucan-camera-server-macos.zip \
               dist/toucan-camera-server-windows.zip \
               dist/toucan-camera-server-linux.tar.gz \
+              dist/toucan-camera-server-android-app.zip \
+              dist/toucan-camera-server-android-lib.zip \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
           else

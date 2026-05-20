@@ -3,11 +3,20 @@ name = "toucan-camera-server"
 version = "0.0.5"
 edition = "2021"
 
+[lib]
+name = "toucan_camera_server"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "toucan-camera-server"
+path = "src/main.rs"
+
 [features]
 default = []
 backend-canon = []
 backend-webcam-macos = []
 backend-webcam-windows = ["dep:windows", "dep:windows-core", "dep:image"]
+backend-camera2-android = ["dep:image"]
 
 [dependencies]
 axum = "0.8"

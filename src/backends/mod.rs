@@ -6,3 +6,6 @@ pub mod webcam_macos;
 
 #[cfg(all(feature = "backend-webcam-windows", target_os = "windows"))]
 pub mod webcam_windows;
+
+#[cfg(all(feature = "backend-camera2-android", target_os = "android"))]
+pub mod camera2_android;
