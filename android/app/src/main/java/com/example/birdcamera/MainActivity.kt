@@ -1,11 +1,13 @@
-package com.example.birdcamera
+package com.brickfilms.toucancameraserver
 
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
@@ -28,9 +30,12 @@ class MainActivity : AppCompatActivity() {
                 startCameraService()
             } else {
                 statusText.text = "Camera permission denied — cannot start server."
+                updateUiState()
             }
         }
 
+    private lateinit var statusDot: View
+    private lateinit var statusLabel: TextView
     private lateinit var statusText: TextView
     private lateinit var startButton: Button
     private lateinit var stopButton: Button
@@ -39,6 +44,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        statusDot   = findViewById(R.id.status_dot)
+        statusLabel = findViewById(R.id.status_label)
         statusText  = findViewById(R.id.status_text)
         startButton = findViewById(R.id.btn_start)
         stopButton  = findViewById(R.id.btn_stop)
@@ -46,7 +53,12 @@ class MainActivity : AppCompatActivity() {
         startButton.setOnClickListener { onStartClicked() }
         stopButton.setOnClickListener  { onStopClicked()  }
 
-        updateStatusText()
+        updateUiState()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        updateUiState()
     }
 
     private fun onStartClicked() {
@@ -61,7 +73,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun onStopClicked() {
         stopService(Intent(this, CameraServerService::class.java))
-        statusText.text = "Server stopped."
+        CameraServerService.isRunning = false
+        updateUiState()
     }
 
     private fun startCameraService() {
@@ -71,22 +84,40 @@ class MainActivity : AppCompatActivity() {
         } else {
             startService(intent)
         }
-        updateStatusText()
+        CameraServerService.isRunning = true
+        updateUiState()
     }
 
-    private fun updateStatusText() {
+    private fun updateUiState() {
+        val running = CameraServerService.isRunning
         val ip = getWifiIpAddress()
-        statusText.text = if (ip != null)
-            "Server starting…\nURL: http://$ip:8040"
-        else
-            "Server starting…\n(Connect to WiFi to get the LAN address)"
+
+        if (running) {
+            val color = ContextCompat.getColor(this, R.color.status_running)
+            statusDot.backgroundTintList = ColorStateList.valueOf(color)
+            statusLabel.text = getString(R.string.status_running)
+            statusLabel.setTextColor(color)
+            statusText.text = if (ip != null)
+                "API available at\nhttp://$ip:8040"
+            else
+                "Server running\n(connect to WiFi for LAN address)"
+            startButton.isEnabled = false
+            stopButton.isEnabled  = true
+        } else {
+            val color = ContextCompat.getColor(this, R.color.status_stopped)
+            statusDot.backgroundTintList = ColorStateList.valueOf(color)
+            statusLabel.text = getString(R.string.status_stopped)
+            statusLabel.setTextColor(color)
+            statusText.text = getString(R.string.status_idle)
+            startButton.isEnabled = true
+            stopButton.isEnabled  = false
+        }
     }
 
     private fun getWifiIpAddress(): String? {
         val wifiMgr = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
         val ip = wifiMgr.connectionInfo?.ipAddress ?: return null
         if (ip == 0) return null
-        // Android gives the IP as a little-endian int on most devices
         val bytes = if (ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN) {
             byteArrayOf(
                 (ip and 0xFF).toByte(),

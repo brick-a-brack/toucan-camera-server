@@ -1,4 +1,4 @@
-package com.example.birdcamera
+package com.brickfilms.toucancameraserver
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -14,6 +14,9 @@ class CameraServerService : Service() {
     companion object {
         private const val CHANNEL_ID = "camera_server"
         private const val NOTIF_ID   = 1
+
+        @Volatile
+        var isRunning = false
 
         init {
             System.loadLibrary("toucan_camera_server")
@@ -38,11 +41,13 @@ class CameraServerService : Service() {
         } else {
             startForeground(NOTIF_ID, notification)
         }
+        isRunning = true
         startServer()
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        isRunning = false
         stopServer()
         super.onDestroy()
     }
@@ -55,7 +60,7 @@ class CameraServerService : Service() {
             "Camera Server",
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "Bird Camera HTTP server"
+            description = "Remote HTTP camera controller"
         }
         val mgr = getSystemService(NotificationManager::class.java)
         mgr.createNotificationChannel(channel)
@@ -63,7 +68,7 @@ class CameraServerService : Service() {
 
     private fun buildNotification(): Notification =
         Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Bird Camera Server")
+            .setContentTitle("Toucan Camera Server")
             .setContentText("API running on port 8040")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setOngoing(true)

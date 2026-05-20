@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "BirdCamera"
+rootProject.name = "Toucan Camera Server"
 include(":app")

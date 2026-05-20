@@ -180,10 +180,10 @@ pub async fn run_server() {
 
 #[cfg(target_os = "android")]
 pub mod android_jni {
-    use std::sync::OnceLock;
+    use std::sync::Mutex;
     use tokio::sync::watch;
 
-    static SHUTDOWN: OnceLock<watch::Sender<bool>> = OnceLock::new();
+    static SHUTDOWN: Mutex<Option<watch::Sender<bool>>> = Mutex::new(None);
 
     extern "C" {
         fn __android_log_write(prio: i32, tag: *const u8, text: *const u8) -> i32;
@@ -205,7 +205,7 @@ pub mod android_jni {
 
     /// Called from Kotlin: CameraServerService.startServer()
     #[no_mangle]
-    pub extern "C" fn Java_com_example_birdcamera_CameraServerService_startServer(
+    pub extern "C" fn Java_com_brickfilms_toucancameraserver_CameraServerService_startServer(
         _env: *mut std::ffi::c_void,
         _this: *mut std::ffi::c_void,
     ) {
@@ -217,7 +217,7 @@ pub mod android_jni {
         }));
 
         let (tx, mut rx) = watch::channel(false);
-        SHUTDOWN.get_or_init(|| tx);
+        *SHUTDOWN.lock().unwrap() = Some(tx);
 
         alog("spawning server thread");
         std::thread::Builder::new()
@@ -250,11 +250,11 @@ pub mod android_jni {
 
     /// Called from Kotlin: CameraServerService.stopServer()
     #[no_mangle]
-    pub extern "C" fn Java_com_example_birdcamera_CameraServerService_stopServer(
+    pub extern "C" fn Java_com_brickfilms_toucancameraserver_CameraServerService_stopServer(
         _env: *mut std::ffi::c_void,
         _this: *mut std::ffi::c_void,
     ) {
-        if let Some(tx) = SHUTDOWN.get() {
+        if let Some(tx) = SHUTDOWN.lock().unwrap().as_ref() {
             let _ = tx.send(true);
         }
     }

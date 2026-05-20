@@ -79,12 +79,14 @@ fn main() {
             "{ndk_home}/toolchains/llvm/prebuilt/{host_tag}/bin/{abi_triple}{api_level}-clang{clang_ext}"
         );
 
-        // cargo-ndk injects CFLAGS_<abi_triple>=--target=<abi_triple>21 which sets
-        // __ANDROID_API__=21 and makes all Camera2 NDK symbols appear unavailable
-        // (they require API 24+). Override the CFLAGS env var before cc-rs reads it
-        // so the target triple encodes the correct API level.
-        let cflags_var = format!("CFLAGS_{abi_triple}");
-        std::env::set_var(&cflags_var, format!("--target={abi_triple}{api_level}"));
+        // cargo-ndk injects CFLAGS_<rust-target>=--target=<abi-triple>21 which sets
+        // __ANDROID_API__=21 and makes Camera2 NDK symbols appear unavailable (API 24+).
+        // Override using the Rust target triple as the var name (matches cargo-ndk's key)
+        // but keep the ABI triple in the --target= value for clang.
+        std::env::set_var(
+            format!("CFLAGS_{target}"),
+            format!("--target={abi_triple}{api_level}"),
+        );
 
         cc::Build::new()
             .file("src/backends/camera2_android/bridge.c")

@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.example.birdcamera"
+    namespace = "com.brickfilms.toucancameraserver"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.example.birdcamera"
+        applicationId = "com.brickfilms.toucancameraserver"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
