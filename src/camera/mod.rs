@@ -52,19 +52,20 @@ impl DeviceId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParameterType {
-    // Unsorted yet
-    Aperture,
-    ShutterSpeed,
-    MeteringMode,
-    AfMode,
-    DriveMode,
-    Aspect,
-    ColorTemperature,
 
     // Stream format and quality
     ImageQuality,
     VideoStreamFormat,
     PowerLineFrequency,
+
+    // Color temperature
+    ColorTemperature,
+
+    // Aperture
+    Aperture,
+
+    // Shutter speed
+    ShutterSpeed,
 
     // Camera white balance
     WhiteBalance,

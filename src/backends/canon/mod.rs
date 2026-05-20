@@ -59,15 +59,12 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 // Shooting property IDs — from EDSDKTypes.h
 const PROP_DRIVE_MODE:           u32 = 0x00000401; // kEdsPropID_DriveMode
 const PROP_ISO:                  u32 = 0x00000402; // kEdsPropID_ISOSpeed
-const PROP_METERING_MODE:        u32 = 0x00000403; // kEdsPropID_MeteringMode
-const PROP_AF_MODE:              u32 = 0x00000404; // kEdsPropID_AFMode
 const PROP_AV:                   u32 = 0x00000405; // kEdsPropID_Av
 const PROP_TV:                   u32 = 0x00000406; // kEdsPropID_Tv
 const PROP_EXPOSURE_COMP:        u32 = 0x00000407; // kEdsPropID_ExposureCompensation
 const PROP_IMAGE_QUALITY:        u32 = 0x00000100; // kEdsPropID_ImageQuality
 const PROP_WHITE_BALANCE:        u32 = 0x00000106; // kEdsPropID_WhiteBalance
 const PROP_COLOR_TEMPERATURE:    u32 = 0x00000107; // kEdsPropID_ColorTemperature
-const PROP_ASPECT:               u32 = 0x01000431; // kEdsPropID_Aspect
 const PROP_EVF_ZOOM:             u32 = 0x00000507; // kEdsPropID_Evf_Zoom
 const PROP_EVF_ZOOM_POSITION:    u32 = 0x00000508; // kEdsPropID_Evf_ZoomPosition
 const PROP_EVF_COORDINATE_SYS:   u32 = 0x00000540; // kEdsPropID_Evf_CoordinateSystem
@@ -899,9 +896,6 @@ fn get_parameters_impl(
         (ParameterType::ImageQuality,    PROP_IMAGE_QUALITY,     decode_image_quality),
         (ParameterType::WhiteBalance,    PROP_WHITE_BALANCE,     decode_wb),
         (ParameterType::ColorTemperature,PROP_COLOR_TEMPERATURE, decode_color_temp),
-        (ParameterType::MeteringMode,    PROP_METERING_MODE,     decode_metering),
-        (ParameterType::AfMode,          PROP_AF_MODE,           decode_af),
-        (ParameterType::Aspect,          PROP_ASPECT,            decode_aspect),
     ];
 
     let mut result = Vec::new();
@@ -1262,11 +1256,7 @@ fn type_to_prop_id(param_type: ParameterType) -> Option<u32> {
         ParameterType::Iso                 => Some(PROP_ISO),
         ParameterType::WhiteBalance        => Some(PROP_WHITE_BALANCE),
         ParameterType::ColorTemperature    => Some(PROP_COLOR_TEMPERATURE),
-        ParameterType::MeteringMode        => Some(PROP_METERING_MODE),
-        ParameterType::AfMode              => Some(PROP_AF_MODE),
-        ParameterType::DriveMode           => Some(PROP_DRIVE_MODE),
         ParameterType::ExposureCompensation=> Some(PROP_EXPOSURE_COMP),
-        ParameterType::Aspect              => Some(PROP_ASPECT),
         ParameterType::LiveViewZoom                => Some(PROP_EVF_ZOOM),
         _ => None,
     }
@@ -1682,28 +1672,6 @@ fn decode_color_temp(code: i32) -> String {
     format!("{code}K")
 }
 
-fn decode_metering(code: i32) -> String {
-    let label = match code {
-        1 => "Spot",
-        3 => "Evaluative",
-        4 => "Partial",
-        5 => "Center-weighted",
-        _ => return format!("0x{code:02X}"),
-    };
-    label.to_string()
-}
-
-fn decode_af(code: i32) -> String {
-    let label = match code {
-        0 => "One-Shot",
-        1 => "AI Servo",
-        2 => "AI Focus",
-        3 => "Manual",
-        _ => return format!("0x{code:02X}"),
-    };
-    label.to_string()
-}
-
 
 fn decode_image_quality(code: i32) -> String {
     let label = match code as u32 {
@@ -1747,18 +1715,6 @@ fn decode_image_quality(code: i32) -> String {
         0x02640012 => "SRAW + L Normal",
         0x02640010 => "SRAW + L JPEG",
         _ => return format!("{code:#010x}"),
-    };
-    label.to_string()
-}
-
-fn decode_aspect(code: i32) -> String {
-    let label = match code {
-        0 => "3:2",
-        1 => "1:1",
-        2 => "4:3",
-        7 => "16:9",
-        8 => "1.375:1",
-        _ => return format!("0x{code:02X}"),
     };
     label.to_string()
 }
