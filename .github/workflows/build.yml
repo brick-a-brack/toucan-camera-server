@@ -5,6 +5,7 @@ on:
     branches:
       - master
       - dev
+      - feature/android
   workflow_dispatch:
 
 env:
@@ -222,13 +223,109 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # Android — arm64-v8a
+  # Builds the Rust cdylib with cargo-ndk, then assembles a debug APK and a
+  # debug AAB with Gradle. Release signing can be added later via secrets.
+  # ---------------------------------------------------------------------------
+  build-android:
+    name: Build (Android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Android NDK
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;27.2.12479018" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
+
+      - name: Install Rust targets
+        run: rustup target add aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build Rust library
+        run: |
+          cargo ndk \
+            -t arm64-v8a \
+            -o android/app/src/main/jniLibs \
+            build --release --features backend-camera2-android
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bump Android version
+        run: node .github/workflows/androidBumpVersion.js
+
+      - name: Build AAB (release)
+        run: |
+          chmod +x android/gradlew
+          cd android && ./gradlew bundleRelease
+
+      - name: Setup Bundletool
+        run: wget https://github.com/google/bundletool/releases/download/1.15.4/bundletool-all-1.15.4.jar -O bundletool.jar
+
+      - name: Sign AAB and extract signed APK
+        run: |
+          echo ${{ secrets.KS_KEY_B64 }} | base64 -d > keystore.jks
+          java -jar bundletool.jar build-apks \
+            --bundle=android/app/build/outputs/bundle/release/app-release.aab \
+            --output=android/app/build/outputs/bundle/release/app-release.apks \
+            --mode=universal \
+            --ks=keystore.jks \
+            --ks-pass=pass:${{ secrets.KS_STORE_PASS }} \
+            --ks-key-alias=${{ secrets.KS_ALIAS }} \
+            --key-pass=pass:${{ secrets.KS_ALIAS_PASS }}
+          jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
+            -storepass ${{ secrets.KS_STORE_PASS }} \
+            -keystore keystore.jks \
+            android/app/build/outputs/bundle/release/app-release.aab \
+            ${{ secrets.KS_ALIAS }} \
+            -keypass ${{ secrets.KS_ALIAS_PASS }}
+          cd android/app/build/outputs/bundle/release/
+          unzip -p app-release.apks universal.apk > app-release.apk
+
+      - name: Package outputs
+        run: |
+          mkdir -p app-android
+          cp android/app/build/outputs/bundle/release/app-release.aab \
+             app-android/toucan-camera-server.aab
+          cp android/app/build/outputs/bundle/release/app-release.apk \
+             app-android/toucan-camera-server.apk
+          cd app-android && zip -r ../toucan-camera-server-android.zip . && cd ..
+          cd android/app/src/main/jniLibs/arm64-v8a && zip -r $GITHUB_WORKSPACE/toucan-camera-lib-android.zip . && cd $GITHUB_WORKSPACE
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toucan-camera-server-android
+          path: toucan-camera-server-android.zip
+          if-no-files-found: error
+
+      - name: Upload lib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toucan-camera-server-lib-android
+          path: toucan-camera-lib-android.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
   # Attach to current draft release
   # Runs on master/dev pushes. Finds the most recent draft release and uploads
   # built binaries to it. Does nothing if no draft release exists.
   # ---------------------------------------------------------------------------
   release:
     name: Attach to draft release
-    needs: [build-macos, build-windows, build-linux]
+    needs: [build-macos, build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -251,6 +348,18 @@ jobs:
           name: toucan-camera-server-linux
           path: dist/
 
+      - name: Download Android app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toucan-camera-server-android
+          path: dist/
+
+      - name: Download Android lib artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toucan-camera-server-lib-android
+          path: dist/
+
       - name: Attach assets to current draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -267,6 +376,8 @@ jobs:
               dist/toucan-camera-server-macos.zip \
               dist/toucan-camera-server-windows.zip \
               dist/toucan-camera-server-linux.tar.gz \
+              dist/toucan-camera-server-android.zip \
+              dist/toucan-camera-lib-android.zip \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
           else

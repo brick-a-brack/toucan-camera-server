@@ -63,9 +63,11 @@ pub enum ParameterType {
 
     // Aperture
     Aperture,
+    ApertureAuto,
 
     // Shutter speed
     ShutterSpeed,
+    ShutterSpeedAuto,
 
     // Camera white balance
     WhiteBalance,
@@ -128,6 +130,9 @@ pub enum ParameterType {
     // ISO
     Iso,
     IsoAuto,
+
+    // Photo resolution (width × height encoded as w*10000+h)
+    PhotoResolution,
 
     // Live view controls
     LiveViewZoom,

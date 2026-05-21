@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::{
     body::Body,
@@ -34,7 +34,7 @@ type LiveViewSenders = Arc<Mutex<HashMap<String, Arc<broadcast::Sender<Arc<Bytes
 pub struct AppState {
     pub backends: BackendState,
     pub live_views: LiveViewSenders,
-    pub token: String,
+    pub token: Arc<RwLock<String>>,
 }
 
 impl axum::extract::FromRef<AppState> for BackendState {
@@ -44,7 +44,7 @@ impl axum::extract::FromRef<AppState> for BackendState {
 }
 
 impl AppState {
-    pub fn new(backends: BackendState, token: String) -> Self {
+    pub fn new(backends: BackendState, token: Arc<RwLock<String>>) -> Self {
         Self {
             backends,
             live_views: Arc::new(Mutex::new(HashMap::new())),
@@ -199,6 +199,11 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                 // at their natural pace; fast backends (AVFoundation) are
                 // prevented from spinning at CPU speed.
                 let frame_interval = tokio::time::Duration::from_millis(32);
+                // Break after ~10 s of consecutive not-ready frames to avoid
+                // spinning forever when the camera stalls (e.g. after a
+                // parameter change that disrupts the capture pipeline).
+                let mut consecutive_misses: u32 = 0;
+                const MAX_CONSECUTIVE_MISSES: u32 = 300;
 
                 loop {
                     let tick = tokio::time::Instant::now();
@@ -215,6 +220,7 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
 
                     match result {
                         Ok(Ok(jpeg)) => {
+                            consecutive_misses = 0;
                             let mut buf = format!(
                                 "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
                                 jpeg.len()
@@ -229,7 +235,12 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                             }
                         }
                         Ok(Err(crate::camera::CameraError::SdkError(0x0000_A102))) => {
-                            // EDS_ERR_OBJECT_NOTREADY: EVF not ready yet, skip frame.
+                            // EVF / camera not ready yet — skip frame.
+                            consecutive_misses += 1;
+                            if consecutive_misses >= MAX_CONSECUTIVE_MISSES {
+                                eprintln!("[warn] live view stalled for {native_id} after {consecutive_misses} consecutive misses, stopping loop");
+                                break;
+                            }
                         }
                         Ok(Err(e)) => {
                             eprintln!("[error] live view frame error for {native_id}: {e}");
