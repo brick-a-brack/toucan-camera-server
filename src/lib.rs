@@ -108,18 +108,23 @@ pub fn build_backends() -> BuiltBackends {
 pub struct Args {
     pub token: String,
     pub port:  Option<u16>,
+    /// Bind on `0.0.0.0` (LAN) instead of loopback. Always on for Android.
+    pub expose: bool,
 }
 
 pub fn parse_args() -> Args {
     let mut args = std::env::args().skip(1);
     let mut token = None::<String>;
     let mut port  = None::<u16>;
+    // Android is LAN-exposed by design; --expose opts in on other platforms.
+    let mut expose = cfg!(target_os = "android");
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--token" => token = args.next(),
-            "--port"  => port  = args.next().and_then(|v| v.parse().ok()),
-            _         => {}
+            "--token"  => token = args.next(),
+            "--port"   => port  = args.next().and_then(|v| v.parse().ok()),
+            "--expose" => expose = true,
+            _          => {}
         }
     }
 
@@ -129,6 +134,7 @@ pub fn parse_args() -> Args {
             uuid::Uuid::new_v4().to_string()
         }),
         port,
+        expose,
     }
 }
 
@@ -137,23 +143,37 @@ pub fn resolve_port(explicit: Option<u16>) -> u16 {
 }
 
 /// Returns the bind address for the HTTP server.
-/// On Android defaults to 0.0.0.0 (LAN accessible) so other devices on the
-/// same network can reach the API. On all other platforms defaults to 127.0.0.1
-/// (loopback only). The BIND_ADDR environment variable always takes precedence.
-pub fn resolve_bind_addr() -> IpAddr {
+///
+/// Precedence: the `BIND_ADDR` environment variable always wins. Otherwise
+/// Android binds `0.0.0.0` (LAN accessible) by design, and on every other
+/// platform `expose` selects `0.0.0.0` (LAN) vs. `127.0.0.1` (loopback only,
+/// the default).
+pub fn resolve_bind_addr(expose: bool) -> IpAddr {
+    use std::net::Ipv4Addr;
+
     if let Ok(addr) = std::env::var("BIND_ADDR") {
         if let Ok(ip) = addr.parse::<IpAddr>() {
             return ip;
         }
     }
+
     #[cfg(target_os = "android")]
-    { return IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED); }
-    #[allow(unreachable_code)]
-    IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    {
+        let _ = expose; // Android is always LAN-exposed.
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        if expose {
+            IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        } else {
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        }
+    }
 }
 
-pub async fn bind_listener(port: u16) -> tokio::net::TcpListener {
-    let host = resolve_bind_addr();
+pub async fn bind_listener(port: u16, expose: bool) -> tokio::net::TcpListener {
+    let host = resolve_bind_addr(expose);
     if let Ok(l) = tokio::net::TcpListener::bind((host, port)).await {
         return l;
     }
@@ -203,8 +223,9 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 pub async fn run_server() {
-    let args  = parse_args();
-    let port  = resolve_port(args.port);
+    let args   = parse_args();
+    let port   = resolve_port(args.port);
+    let expose = args.expose;
 
     #[cfg(target_os = "android")]
     let initial_token = {
@@ -232,9 +253,10 @@ pub async fn run_server() {
     let app = build_router(state);
 
     eprintln!("[info] binding on port {port}");
-    let listener = bind_listener(port).await;
+    let listener = bind_listener(port, expose).await;
     let addr = listener.local_addr().unwrap();
     eprintln!("[config] PORT={}", addr.port());
+    eprintln!("[config] EXPOSE={expose}");
     eprintln!("[config] TOKEN={}", token.read().unwrap());
     eprintln!("[info] Listening on http://{}/?token={}", addr, token.read().unwrap());
     axum::serve(listener, app).await.unwrap();
