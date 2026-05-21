@@ -1297,6 +1297,17 @@ unsafe fn enumerate_video_formats(reader: &IMFSourceReader) -> Vec<VideoFormatIn
             })
     });
 
+    // Keep only the first format per resolution (after sort, this is MJPEG > YUV, highest fps).
+    let mut seen_resolutions: Vec<(u32, u32)> = Vec::new();
+    formats.retain(|f| {
+        if seen_resolutions.contains(&(f.width, f.height)) {
+            false
+        } else {
+            seen_resolutions.push((f.width, f.height));
+            true
+        }
+    });
+
     formats
 }
 
