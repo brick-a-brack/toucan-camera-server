@@ -302,7 +302,7 @@ jobs:
           cp android/app/build/outputs/bundle/release/app-release.apk \
              app-android/toucan-camera-server.apk
           cd app-android && zip -r ../toucan-camera-server-android.zip . && cd ..
-          cd android/app/src/main/jniLibs/arm64-v8a && zip -r $GITHUB_WORKSPACE/toucan-camera-server-lib-android.zip . && cd $GITHUB_WORKSPACE
+          cd android/app/src/main/jniLibs/arm64-v8a && zip -r $GITHUB_WORKSPACE/toucan-camera-lib-android.zip . && cd $GITHUB_WORKSPACE
 
       - name: Upload app artifact
         uses: actions/upload-artifact@v4
@@ -315,7 +315,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: toucan-camera-server-lib-android
-          path: toucan-camera-server-lib-android.zip
+          path: toucan-camera-lib-android.zip
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -377,7 +377,7 @@ jobs:
               dist/toucan-camera-server-windows.zip \
               dist/toucan-camera-server-linux.tar.gz \
               dist/toucan-camera-server-android.zip \
-              dist/toucan-camera-server-lib-android.zip \
+              dist/toucan-camera-lib-android.zip \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
           else

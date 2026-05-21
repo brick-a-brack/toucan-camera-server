@@ -562,6 +562,7 @@ fn c_kind_to_param_type(kind: &str) -> Option<ParameterType> {
         "ev_compensation"       => Some(ParameterType::ExposureCompensation),
         "focus_distance_x100"   => Some(ParameterType::Focus),
         "zoom_x100"             => Some(ParameterType::Zoom),
+        "photo_resolution"      => Some(ParameterType::PhotoResolution),
         _ => None,
     }
 }
@@ -579,6 +580,7 @@ fn param_type_to_c_kind(pt: ParameterType) -> Option<&'static str> {
         ParameterType::ExposureCompensation => Some("ev_compensation"),
         ParameterType::Focus                => Some("focus_distance_x100"),
         ParameterType::Zoom                 => Some("zoom_x100"),
+        ParameterType::PhotoResolution      => Some("photo_resolution"),
         _ => None,
     }
 }

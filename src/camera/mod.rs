@@ -131,6 +131,9 @@ pub enum ParameterType {
     Iso,
     IsoAuto,
 
+    // Photo resolution (width × height encoded as w*10000+h)
+    PhotoResolution,
+
     // Live view controls
     LiveViewZoom,
     LiveViewPan,

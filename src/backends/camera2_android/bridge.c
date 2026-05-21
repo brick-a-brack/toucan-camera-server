@@ -73,6 +73,7 @@ typedef struct {
     int32_t cur_zoom_x100;        // zoom factor × 100  (100 = 1.0×)
     int32_t cur_ev_comp;
     int32_t cur_focus_x100;       // diopters × 100
+    int32_t cur_photo_res;        // w*10000+h, 0 = use max available
 } AcSession;
 
 // ---------------------------------------------------------------------------
@@ -320,6 +321,7 @@ void *ac_open_session(const char *camera_id) {
     s->cur_zoom_x100        = 100;   // 1.0×
     s->cur_ev_comp          = 0;
     s->cur_focus_x100       = 0;     // infinity
+    s->cur_photo_res        = 0;     // 0 = pick max on first capture
 
     s->manager = ACameraManager_create();
     if (!s->manager) { LOGE("ACameraManager_create failed"); goto fail; }
@@ -686,6 +688,18 @@ static void apply_tracked_settings(AcSession *s, ACaptureRequest *req, int is_pr
     }
 }
 
+static int has_jpeg_format(ACameraMetadata *chars) {
+    ACameraMetadata_const_entry entry = {0};
+    if (ACameraMetadata_getConstEntry(
+            chars, ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS, &entry) != ACAMERA_OK)
+        return 0;
+    for (uint32_t i = 0; i + 3 < entry.count; i += 4) {
+        if (entry.data.i32[i] == 0x100 && entry.data.i32[i + 3] == 0)
+            return 1;
+    }
+    return 0;
+}
+
 int ac_capture_photo(void *handle,
                      uint8_t **out_data, size_t *out_size,
                      int32_t *out_width, int32_t *out_height,
@@ -699,10 +713,17 @@ int ac_capture_photo(void *handle,
     if (s->session) ACameraCaptureSession_stopRepeating(s->session);
     usleep(80000); // let last preview frame drain
 
-    // ---- 2. Build a JPEG AImageReader at max resolution ------------------
+    // ---- 2. Determine photo resolution -----------------------------------
     int32_t photo_w = 0, photo_h = 0;
-    int has_jpeg = pick_photo_size(s->chars, &photo_w, &photo_h);
-    if (!has_jpeg) { photo_w = 1280; photo_h = 720; }
+    int has_jpeg;
+    if (s->cur_photo_res > 0) {
+        photo_w  = s->cur_photo_res / 10000;
+        photo_h  = s->cur_photo_res % 10000;
+        has_jpeg = has_jpeg_format(s->chars);
+    } else {
+        has_jpeg = pick_photo_size(s->chars, &photo_w, &photo_h);
+        if (!has_jpeg) { photo_w = 1280; photo_h = 720; }
+    }
     LOGI("Photo capture: %dx%d %s", photo_w, photo_h, has_jpeg ? "JPEG" : "YUV");
 
     AImageReader *jpeg_reader = NULL;
@@ -999,6 +1020,59 @@ int ac_get_parameters(void *handle, AcParamDesc *out, int capacity) {
         PUSH("zoom_x100", s->cur_zoom_x100, 1, 100, max_z, 10, 0,);
     }
 
+    // Photo resolution — enumerate all available JPEG output sizes, sorted by
+    // descending area, encoded as w*10000+h so they round-trip as a single i32.
+    if (ACameraMetadata_getConstEntry(
+            s->chars, ACAMERA_SCALER_AVAILABLE_STREAM_CONFIGURATIONS, &entry) == ACAMERA_OK
+        && n < capacity) {
+        int32_t res_w[AC_MAX_OPTIONS], res_h[AC_MAX_OPTIONS];
+        int res_count = 0;
+
+        for (uint32_t i = 0; i + 3 < entry.count && res_count < AC_MAX_OPTIONS; i += 4) {
+            if (entry.data.i32[i] != 0x100 || entry.data.i32[i + 3] != 0) continue;
+            res_w[res_count] = entry.data.i32[i + 1];
+            res_h[res_count] = entry.data.i32[i + 2];
+            res_count++;
+        }
+
+        // Sort descending by pixel area (simple insertion sort — ≤ 64 items)
+        for (int i = 1; i < res_count; i++) {
+            int32_t tw = res_w[i], th = res_h[i];
+            int j = i - 1;
+            while (j >= 0 && res_w[j] * res_h[j] < tw * th) {
+                res_w[j + 1] = res_w[j]; res_h[j + 1] = res_h[j];
+                j--;
+            }
+            res_w[j + 1] = tw; res_h[j + 1] = th;
+        }
+
+        if (res_count > 0) {
+            // Default to the largest resolution on first call
+            if (s->cur_photo_res == 0)
+                s->cur_photo_res = res_w[0] * 10000 + res_h[0];
+
+            AcParamDesc *d = &out[n];
+            strncpy(d->kind, "photo_resolution", AC_MAX_KIND - 1);
+            d->kind[AC_MAX_KIND - 1] = '\0';
+            d->current     = s->cur_photo_res;
+            d->is_range    = 0;
+            d->num_options = res_count;
+
+            for (int i = 0; i < res_count; i++) {
+                d->options[i].value = res_w[i] * 10000 + res_h[i];
+                // Label: "WxH (NMP)" with one decimal when not a round number
+                int mp10 = (int)((float)(res_w[i] * res_h[i]) / 100000.0f + 0.5f);
+                if (mp10 % 10 == 0)
+                    snprintf(d->options[i].label, AC_MAX_LABEL, "%dx%d (%dMP)",
+                             res_w[i], res_h[i], mp10 / 10);
+                else
+                    snprintf(d->options[i].label, AC_MAX_LABEL, "%dx%d (%d.%dMP)",
+                             res_w[i], res_h[i], mp10 / 10, mp10 % 10);
+            }
+            n++;
+        }
+    }
+
 #undef PUSH
 
     return n;
@@ -1031,6 +1105,12 @@ int ac_set_parameter(void *handle, const char *kind, int32_t value) {
         s->cur_focus_x100 = value;
     } else if (strcmp(kind, "zoom_x100") == 0) {
         s->cur_zoom_x100 = value;
+    } else if (strcmp(kind, "photo_resolution") == 0) {
+        // Resolution only takes effect at the next capture — no preview request change.
+        s->cur_photo_res = value;
+        LOGI("ac_set_parameter: 'photo_resolution' = %dx%d",
+             value / 10000, value % 10000);
+        return 0;
     } else {
         return -1;
     }
