@@ -55,6 +55,7 @@
       "PowerShell(cargo ndk *)",
       "Bash(./gradlew installDebug)",
       "Bash(./gradlew assembleDebug)",
+<<<<<<< HEAD
       "Bash(xargs grep *)",
       "Bash(adb uninstall *)",
       "Bash(xargs ls *)",
@@ -63,6 +64,9 @@
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\mbaco\\\\Documents\\\\dev\\\\brickabrack\\\\bird-camera-server\\\\android\\\\app\\\\build\" -Recurse | Where-Object { -not $_.PSIsContainer } | Select-Object -First 30 FullName)",
       "PowerShell(Get-Item *)",
       "PowerShell(adb install *)"
+=======
+      "Bash(xargs grep *)"
+>>>>>>> 73a5afe8264056374f2b54e35e19dd72b07d66e8
     ]
   }
 }

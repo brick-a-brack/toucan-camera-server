@@ -1,2 +1,31 @@
+# Rust
 /target
 /external
+
+# Claude
+.claude/settings.local.json
+
+# Android build outputs & caches
+android/.gradle/
+android/.kotlin/
+android/app/build/
+android/build/
+android/local.properties
+android/generated/
+
+# Android JNI libs (built by cargo-ndk, not committed)
+android/app/src/main/jniLibs/
+
+# Android keystore / signing
+*.jks
+*.keystore
+
+# Android IDE
+.idea/
+*.iml
+android/.idea/
+android/app/.idea/
+
+# Gradle caches
+.gradle/
+buildSrc/.gradle/
