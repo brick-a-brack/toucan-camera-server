@@ -258,21 +258,41 @@ jobs:
             -o android/app/src/main/jniLibs \
             build --release --features backend-camera2-android
 
-      - name: Build APK
+      - name: Build AAB (release)
         run: |
           chmod +x android/gradlew
-          cd android && ./gradlew assembleDebug
+          cd android && ./gradlew bundleRelease
 
-      - name: Build AAB
-        run: cd android && ./gradlew bundleDebug
+      - name: Setup Bundletool
+        run: wget https://github.com/google/bundletool/releases/download/1.15.4/bundletool-all-1.15.4.jar -O bundletool.jar
+
+      - name: Sign AAB and extract signed APK
+        run: |
+          echo ${{ secrets.KS_KEY_B64 }} | base64 -d > keystore.jks
+          java -jar bundletool.jar build-apks \
+            --bundle=android/app/build/outputs/bundle/release/app-release.aab \
+            --output=android/app/build/outputs/bundle/release/app-release.apks \
+            --mode=universal \
+            --ks=keystore.jks \
+            --ks-pass=pass:${{ secrets.KS_STORE_PASS }} \
+            --ks-key-alias=${{ secrets.KS_ALIAS }} \
+            --key-pass=pass:${{ secrets.KS_ALIAS_PASS }}
+          jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
+            -storepass ${{ secrets.KS_STORE_PASS }} \
+            -keystore keystore.jks \
+            android/app/build/outputs/bundle/release/app-release.aab \
+            ${{ secrets.KS_ALIAS }} \
+            -keypass ${{ secrets.KS_ALIAS_PASS }}
+          cd android/app/build/outputs/bundle/release/
+          unzip -p app-release.apks universal.apk > app-release.apk
 
       - name: Package outputs
         run: |
           mkdir -p android-app
-          cp android/app/build/outputs/apk/debug/app-debug.apk \
-             android-app/toucan-camera-server.apk
-          cp android/app/build/outputs/bundle/debug/app-debug.aab \
+          cp android/app/build/outputs/bundle/release/app-release.aab \
              android-app/toucan-camera-server.aab
+          cp android/app/build/outputs/bundle/release/app-release.apk \
+             android-app/toucan-camera-server.apk
           zip -r toucan-camera-server-android-app.zip android-app/
           zip -r toucan-camera-server-android-lib.zip \
             android/app/src/main/jniLibs/

@@ -65,7 +65,3 @@ Feel free to make pull-requests or report issues 😉
 2. Using AVFoundation and IOKit
 3. Using V4L2
 4. Using camera2
-
-$env:PATH = "C:\Users\mbaco\AppData\Local\Android\Sdk\ndk\28.0.12674087\toolchains\llvm\prebuilt\windows-x86_64\bin;" + $env:PATH
-$env:ANDROID_NDK_HOME = "C:\Users\mbaco\AppData\Local\Android\Sdk\ndk\28.0.12674087"
-// cargo ndk -t arm64-v8a -o android/app/src/main/jniLibs build --lib --release --features backend-camera2-android

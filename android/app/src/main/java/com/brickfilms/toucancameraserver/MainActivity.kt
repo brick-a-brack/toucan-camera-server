@@ -22,8 +22,6 @@ import com.brickfilms.toucancameraserver.ui.theme.ToucanTheme
 import java.net.InetAddress
 import java.nio.ByteOrder
 import kotlin.random.Random
-import kotlin.time.Duration.Companion.seconds
-import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
 
@@ -52,32 +50,18 @@ class MainActivity : ComponentActivity() {
                     )
                 }
 
-                LaunchedEffect(uiState.status) {
-                    if (uiState.isRunning) {
-                        while (true) {
-                            delay(1_000)
-                            uiState = uiState.copy(uptime = uiState.uptime + 1.seconds)
-                        }
-                    }
-                }
-
                 ServerScreen(
                     state = uiState,
                     onToggleServer = {
                         if (uiState.isRunning) {
                             stopService(Intent(this, CameraServerService::class.java))
-                            uiState = uiState.copy(
-                                status = ServerStatus.Idle,
-                                uptime = kotlin.time.Duration.ZERO,
-                                clients = 0,
-                            )
+                            uiState = uiState.copy(status = ServerStatus.Idle)
                         } else {
                             CameraServerService.setToken(uiState.token)
                             requestCameraAndStart {
                                 uiState = uiState.copy(
                                     status = ServerStatus.Running,
                                     address = getWifiIpAddress() ?: "–",
-                                    uptime = kotlin.time.Duration.ZERO,
                                 )
                             }
                         }
