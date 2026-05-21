@@ -62,15 +62,17 @@ typedef struct {
     int32_t                      sess_ready;
 
     // Tracked current values (updated by ac_set_parameter)
-    int32_t cur_ae_mode;       // 0=manual, 1=auto
+    int32_t cur_iso_auto;         // 1=ISO auto, 0=manual
+    int32_t cur_shutter_auto;     // 1=shutter auto, 0=manual
     int32_t cur_iso;
-    int32_t cur_shutter_us;    // microseconds
-    int32_t cur_aperture_x100; // f-number × 100
-    int32_t cur_awb_mode;
+    int32_t cur_shutter_us;       // microseconds
+    int32_t cur_aperture_x100;    // f-number × 100
+    int32_t cur_awb_auto;    // 1 = AWB auto, 0 = manual (AWB_OFF + color correction gains)
+    int32_t cur_color_temp;  // color temperature in Kelvin, applied when cur_awb_auto == 0
     int32_t cur_af_mode;
-    int32_t cur_zoom_x100;     // zoom factor × 100  (100 = 1.0×)
+    int32_t cur_zoom_x100;        // zoom factor × 100  (100 = 1.0×)
     int32_t cur_ev_comp;
-    int32_t cur_focus_x100;    // diopters × 100
+    int32_t cur_focus_x100;       // diopters × 100
 } AcSession;
 
 // ---------------------------------------------------------------------------
@@ -307,15 +309,17 @@ void *ac_open_session(const char *camera_id) {
     pthread_cond_init (&s->photo_cond,  NULL);
 
     // Default state: auto everything
-    s->cur_ae_mode       = 1;  // auto
-    s->cur_iso           = 100;
-    s->cur_shutter_us    = 16667; // ~1/60 s
-    s->cur_aperture_x100 = 0;     // 0 = not explicitly set; skip writing to capture request
-    s->cur_awb_mode      = 1;     // auto
-    s->cur_af_mode       = 3;     // continuous-video
-    s->cur_zoom_x100     = 100;   // 1.0×
-    s->cur_ev_comp       = 0;
-    s->cur_focus_x100    = 0;     // infinity
+    s->cur_iso_auto         = 1;
+    s->cur_shutter_auto     = 1;
+    s->cur_iso              = 100;
+    s->cur_shutter_us       = 16667; // ~1/60 s
+    s->cur_aperture_x100    = 0;     // 0 = not explicitly set; skip writing to capture request
+    s->cur_awb_auto         = 1;     // AWB auto on connect
+    s->cur_color_temp       = 5500;  // daylight, used when wb_auto is turned off
+    s->cur_af_mode          = 3;     // continuous-video (= focus auto on)
+    s->cur_zoom_x100        = 100;   // 1.0×
+    s->cur_ev_comp          = 0;
+    s->cur_focus_x100       = 0;     // infinity
 
     s->manager = ACameraManager_create();
     if (!s->manager) { LOGE("ACameraManager_create failed"); goto fail; }
@@ -583,17 +587,52 @@ static int wait_for_active(AcSession *s, int timeout_sec) {
 // Called by ac_set_parameter (preview_req) and ac_capture_photo (jpeg_req).
 // ---------------------------------------------------------------------------
 
-static void apply_tracked_settings(AcSession *s, ACaptureRequest *req) {
-    // AE mode (0 = OFF/manual, 1 = ON/auto)
-    uint8_t ae_mode = (uint8_t)s->cur_ae_mode;
+// Map a color temperature (Kelvin) to the closest ACAMERA_CONTROL_AWB_MODE preset.
+// COLOR_CORRECTION_GAINS only affects the RAW pipeline on most phones; for YUV
+// preview/capture the AWB is applied by the ISP before Camera2 sees the frame.
+// AWB_MODE presets are the only reliable per-frame white-balance control on YUV.
+//
+// Preset constants (from NdkCameraMetadataTags.h):
+//   ACAMERA_CONTROL_AWB_MODE_OFF              = 0
+//   ACAMERA_CONTROL_AWB_MODE_AUTO             = 1
+//   ACAMERA_CONTROL_AWB_MODE_INCANDESCENT     = 2  (~2700 K)
+//   ACAMERA_CONTROL_AWB_MODE_FLUORESCENT      = 3  (~4000 K)
+//   ACAMERA_CONTROL_AWB_MODE_WARM_FLUORESCENT = 4  (~3000 K)
+//   ACAMERA_CONTROL_AWB_MODE_DAYLIGHT         = 5  (~5500 K)
+//   ACAMERA_CONTROL_AWB_MODE_CLOUDY_DAYLIGHT  = 6  (~6500 K)
+//   ACAMERA_CONTROL_AWB_MODE_TWILIGHT         = 7  (~8000 K)
+//   ACAMERA_CONTROL_AWB_MODE_SHADE            = 8  (~7500 K)
+static uint8_t kelvin_to_awb_preset(int32_t kelvin) {
+    if (kelvin < 2850) return 2; // INCANDESCENT  ~2700 K
+    if (kelvin < 3500) return 4; // WARM_FLUORESCENT ~3000 K
+    if (kelvin < 4750) return 3; // FLUORESCENT   ~4000 K
+    if (kelvin < 6000) return 5; // DAYLIGHT       ~5500 K
+    if (kelvin < 7000) return 6; // CLOUDY_DAYLIGHT ~6500 K
+    return 7;                    // TWILIGHT        ~8000 K
+}
+
+// Max preview exposure: 1/30 s keeps the live view at ≥ 30 fps even when the
+// user selects a slow shutter for photo capture. The native camera app uses the
+// same trick — preview and capture exposure are independent.
+#define PREVIEW_MAX_EXPOSURE_NS 33333333LL  /* 1/30 s */
+
+static void apply_tracked_settings(AcSession *s, ACaptureRequest *req, int is_preview) {
+    // AE_MODE=OFF as soon as either ISO or shutter is manual.
+    // Camera2 ignores SENSOR_EXPOSURE_TIME and SENSOR_SENSITIVITY entirely when
+    // AE_MODE=ON — there is no semi-manual mode in the standard API.
+    // When only one is manual we hold the other at its last tracked value;
+    // not perfect but far better than the setting being silently ignored.
+    int ae_off = (!s->cur_iso_auto || !s->cur_shutter_auto);
+    uint8_t ae_mode = ae_off ? 0 : 1;
     ACaptureRequest_setEntry_u8(req, ACAMERA_CONTROL_AE_MODE, 1, &ae_mode);
 
-    // Manual exposure: only meaningful (and only applied) when AE is OFF.
-    // Camera2 ignores SENSOR_SENSITIVITY / SENSOR_EXPOSURE_TIME while AE is ON.
-    if (s->cur_ae_mode == 0) {
+    if (ae_off) {
         int32_t iso = s->cur_iso;
-        int64_t ns  = (int64_t)s->cur_shutter_us * 1000LL;
-        ACaptureRequest_setEntry_i32(req, ACAMERA_SENSOR_SENSITIVITY,   1, &iso);
+        ACaptureRequest_setEntry_i32(req, ACAMERA_SENSOR_SENSITIVITY, 1, &iso);
+
+        int64_t ns = (int64_t)s->cur_shutter_us * 1000LL;
+        if (is_preview && ns > PREVIEW_MAX_EXPOSURE_NS)
+            ns = PREVIEW_MAX_EXPOSURE_NS;
         ACaptureRequest_setEntry_i64(req, ACAMERA_SENSOR_EXPOSURE_TIME, 1, &ns);
     }
 
@@ -603,8 +642,10 @@ static void apply_tracked_settings(AcSession *s, ACaptureRequest *req) {
         ACaptureRequest_setEntry_float(req, ACAMERA_LENS_APERTURE, 1, &f);
     }
 
-    // White balance
-    uint8_t awb = (uint8_t)s->cur_awb_mode;
+    // White balance: auto uses AWB_AUTO; manual maps the Kelvin value to the
+    // closest AWB preset. COLOR_CORRECTION_GAINS only affects the RAW pipeline
+    // on most phones — AWB_MODE presets are the reliable path for YUV frames.
+    uint8_t awb = s->cur_awb_auto ? 1 : kelvin_to_awb_preset(s->cur_color_temp);
     ACaptureRequest_setEntry_u8(req, ACAMERA_CONTROL_AWB_MODE, 1, &awb);
 
     // Auto-focus mode
@@ -621,8 +662,9 @@ static void apply_tracked_settings(AcSession *s, ACaptureRequest *req) {
     int32_t ev = s->cur_ev_comp;
     ACaptureRequest_setEntry_i32(req, ACAMERA_CONTROL_AE_EXPOSURE_COMPENSATION, 1, &ev);
 
-    // Zoom via SCALER_CROP_REGION (compatible with API 24+, unlike CONTROL_ZOOM_RATIO)
-    if (s->cur_zoom_x100 > 100 && s->chars) {
+    // Zoom via SCALER_CROP_REGION (compatible with API 24+, unlike CONTROL_ZOOM_RATIO).
+    // Always written — including zoom=100 (1×) which resets to the full active array.
+    if (s->chars) {
         ACameraMetadata_const_entry entry = {0};
         if (ACameraMetadata_getConstEntry(s->chars,
                 ACAMERA_SENSOR_INFO_ACTIVE_ARRAY_SIZE, &entry) == ACAMERA_OK
@@ -698,7 +740,7 @@ int ac_capture_photo(void *handle,
     if (ACameraDevice_createCaptureRequest(s->device, TEMPLATE_STILL_CAPTURE, &jpeg_req) != ACAMERA_OK)
         goto restore;
     ACaptureRequest_addTarget(jpeg_req, jpeg_target);
-    apply_tracked_settings(s, jpeg_req);
+    apply_tracked_settings(s, jpeg_req, /*is_preview=*/0);
 
     pthread_mutex_lock(&s->photo_mutex);
     free(s->photo_data); s->photo_data = NULL; s->photo_size = 0; s->photo_ready = 0;
@@ -772,6 +814,52 @@ void ac_free_frame(uint8_t *data) {
 // Parameters
 // ---------------------------------------------------------------------------
 
+// Generate 1/3-stop shutter speed options covering [ns_min, ns_max].
+// Steps are anchored to 1 s and spaced at 2^(1/3) ≈ 1.26× intervals.
+// Labels: "1/N" for sub-second exposures, "N.X\"" for ≥ 1 second.
+// Consecutive steps that round to the same label are deduplicated (keeps
+// the faster value, which is closest to the exact fraction).
+static int generate_shutter_options(int64_t ns_min, int64_t ns_max,
+                                     AcParamOption *opts, int max_opts) {
+    // Start one step below the first value >= ns_min to avoid off-by-one.
+    int k = (int)floor(log2((double)ns_min / 1e9) * 3.0) - 1;
+    int n = 0;
+    char prev_label[AC_MAX_LABEL] = "";
+
+    while (n < max_opts) {
+        double ns_f = 1e9 * pow(2.0, (double)k / 3.0);
+        int64_t ns  = (int64_t)(ns_f + 0.5);
+
+        if (ns > ns_max) break;
+
+        if (ns >= ns_min) {
+            char label[AC_MAX_LABEL];
+            if (ns < 1000000000LL) {
+                int denom = (int)(1e9 / ns_f + 0.5);
+                if (denom < 2) denom = 2;
+                snprintf(label, AC_MAX_LABEL, "1/%d", denom);
+            } else {
+                double secs = ns_f / 1e9;
+                int t10 = (int)(secs * 10.0 + 0.5);
+                if (t10 % 10 == 0)
+                    snprintf(label, AC_MAX_LABEL, "%d\"", t10 / 10);
+                else
+                    snprintf(label, AC_MAX_LABEL, "%d.%d\"", t10 / 10, t10 % 10);
+            }
+
+            if (strcmp(label, prev_label) != 0) {
+                opts[n].value = (int32_t)((ns + 500LL) / 1000LL);
+                strncpy(opts[n].label, label, AC_MAX_LABEL - 1);
+                opts[n].label[AC_MAX_LABEL - 1] = '\0';
+                strncpy(prev_label, label, sizeof(prev_label) - 1);
+                n++;
+            }
+        }
+        k++;
+    }
+    return n;
+}
+
 int ac_get_parameters(void *handle, AcParamDesc *out, int capacity) {
     AcSession *s = (AcSession *)handle;
     if (!s || !s->chars || capacity <= 0) return -1;
@@ -793,10 +881,8 @@ int ac_get_parameters(void *handle, AcParamDesc *out, int capacity) {
         n++;                                                     \
     } } while (0)
 
-    // AE mode (boolean: 1 = auto, 0 = manual)
-    PUSH("ae_mode", s->cur_ae_mode, 0, 0, 0, 0, 2,
-         { out[n].options[0] = (AcParamOption){0, "Manual"};
-           out[n].options[1] = (AcParamOption){1, "Auto"}; });
+    PUSH("iso_auto",     s->cur_iso_auto,     0, 0, 0, 0, 0,);
+    PUSH("shutter_auto", s->cur_shutter_auto, 0, 0, 0, 0, 0,);
 
     // ISO — only meaningful when ae_mode == manual (0)
     if (ACameraMetadata_getConstEntry(
@@ -807,23 +893,48 @@ int ac_get_parameters(void *handle, AcParamDesc *out, int capacity) {
         PUSH("iso", s->cur_iso, 1, iso_min, iso_max, 50, 0,);
     }
 
-    // Shutter speed in microseconds — only meaningful when ae_mode == manual
+    // Shutter speed — discrete select of 1/3-stop steps derived from the
+    // hardware exposure range. A continuous range is avoided because any
+    // mid-slider value easily maps to multi-second exposures that make the
+    // preview crawl.
     if (ACameraMetadata_getConstEntry(
             s->chars, ACAMERA_SENSOR_INFO_EXPOSURE_TIME_RANGE, &entry) == ACAMERA_OK
         && entry.count >= 2) {
-        // NDK delivers nanoseconds (int64), clamp to microseconds (int32)
         int64_t ns_min = entry.data.i64[0];
         int64_t ns_max = entry.data.i64[1];
-        int32_t us_min = (int32_t)(ns_min / 1000LL < 1 ? 1 : ns_min / 1000LL);
-        int32_t us_max = (int32_t)(ns_max / 1000LL > 2100000000LL ? 2100000000 : ns_max / 1000LL);
-        PUSH("shutter_us", s->cur_shutter_us, 1, us_min, us_max, 100, 0,);
+        AcParamDesc *d = &out[n];
+        if (n < capacity) {
+            strncpy(d->kind, "shutter_us", AC_MAX_KIND - 1);
+            d->kind[AC_MAX_KIND - 1] = '\0';
+            d->is_range    = 0;
+            d->num_options = generate_shutter_options(ns_min, ns_max,
+                                                       d->options, AC_MAX_OPTIONS);
+            if (d->num_options > 0) {
+                // Snap current to the nearest option so the UI always shows a
+                // valid selection (the default 16667 µs is not on the 1/3-stop grid).
+                int32_t best = d->options[0].value;
+                int32_t best_diff = abs(s->cur_shutter_us - best);
+                for (int i = 1; i < d->num_options; i++) {
+                    int32_t diff = abs(s->cur_shutter_us - d->options[i].value);
+                    if (diff < best_diff) { best_diff = diff; best = d->options[i].value; }
+                }
+                s->cur_shutter_us = best;
+                d->current = best;
+                n++;
+            }
+        }
     }
 
-    // Aperture — expose as select with available f-numbers × 100
+    // Aperture — only expose when the lens has more than one available aperture,
+    // meaning it has a physical iris. A single entry means the aperture is fixed
+    // and cannot be changed by the capture request.
     if (ACameraMetadata_getConstEntry(
             s->chars, ACAMERA_LENS_INFO_AVAILABLE_APERTURES, &entry) == ACAMERA_OK
-        && entry.count > 0) {
+        && entry.count > 1) {
         int nopts = (int)entry.count < AC_MAX_OPTIONS ? (int)entry.count : AC_MAX_OPTIONS;
+        // Default cur_aperture_x100 to the first available value when not yet set.
+        if (s->cur_aperture_x100 == 0)
+            s->cur_aperture_x100 = (int32_t)(entry.data.f[0] * 100.0f + 0.5f);
         AcParamDesc *d = &out[n];
         if (n < capacity) {
             strncpy(d->kind, "aperture", AC_MAX_KIND - 1);
@@ -839,41 +950,21 @@ int ac_get_parameters(void *handle, AcParamDesc *out, int capacity) {
         }
     }
 
-    // White balance mode (select)
-    {
-        static const struct { int32_t v; const char *l; } awb_modes[] = {
-            {0, "Off"}, {1, "Auto"}, {2, "Incandescent"}, {3, "Fluorescent"},
-            {4, "Warm Fluorescent"}, {5, "Daylight"}, {6, "Cloudy"},
-            {7, "Twilight"}, {8, "Shade"},
-        };
-        int n_modes = (int)(sizeof(awb_modes) / sizeof(awb_modes[0]));
-        PUSH("awb_mode", s->cur_awb_mode, 0, 0, 0, 0, n_modes,
-             { for (int i = 0; i < n_modes; i++) {
-                 out[n].options[i].value = awb_modes[i].v;
-                 strncpy(out[n].options[i].label, awb_modes[i].l, AC_MAX_LABEL - 1);
-               } });
-    }
+    // White balance auto toggle + manual color temperature range (Kelvin).
+    PUSH("wb_auto", s->cur_awb_auto, 0, 0, 0, 0, 0,);
+    PUSH("color_temperature", s->cur_color_temp, 1, 2000, 8000, 100, 0,);
 
-    // AF mode (select).
-    // Only offer "Off (Manual)" on cameras that have an adjustable focus
-    // (MINIMUM_FOCUS_DISTANCE > 0). Fixed-focus cameras expose only the auto
-    // modes to avoid showing an option that can never do anything useful.
+    // Focus auto toggle. Only exposed on cameras with adjustable focus
+    // (MINIMUM_FOCUS_DISTANCE > 0); fixed-focus lenses skip this entirely.
     {
-        static const struct { int32_t v; const char *l; } af_modes[] = {
-            {0, "Off (Manual)"}, {3, "Continuous Video"}, {4, "Continuous Picture"},
-        };
         float min_focus_af = 0.0f;
         if (ACameraMetadata_getConstEntry(
                 s->chars, ACAMERA_LENS_INFO_MINIMUM_FOCUS_DISTANCE, &entry) == ACAMERA_OK
             && entry.count >= 1)
             min_focus_af = entry.data.f[0];
-        int af_start = (min_focus_af > 0.0f) ? 0 : 1; // skip index 0 ("Off") when fixed-focus
-        int n_modes = 3 - af_start;
-        PUSH("af_mode", s->cur_af_mode, 0, 0, 0, 0, n_modes,
-             { for (int i = 0; i < n_modes; i++) {
-                 out[n].options[i].value = af_modes[af_start + i].v;
-                 strncpy(out[n].options[i].label, af_modes[af_start + i].l, AC_MAX_LABEL - 1);
-               } });
+        if (min_focus_af > 0.0f) {
+            PUSH("focus_auto", (s->cur_af_mode != 0) ? 1 : 0, 0, 0, 0, 0, 0,);
+        }
     }
 
     // EV compensation (range in compensation steps)
@@ -918,18 +1009,22 @@ int ac_set_parameter(void *handle, const char *kind, int32_t value) {
     if (!s || !s->preview_req || !s->session) return -1;
 
     // Update the in-memory tracked value first.
-    if (strcmp(kind, "ae_mode") == 0) {
-        s->cur_ae_mode = (value != 0) ? 1 : 0;
+    if (strcmp(kind, "iso_auto") == 0) {
+        s->cur_iso_auto = (value != 0) ? 1 : 0;
+    } else if (strcmp(kind, "shutter_auto") == 0) {
+        s->cur_shutter_auto = (value != 0) ? 1 : 0;
     } else if (strcmp(kind, "iso") == 0) {
         s->cur_iso = value;
     } else if (strcmp(kind, "shutter_us") == 0) {
         s->cur_shutter_us = value;
     } else if (strcmp(kind, "aperture") == 0) {
         s->cur_aperture_x100 = value;
-    } else if (strcmp(kind, "awb_mode") == 0) {
-        s->cur_awb_mode = value;
-    } else if (strcmp(kind, "af_mode") == 0) {
-        s->cur_af_mode = value;
+    } else if (strcmp(kind, "wb_auto") == 0) {
+        s->cur_awb_auto = (value != 0) ? 1 : 0;
+    } else if (strcmp(kind, "color_temperature") == 0) {
+        s->cur_color_temp = value;
+    } else if (strcmp(kind, "focus_auto") == 0) {
+        s->cur_af_mode = (value != 0) ? 3 : 0; // 3=CONTINUOUS_VIDEO, 0=OFF
     } else if (strcmp(kind, "ev_compensation") == 0) {
         s->cur_ev_comp = value;
     } else if (strcmp(kind, "focus_distance_x100") == 0) {
@@ -943,7 +1038,7 @@ int ac_set_parameter(void *handle, const char *kind, int32_t value) {
     // Rewrite all tracked settings into preview_req in one pass and resubmit.
     // This ensures ae_mode=manual always lands together with ISO/shutter in the
     // same request — Camera2 ignores SENSOR_* controls unless AE_MODE is OFF.
-    apply_tracked_settings(s, s->preview_req);
+    apply_tracked_settings(s, s->preview_req, /*is_preview=*/1);
 
     ACaptureRequest *reqs[] = { s->preview_req };
     camera_status_t st = ACameraCaptureSession_setRepeatingRequest(

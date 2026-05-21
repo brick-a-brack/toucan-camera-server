@@ -258,6 +258,14 @@ jobs:
             -o android/app/src/main/jniLibs \
             build --release --features backend-camera2-android
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bump Android version
+        run: node .github/workflows/androidBumpVersion.js
+
       - name: Build AAB (release)
         run: |
           chmod +x android/gradlew

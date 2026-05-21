@@ -5,7 +5,7 @@
 #define AC_MAX_STR      256
 #define AC_MAX_DEVICES   16
 #define AC_MAX_PARAMS    32
-#define AC_MAX_OPTIONS   32
+#define AC_MAX_OPTIONS   64
 #define AC_MAX_KIND      64
 #define AC_MAX_LABEL     64
 

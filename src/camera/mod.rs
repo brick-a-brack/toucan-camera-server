@@ -63,9 +63,11 @@ pub enum ParameterType {
 
     // Aperture
     Aperture,
+    ApertureAuto,
 
     // Shutter speed
     ShutterSpeed,
+    ShutterSpeedAuto,
 
     // Camera white balance
     WhiteBalance,

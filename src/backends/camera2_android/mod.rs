@@ -16,7 +16,7 @@ use crate::camera::{
 const AC_MAX_STR: usize = 256;
 const AC_MAX_DEVICES: usize = 16;
 const AC_MAX_PARAMS: usize = 32;
-const AC_MAX_OPTIONS: usize = 32;
+const AC_MAX_OPTIONS: usize = 64;
 const AC_MAX_KIND: usize = 64;
 const AC_MAX_LABEL: usize = 64;
 
@@ -370,7 +370,7 @@ fn get_parameters_impl(
     }
     buf.truncate(count as usize);
 
-    let params = buf
+    let mut params: Vec<CameraParameter> = buf
         .iter()
         .filter_map(|d| {
             let c_kind = unsafe { CStr::from_ptr(d.kind.as_ptr()) }.to_string_lossy();
@@ -404,15 +404,56 @@ fn get_parameters_impl(
                         ParameterOption { label, value: o.value.to_string() }
                     })
                     .collect();
-                Some(CameraParameter::Select {
-                    param_type,
-                    current: d.current.to_string(),
-                    options,
-                    disabled: false,
-                })
+                if param_type == ParameterType::ShutterSpeed {
+                    Some(CameraParameter::RangeSelect {
+                        param_type,
+                        current: d.current.to_string(),
+                        options,
+                        disabled: false,
+                    })
+                } else {
+                    Some(CameraParameter::Select {
+                        param_type,
+                        current: d.current.to_string(),
+                        options,
+                        disabled: false,
+                    })
+                }
             }
         })
         .collect();
+
+    let iso_auto_on = params.iter().any(|p| {
+        matches!(p, CameraParameter::Boolean { param_type: ParameterType::IsoAuto, current: true, .. })
+    });
+    let shutter_auto_on = params.iter().any(|p| {
+        matches!(p, CameraParameter::Boolean { param_type: ParameterType::ShutterSpeedAuto, current: true, .. })
+    });
+    let wb_auto_on = params.iter().any(|p| {
+        matches!(p, CameraParameter::Boolean { param_type: ParameterType::WhiteBalanceAuto, current: true, .. })
+    });
+    let focus_auto_on = params.iter().any(|p| {
+        matches!(p, CameraParameter::Boolean { param_type: ParameterType::FocusAuto, current: true, .. })
+    });
+
+    for p in &mut params {
+        match p {
+            CameraParameter::Range    { param_type: ParameterType::Iso,          disabled, .. }
+            | CameraParameter::Select { param_type: ParameterType::Iso,          disabled, .. } => {
+                *disabled = iso_auto_on;
+            }
+            CameraParameter::RangeSelect { param_type: ParameterType::ShutterSpeed, disabled, .. } => {
+                *disabled = shutter_auto_on;
+            }
+            CameraParameter::Range    { param_type: ParameterType::WhiteBalance, disabled, .. } => {
+                *disabled = wb_auto_on;
+            }
+            CameraParameter::Range    { param_type: ParameterType::Focus,        disabled, .. } => {
+                *disabled = focus_auto_on;
+            }
+            _ => {}
+        }
+    }
 
     Ok(params)
 }
@@ -510,12 +551,14 @@ fn rgb24_to_jpeg(rgb: Vec<u8>, width: u32, height: u32) -> Result<Vec<u8>, Camer
 
 fn c_kind_to_param_type(kind: &str) -> Option<ParameterType> {
     match kind {
-        "ae_mode"               => Some(ParameterType::ExposureAuto),
+        "iso_auto"              => Some(ParameterType::IsoAuto),
+        "shutter_auto"          => Some(ParameterType::ShutterSpeedAuto),
+        "wb_auto"               => Some(ParameterType::WhiteBalanceAuto),
+        "focus_auto"            => Some(ParameterType::FocusAuto),
         "iso"                   => Some(ParameterType::Iso),
-        "shutter_us"            => Some(ParameterType::Exposure),
+        "shutter_us"            => Some(ParameterType::ShutterSpeed),
         "aperture"              => Some(ParameterType::Aperture),
-        "awb_mode"              => Some(ParameterType::WhiteBalance),
-        "af_mode"               => Some(ParameterType::FocusAuto),
+        "color_temperature"     => Some(ParameterType::WhiteBalance),
         "ev_compensation"       => Some(ParameterType::ExposureCompensation),
         "focus_distance_x100"   => Some(ParameterType::Focus),
         "zoom_x100"             => Some(ParameterType::Zoom),
@@ -525,12 +568,14 @@ fn c_kind_to_param_type(kind: &str) -> Option<ParameterType> {
 
 fn param_type_to_c_kind(pt: ParameterType) -> Option<&'static str> {
     match pt {
-        ParameterType::ExposureAuto         => Some("ae_mode"),
+        ParameterType::IsoAuto              => Some("iso_auto"),
+        ParameterType::ShutterSpeedAuto     => Some("shutter_auto"),
+        ParameterType::WhiteBalanceAuto     => Some("wb_auto"),
+        ParameterType::FocusAuto            => Some("focus_auto"),
         ParameterType::Iso                  => Some("iso"),
-        ParameterType::Exposure             => Some("shutter_us"),
+        ParameterType::ShutterSpeed         => Some("shutter_us"),
         ParameterType::Aperture             => Some("aperture"),
-        ParameterType::WhiteBalance         => Some("awb_mode"),
-        ParameterType::FocusAuto            => Some("af_mode"),
+        ParameterType::WhiteBalance          => Some("color_temperature"),
         ParameterType::ExposureCompensation => Some("ev_compensation"),
         ParameterType::Focus                => Some("focus_distance_x100"),
         ParameterType::Zoom                 => Some("zoom_x100"),
@@ -539,5 +584,11 @@ fn param_type_to_c_kind(pt: ParameterType) -> Option<&'static str> {
 }
 
 fn is_boolean_param(pt: ParameterType) -> bool {
-    matches!(pt, ParameterType::ExposureAuto)
+    matches!(
+        pt,
+        ParameterType::IsoAuto
+            | ParameterType::ShutterSpeedAuto
+            | ParameterType::WhiteBalanceAuto
+            | ParameterType::FocusAuto
+    )
 }
