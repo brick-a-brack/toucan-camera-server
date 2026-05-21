@@ -5,7 +5,7 @@
 
 ## Project overview
 REST API to control cameras (DSLR and webcams) from multiple vendors and operating systems.
-The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token>` or `?token=`). It binds to `127.0.0.1` by default (loopback only); on Android it binds to `0.0.0.0` for LAN access, and `BIND_ADDR` overrides the bind address on any platform.
+The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token>` or `?token=`). It binds to `127.0.0.1` by default (loopback only); pass `--expose` to bind `0.0.0.0` (LAN). On Android it always binds `0.0.0.0`. `BIND_ADDR` overrides the bind address on any platform.
 
 ## Code style
 - Follow standard Rust conventions (`rustfmt`, `clippy`).
@@ -92,7 +92,7 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 
 ### HTTP layer
 - Framework: `axum` (not actix-web).
-- The server binds to `127.0.0.1` by default (loopback); on Android it binds to `0.0.0.0` (LAN). `BIND_ADDR` overrides on any platform. See `resolve_bind_addr()` in `lib.rs`.
+- The server binds to `127.0.0.1` by default (loopback); the `--expose` flag binds `0.0.0.0` (LAN), and Android always does. `BIND_ADDR` overrides on any platform (highest precedence). See `resolve_bind_addr()` / `parse_args()` in `lib.rs`.
 - Every route is wrapped by `auth::auth_middleware` (a `.layer()` on the whole router), so all endpoints — including `/`, `/health`, `/cameras`, and `/peers` — require the bearer token.
 - All routes must be registered explicitly; no catch-all wildcards unless intentional.
 - JSON is the response format for all non-binary endpoints.
