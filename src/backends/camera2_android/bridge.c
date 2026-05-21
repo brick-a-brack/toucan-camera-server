@@ -310,7 +310,7 @@ void *ac_open_session(const char *camera_id) {
     s->cur_ae_mode       = 1;  // auto
     s->cur_iso           = 100;
     s->cur_shutter_us    = 16667; // ~1/60 s
-    s->cur_aperture_x100 = 200;   // f/2.0
+    s->cur_aperture_x100 = 0;     // 0 = not explicitly set; skip writing to capture request
     s->cur_awb_mode      = 1;     // auto
     s->cur_af_mode       = 3;     // continuous-video
     s->cur_zoom_x100     = 100;   // 1.0×
@@ -578,6 +578,72 @@ static int wait_for_active(AcSession *s, int timeout_sec) {
     return ok;
 }
 
+// ---------------------------------------------------------------------------
+// Helper: write all currently-tracked settings into a capture request.
+// Called by ac_set_parameter (preview_req) and ac_capture_photo (jpeg_req).
+// ---------------------------------------------------------------------------
+
+static void apply_tracked_settings(AcSession *s, ACaptureRequest *req) {
+    // AE mode (0 = OFF/manual, 1 = ON/auto)
+    uint8_t ae_mode = (uint8_t)s->cur_ae_mode;
+    ACaptureRequest_setEntry_u8(req, ACAMERA_CONTROL_AE_MODE, 1, &ae_mode);
+
+    // Manual exposure: only meaningful (and only applied) when AE is OFF.
+    // Camera2 ignores SENSOR_SENSITIVITY / SENSOR_EXPOSURE_TIME while AE is ON.
+    if (s->cur_ae_mode == 0) {
+        int32_t iso = s->cur_iso;
+        int64_t ns  = (int64_t)s->cur_shutter_us * 1000LL;
+        ACaptureRequest_setEntry_i32(req, ACAMERA_SENSOR_SENSITIVITY,   1, &iso);
+        ACaptureRequest_setEntry_i64(req, ACAMERA_SENSOR_EXPOSURE_TIME, 1, &ns);
+    }
+
+    // Aperture (fixed on most phones — silently ignored if not adjustable)
+    if (s->cur_aperture_x100 > 0) {
+        float f = (float)s->cur_aperture_x100 / 100.0f;
+        ACaptureRequest_setEntry_float(req, ACAMERA_LENS_APERTURE, 1, &f);
+    }
+
+    // White balance
+    uint8_t awb = (uint8_t)s->cur_awb_mode;
+    ACaptureRequest_setEntry_u8(req, ACAMERA_CONTROL_AWB_MODE, 1, &awb);
+
+    // Auto-focus mode
+    uint8_t af = (uint8_t)s->cur_af_mode;
+    ACaptureRequest_setEntry_u8(req, ACAMERA_CONTROL_AF_MODE, 1, &af);
+
+    // Manual focus distance (diopters): only meaningful when AF is OFF (0)
+    if (s->cur_af_mode == 0) {
+        float d = (float)s->cur_focus_x100 / 100.0f;
+        ACaptureRequest_setEntry_float(req, ACAMERA_LENS_FOCUS_DISTANCE, 1, &d);
+    }
+
+    // EV compensation
+    int32_t ev = s->cur_ev_comp;
+    ACaptureRequest_setEntry_i32(req, ACAMERA_CONTROL_AE_EXPOSURE_COMPENSATION, 1, &ev);
+
+    // Zoom via SCALER_CROP_REGION (compatible with API 24+, unlike CONTROL_ZOOM_RATIO)
+    if (s->cur_zoom_x100 > 100 && s->chars) {
+        ACameraMetadata_const_entry entry = {0};
+        if (ACameraMetadata_getConstEntry(s->chars,
+                ACAMERA_SENSOR_INFO_ACTIVE_ARRAY_SIZE, &entry) == ACAMERA_OK
+            && entry.count >= 4) {
+            // Active array format: [left, top, right, bottom] (exclusive)
+            int32_t arr_x = entry.data.i32[0];
+            int32_t arr_y = entry.data.i32[1];
+            int32_t arr_w = entry.data.i32[2] - arr_x;
+            int32_t arr_h = entry.data.i32[3] - arr_y;
+            float zoom    = (float)s->cur_zoom_x100 / 100.0f;
+            if (zoom < 1.0f) zoom = 1.0f;
+            int32_t crop_w = (int32_t)((float)arr_w / zoom);
+            int32_t crop_h = (int32_t)((float)arr_h / zoom);
+            int32_t crop_x = arr_x + (arr_w - crop_w) / 2;
+            int32_t crop_y = arr_y + (arr_h - crop_h) / 2;
+            int32_t region[4] = { crop_x, crop_y, crop_x + crop_w, crop_y + crop_h };
+            ACaptureRequest_setEntry_i32(req, ACAMERA_SCALER_CROP_REGION, 4, region);
+        }
+    }
+}
+
 int ac_capture_photo(void *handle,
                      uint8_t **out_data, size_t *out_size,
                      int32_t *out_width, int32_t *out_height,
@@ -632,6 +698,7 @@ int ac_capture_photo(void *handle,
     if (ACameraDevice_createCaptureRequest(s->device, TEMPLATE_STILL_CAPTURE, &jpeg_req) != ACAMERA_OK)
         goto restore;
     ACaptureRequest_addTarget(jpeg_req, jpeg_target);
+    apply_tracked_settings(s, jpeg_req);
 
     pthread_mutex_lock(&s->photo_mutex);
     free(s->photo_data); s->photo_data = NULL; s->photo_size = 0; s->photo_ready = 0;
@@ -787,16 +854,25 @@ int ac_get_parameters(void *handle, AcParamDesc *out, int capacity) {
                } });
     }
 
-    // AF mode (select)
+    // AF mode (select).
+    // Only offer "Off (Manual)" on cameras that have an adjustable focus
+    // (MINIMUM_FOCUS_DISTANCE > 0). Fixed-focus cameras expose only the auto
+    // modes to avoid showing an option that can never do anything useful.
     {
         static const struct { int32_t v; const char *l; } af_modes[] = {
             {0, "Off (Manual)"}, {3, "Continuous Video"}, {4, "Continuous Picture"},
         };
-        int n_modes = 3;
+        float min_focus_af = 0.0f;
+        if (ACameraMetadata_getConstEntry(
+                s->chars, ACAMERA_LENS_INFO_MINIMUM_FOCUS_DISTANCE, &entry) == ACAMERA_OK
+            && entry.count >= 1)
+            min_focus_af = entry.data.f[0];
+        int af_start = (min_focus_af > 0.0f) ? 0 : 1; // skip index 0 ("Off") when fixed-focus
+        int n_modes = 3 - af_start;
         PUSH("af_mode", s->cur_af_mode, 0, 0, 0, 0, n_modes,
              { for (int i = 0; i < n_modes; i++) {
-                 out[n].options[i].value = af_modes[i].v;
-                 strncpy(out[n].options[i].label, af_modes[i].l, AC_MAX_LABEL - 1);
+                 out[n].options[i].value = af_modes[af_start + i].v;
+                 strncpy(out[n].options[i].label, af_modes[af_start + i].l, AC_MAX_LABEL - 1);
                } });
     }
 
@@ -808,12 +884,19 @@ int ac_get_parameters(void *handle, AcParamDesc *out, int capacity) {
              entry.data.i32[0], entry.data.i32[1], 1, 0,);
     }
 
-    // Focus distance (diopters × 100) — only when af_mode == 0 (manual)
-    if (ACameraMetadata_getConstEntry(
-            s->chars, ACAMERA_LENS_INFO_MINIMUM_FOCUS_DISTANCE, &entry) == ACAMERA_OK
-        && entry.count >= 1) {
-        int32_t max_d = (int32_t)(entry.data.f[0] * 100.0f + 0.5f);
-        PUSH("focus_distance_x100", s->cur_focus_x100, 1, 0, max_d, 1, 0,);
+    // Focus distance (diopters × 100).
+    // MINIMUM_FOCUS_DISTANCE == 0 means fixed-focus lens — don't expose the
+    // parameter since the range would be [0,0] and writing it has no effect.
+    {
+        float min_focus = 0.0f;
+        int has_focus = ACameraMetadata_getConstEntry(
+                s->chars, ACAMERA_LENS_INFO_MINIMUM_FOCUS_DISTANCE, &entry) == ACAMERA_OK
+            && entry.count >= 1;
+        if (has_focus) min_focus = entry.data.f[0];
+        if (has_focus && min_focus > 0.0f) {
+            int32_t max_d = (int32_t)(min_focus * 100.0f + 0.5f);
+            PUSH("focus_distance_x100", s->cur_focus_x100, 1, 0, max_d, 1, 0,);
+        }
     }
 
     // Zoom ratio × 100 (range)
@@ -832,55 +915,43 @@ int ac_get_parameters(void *handle, AcParamDesc *out, int capacity) {
 
 int ac_set_parameter(void *handle, const char *kind, int32_t value) {
     AcSession *s = (AcSession *)handle;
-    if (!s || !s->preview_req) return -1;
+    if (!s || !s->preview_req || !s->session) return -1;
 
+    // Update the in-memory tracked value first.
     if (strcmp(kind, "ae_mode") == 0) {
-        // 0 = manual (ACAMERA_CONTROL_AE_MODE_OFF), 1 = auto (ACAMERA_CONTROL_AE_MODE_ON)
-        uint8_t ae_mode = (value != 0) ? 1 : 0;
-        ACaptureRequest_setEntry_u8(s->preview_req, ACAMERA_CONTROL_AE_MODE, 1, &ae_mode);
-        s->cur_ae_mode = value != 0 ? 1 : 0;
+        s->cur_ae_mode = (value != 0) ? 1 : 0;
     } else if (strcmp(kind, "iso") == 0) {
-        int32_t iso = value;
-        ACaptureRequest_setEntry_i32(s->preview_req, ACAMERA_SENSOR_SENSITIVITY, 1, &iso);
-        s->cur_iso = iso;
+        s->cur_iso = value;
     } else if (strcmp(kind, "shutter_us") == 0) {
-        int64_t ns = (int64_t)value * 1000LL;
-        ACaptureRequest_setEntry_i64(s->preview_req, ACAMERA_SENSOR_EXPOSURE_TIME, 1, &ns);
         s->cur_shutter_us = value;
     } else if (strcmp(kind, "aperture") == 0) {
-        float f = (float)value / 100.0f;
-        ACaptureRequest_setEntry_float(s->preview_req, ACAMERA_LENS_APERTURE, 1, &f);
         s->cur_aperture_x100 = value;
     } else if (strcmp(kind, "awb_mode") == 0) {
-        uint8_t awb = (uint8_t)value;
-        ACaptureRequest_setEntry_u8(s->preview_req, ACAMERA_CONTROL_AWB_MODE, 1, &awb);
         s->cur_awb_mode = value;
     } else if (strcmp(kind, "af_mode") == 0) {
-        uint8_t af = (uint8_t)value;
-        ACaptureRequest_setEntry_u8(s->preview_req, ACAMERA_CONTROL_AF_MODE, 1, &af);
         s->cur_af_mode = value;
     } else if (strcmp(kind, "ev_compensation") == 0) {
-        int32_t ev = value;
-        ACaptureRequest_setEntry_i32(s->preview_req, ACAMERA_CONTROL_AE_EXPOSURE_COMPENSATION, 1, &ev);
         s->cur_ev_comp = value;
     } else if (strcmp(kind, "focus_distance_x100") == 0) {
-        float d = (float)value / 100.0f;
-        ACaptureRequest_setEntry_float(s->preview_req, ACAMERA_LENS_FOCUS_DISTANCE, 1, &d);
         s->cur_focus_x100 = value;
     } else if (strcmp(kind, "zoom_x100") == 0) {
-        // Use SCALER_CROP_REGION for compatibility with API < 30
-        // For simplicity, update zoom_x100 tracking but apply via crop region
-        // Full CONTROL_ZOOM_RATIO (API 30) would need runtime API level check
         s->cur_zoom_x100 = value;
-        // Note: applying crop-based zoom requires knowing sensor array size
-        // which is implementation-specific. Tracked but not applied via crop
-        // here; a production implementation should read ACAMERA_SENSOR_INFO_ACTIVE_ARRAY_SIZE.
     } else {
-        return -1; // unknown kind
+        return -1;
     }
 
-    // Re-submit the repeating request with the updated settings
+    // Rewrite all tracked settings into preview_req in one pass and resubmit.
+    // This ensures ae_mode=manual always lands together with ISO/shutter in the
+    // same request — Camera2 ignores SENSOR_* controls unless AE_MODE is OFF.
+    apply_tracked_settings(s, s->preview_req);
+
     ACaptureRequest *reqs[] = { s->preview_req };
-    ACameraCaptureSession_setRepeatingRequest(s->session, NULL, 1, reqs, NULL);
+    camera_status_t st = ACameraCaptureSession_setRepeatingRequest(
+        s->session, NULL, 1, reqs, NULL);
+    if (st != ACAMERA_OK) {
+        LOGE("ac_set_parameter: setRepeatingRequest failed for '%s': status=%d", kind, st);
+        return -1;
+    }
+    LOGI("ac_set_parameter: '%s' = %d", kind, value);
     return 0;
 }

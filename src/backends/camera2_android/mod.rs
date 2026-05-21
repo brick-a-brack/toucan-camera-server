@@ -538,7 +538,6 @@ fn param_type_to_c_kind(pt: ParameterType) -> Option<&'static str> {
     }
 }
 
-fn is_boolean_param(_pt: ParameterType) -> bool {
-    // All Camera2 parameters are exposed as Range or Select, never Boolean.
-    false
+fn is_boolean_param(pt: ParameterType) -> bool {
+    matches!(pt, ParameterType::ExposureAuto)
 }

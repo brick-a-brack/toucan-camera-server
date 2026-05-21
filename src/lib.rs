@@ -5,7 +5,7 @@ pub mod routes;
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::{routing::{get, put}, Json, Router};
 use axum::response::Html;
@@ -139,10 +139,35 @@ pub async fn bind_listener(port: u16) -> tokio::net::TcpListener {
         .expect("failed to bind to any port")
 }
 
+// On Android, the pairing token can be set (and updated) by the Kotlin side via
+// the setToken() JNI call before or after startServer(). Other platforms derive
+// the token from CLI args as before.
+#[cfg(target_os = "android")]
+static ANDROID_TOKEN: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+// Holds a shared reference to the live token arc so setToken() can update it
+// while the server is running.
+#[cfg(target_os = "android")]
+static ACTIVE_TOKEN: std::sync::Mutex<Option<Arc<RwLock<String>>>> = std::sync::Mutex::new(None);
+
 pub async fn run_server() {
     let args  = parse_args();
     let port  = resolve_port(args.port);
-    let token = args.token;
+
+    #[cfg(target_os = "android")]
+    let initial_token = {
+        let t = ANDROID_TOKEN.lock().unwrap();
+        if t.is_empty() { args.token } else { t.clone() }
+    };
+    #[cfg(not(target_os = "android"))]
+    let initial_token = args.token;
+
+    let token = Arc::new(RwLock::new(initial_token));
+
+    #[cfg(target_os = "android")]
+    {
+        *ACTIVE_TOKEN.lock().unwrap() = Some(token.clone());
+    }
 
     let backends = build_backends();
     let state = AppState::new(backends, token.clone());
@@ -165,8 +190,8 @@ pub async fn run_server() {
     let listener = bind_listener(port).await;
     let addr = listener.local_addr().unwrap();
     eprintln!("[config] PORT={}", addr.port());
-    eprintln!("[config] TOKEN={}", token);
-    eprintln!("[info] Listening on http://{}/?token={}", addr, token);
+    eprintln!("[config] TOKEN={}", token.read().unwrap());
+    eprintln!("[info] Listening on http://{}/?token={}", addr, token.read().unwrap());
     axum::serve(listener, app).await.unwrap();
 }
 
@@ -257,5 +282,53 @@ pub mod android_jni {
         if let Some(tx) = SHUTDOWN.lock().unwrap().as_ref() {
             let _ = tx.send(true);
         }
+    }
+
+    /// Called from Kotlin: CameraServerService.setToken(token)
+    ///
+    /// Updates the pairing token used by the HTTP auth middleware. Safe to call
+    /// before or after startServer() — changes take effect immediately if the
+    /// server is already running.
+    #[no_mangle]
+    pub unsafe extern "C" fn Java_com_brickfilms_toucancameraserver_CameraServerService_setToken(
+        env: *mut *const *mut std::ffi::c_void,
+        _this: *mut std::ffi::c_void,
+        j_token: *mut std::ffi::c_void,
+    ) {
+        // Extract UTF-8 string from the Java jstring via the JNI vtable.
+        // GetStringUTFChars is at vtable index 169, ReleaseStringUTFChars at 170.
+        // These offsets are mandated by the JNI spec and are stable across all JVMs.
+        let token_str = {
+            if j_token.is_null() { return; }
+            let vtable: *const *mut std::ffi::c_void = *env;
+            type GetChars = unsafe extern "C" fn(
+                *mut *const *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+                *mut u8,
+            ) -> *const std::os::raw::c_char;
+            type ReleaseChars = unsafe extern "C" fn(
+                *mut *const *mut std::ffi::c_void,
+                *mut std::ffi::c_void,
+                *const std::os::raw::c_char,
+            );
+            let get_chars: GetChars = std::mem::transmute(*vtable.add(169));
+            let release_chars: ReleaseChars = std::mem::transmute(*vtable.add(170));
+
+            let chars = get_chars(env, j_token, std::ptr::null_mut());
+            if chars.is_null() { return; }
+            let s = std::ffi::CStr::from_ptr(chars).to_string_lossy().into_owned();
+            release_chars(env, j_token, chars);
+            s
+        };
+
+        // Update the pending token (read by startServer if called after this).
+        *super::ANDROID_TOKEN.lock().unwrap() = token_str.clone();
+
+        // Update the live token arc (effective immediately on the running server).
+        if let Some(arc) = super::ACTIVE_TOKEN.lock().unwrap().as_ref() {
+            *arc.write().unwrap() = token_str.clone();
+        }
+
+        alog(&format!("token set to: {token_str}"));
     }
 }

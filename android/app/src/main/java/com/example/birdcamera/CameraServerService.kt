@@ -27,6 +27,9 @@ class CameraServerService : Service() {
 
         @JvmStatic
         external fun stopServer()
+
+        @JvmStatic
+        external fun setToken(token: String)
     }
 
     override fun onCreate() {
