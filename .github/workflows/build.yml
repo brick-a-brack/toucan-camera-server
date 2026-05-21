@@ -288,27 +288,27 @@ jobs:
 
       - name: Package outputs
         run: |
-          mkdir -p android-app
+          mkdir -p app-android
           cp android/app/build/outputs/bundle/release/app-release.aab \
-             android-app/toucan-camera-server.aab
+             app-android/toucan-camera-server.aab
           cp android/app/build/outputs/bundle/release/app-release.apk \
-             android-app/toucan-camera-server.apk
-          zip -r toucan-camera-server-android-app.zip android-app/
-          zip -r toucan-camera-server-android-lib.zip \
+             app-android/toucan-camera-server.apk
+          zip -r toucan-camera-server-android.zip app-android/
+          zip -r toucan-camera-server-lib-android.zip \
             android/app/src/main/jniLibs/
 
       - name: Upload app artifact
         uses: actions/upload-artifact@v4
         with:
-          name: toucan-camera-server-android-app
-          path: toucan-camera-server-android-app.zip
+          name: toucan-camera-server-android
+          path: toucan-camera-server-android.zip
           if-no-files-found: error
 
       - name: Upload lib artifact
         uses: actions/upload-artifact@v4
         with:
-          name: toucan-camera-server-android-lib
-          path: toucan-camera-server-android-lib.zip
+          name: toucan-camera-server-lib-android
+          path: toucan-camera-server-lib-android.zip
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -344,13 +344,13 @@ jobs:
       - name: Download Android app artifact
         uses: actions/download-artifact@v4
         with:
-          name: toucan-camera-server-android-app
+          name: toucan-camera-server-android
           path: dist/
 
       - name: Download Android lib artifact
         uses: actions/download-artifact@v4
         with:
-          name: toucan-camera-server-android-lib
+          name: toucan-camera-server-lib-android
           path: dist/
 
       - name: Attach assets to current draft release
@@ -369,8 +369,8 @@ jobs:
               dist/toucan-camera-server-macos.zip \
               dist/toucan-camera-server-windows.zip \
               dist/toucan-camera-server-linux.tar.gz \
-              dist/toucan-camera-server-android-app.zip \
-              dist/toucan-camera-server-android-lib.zip \
+              dist/toucan-camera-server-android.zip \
+              dist/toucan-camera-server-lib-android.zip \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
           else
