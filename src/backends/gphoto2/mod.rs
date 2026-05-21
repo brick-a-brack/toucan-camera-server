@@ -1,5 +1,7 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use gphoto2::widget::{RadioWidget, RangeWidget, ToggleWidget, Widget};
 
@@ -8,23 +10,35 @@ use crate::camera::{
     ParameterType,
 };
 
+/// Interval between keep-alive pings. Canon bodies sleep after their
+/// `autopoweroff` timer (as low as ~30 s on some menus), so we ping well under it.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
 /// libgphoto2-backed camera backend.
 ///
 /// `gphoto2::Context` and `gphoto2::Camera` are documented `Send + Sync`; the
-/// crate serializes per-camera calls internally. A simple `Mutex<HashMap>` of
-/// open `Camera` handles is therefore sufficient — no actor thread is needed.
+/// crate serializes per-camera calls internally. Open `Camera` handles live in a
+/// shared `Arc<Mutex<HashMap>>` so the background keep-alive thread can ping them.
 pub struct GPhoto2Backend {
     context:   gphoto2::Context,
-    connected: Mutex<HashMap<String, gphoto2::Camera>>,
+    connected: Arc<Mutex<HashMap<String, gphoto2::Camera>>>,
 }
 
 impl GPhoto2Backend {
     pub fn new() -> Result<Self, CameraError> {
+        // libgphoto2 localizes parameter labels via gettext, following the system
+        // locale (French here: "Automatique", "pose longue", even "0,5" for "0.5").
+        // Force the C locale before the first gphoto2 call — which is what activates
+        // gettext — so labels and numeric formatting are stable English/ASCII. This
+        // also keeps the option `value`s we round-trip back to `set_choice`
+        // consistent between reads and writes.
+        std::env::set_var("LC_ALL", "C");
+
         let context = gphoto2::Context::new().map_err(map_err)?;
-        Ok(Self {
-            context,
-            connected: Mutex::new(HashMap::new()),
-        })
+        let connected: Arc<Mutex<HashMap<String, gphoto2::Camera>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        spawn_keepalive(connected.clone());
+        Ok(Self { context, connected })
     }
 
     /// Returns a clone of the live `Camera` handle for `native_id`.
@@ -39,9 +53,44 @@ impl GPhoto2Backend {
     }
 }
 
+/// Background thread that keeps every connected camera awake. Canon bodies refuse
+/// to have `autopoweroff` disabled (PTP `0x2019` Device Busy), so instead we
+/// generate periodic activity — any PTP transaction resets the body's idle timer,
+/// the same trick EOS Utility uses. Runs for the whole process lifetime; cameras
+/// are pinged only while present in the map.
+fn spawn_keepalive(connected: Arc<Mutex<HashMap<String, gphoto2::Camera>>>) {
+    thread::Builder::new()
+        .name("gphoto2-keepalive".into())
+        .spawn(move || loop {
+            thread::sleep(KEEPALIVE_INTERVAL);
+            // Snapshot the handles, then release the lock before the (slow) PTP
+            // reads so connect/disconnect/operations are never blocked on us.
+            let cameras: Vec<gphoto2::Camera> = {
+                let map = connected.lock().expect("gphoto2 mutex poisoned");
+                map.values().cloned().collect()
+            };
+            for camera in cameras {
+                // Reading the config tree is enough activity to reset the timer
+                // and works on any gphoto2 body. Best-effort: ignore errors (a
+                // camera may have just been unplugged).
+                let _ = camera.config().wait();
+            }
+        })
+        .expect("failed to spawn gphoto2 keep-alive thread");
+}
+
 fn map_err(err: gphoto2::Error) -> CameraError {
     eprintln!("[gphoto2] error: {err}");
     CameraError::SdkError(0)
+}
+
+/// When the dedicated Canon EDSDK backend is compiled in, it owns Canon bodies
+/// (native EVF live view, full Canon property set), so the gphoto2 backend hides
+/// them — otherwise the same camera shows up under two backends and the two
+/// drivers fight over the USB device. Without `backend-canon`, gphoto2 handles
+/// Canon too. libgphoto2 reports Canon models as e.g. "Canon EOS 600D".
+fn owned_by_other_backend(model: &str) -> bool {
+    cfg!(feature = "backend-canon") && model.to_lowercase().starts_with("canon")
 }
 
 impl CameraBackend for GPhoto2Backend {
@@ -54,6 +103,7 @@ impl CameraBackend for GPhoto2Backend {
         let connected = self.connected.lock().expect("gphoto2 mutex poisoned");
 
         let devices = cameras
+            .filter(|d| !owned_by_other_backend(&d.model))
             .map(|d| DeviceInfo {
                 connected: connected.contains_key(&d.port),
                 id: DeviceId::new("gphoto2", &d.port).encode(),
@@ -80,12 +130,21 @@ impl CameraBackend for GPhoto2Backend {
             .find(|d| d.port == native_id)
             .ok_or_else(|| CameraError::DeviceNotFound(native_id.to_string()))?;
 
+        // Defensive: when the EDSDK backend is compiled in it owns Canon bodies,
+        // so refuse to grab one here even if a client crafts the id (it would
+        // contend with EDSDK for the USB device). list_devices already hides them.
+        if owned_by_other_backend(&descriptor.model) {
+            return Err(CameraError::NotSupported);
+        }
+
         let camera = self
             .context
             .get_camera(&descriptor)
             .wait()
             .map_err(map_err)?;
 
+        // A background keep-alive thread (see `spawn_keepalive`) pings this
+        // camera periodically to stop the body from sleeping mid-session.
         let mut connected = self.connected.lock().expect("gphoto2 mutex poisoned");
         connected.insert(native_id.to_string(), camera);
         Ok(())
@@ -111,6 +170,16 @@ impl CameraBackend for GPhoto2Backend {
         for child in root.children_iter() {
             walk_widget(&child, &mut params);
         }
+
+        // A select/range_select with fewer than two options offers no real choice
+        // (e.g. exposure compensation in Manual mode, which the body reports as a
+        // single "0"). Hide those so the UI only shows controls the user can act on.
+        params.retain(|p| match p {
+            CameraParameter::Select { options, .. }
+            | CameraParameter::RangeSelect { options, .. } => options.len() >= 2,
+            _ => true,
+        });
+
         Ok(params)
     }
 
@@ -154,6 +223,27 @@ impl CameraBackend for GPhoto2Backend {
         value: &str,
     ) -> Result<(), CameraError> {
         let camera = self.camera_for(native_id)?;
+
+        // IsoAuto is a synthetic toggle backed by the camera's "iso" radio widget,
+        // mirroring the Canon backend. true → select the auto choice (the only
+        // non-numeric one); false → select the first concrete ISO value queried
+        // live from the camera, rather than hardcoding a value it may not offer.
+        if param_type == ParameterType::IsoAuto {
+            let key = config_key_for(ParameterType::Iso).ok_or(CameraError::NotSupported)?;
+            let widget = camera.config_key::<RadioWidget>(key).wait().map_err(map_err)?;
+            let on = matches!(value, "1" | "true" | "True");
+            let choices: Vec<String> = widget.choices_iter().map(|c| c.to_string()).collect();
+            let target = if on {
+                choices.iter().find(|c| c.parse::<u32>().is_err())
+            } else {
+                choices.iter().find(|c| c.parse::<u32>().is_ok())
+            }
+            .ok_or(CameraError::NotSupported)?;
+            widget.set_choice(target.as_str()).map_err(map_err)?;
+            camera.set_config(&widget).wait().map_err(map_err)?;
+            return Ok(());
+        }
+
         let key = config_key_for(param_type).ok_or(CameraError::NotSupported)?;
 
         // Try the most likely widget type first; fall back through alternatives.
@@ -196,33 +286,101 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
             if r.readonly() {
                 return;
             }
-            if let Some(pt) = param_type_for(&r.name()) {
-                let options: Vec<ParameterOption> = r
-                    .choices_iter()
-                    .map(|c| {
-                        let s = c.to_string();
-                        ParameterOption {
-                            label: s.clone(),
-                            value: s,
+            let Some(pt) = param_type_for(&r.name()) else {
+                return;
+            };
+            let current = r.choice();
+            let choices: Vec<String> = r.choices_iter().map(|c| c.to_string()).collect();
+
+            match pt {
+                // ISO is split into an IsoAuto toggle + an Iso selector, mirroring
+                // the Canon backend. libgphoto2 localizes the auto label (e.g.
+                // "Automatique" in French), so we detect it locale-independently:
+                // the auto choice is the only non-numeric one — every real ISO
+                // value parses as an integer.
+                ParameterType::Iso => {
+                    let options: Vec<ParameterOption> = choices
+                        .iter()
+                        .filter(|c| c.parse::<u32>().is_ok())
+                        .map(|c| ParameterOption { label: c.clone(), value: c.clone() })
+                        .collect();
+                    if options.is_empty() {
+                        return;
+                    }
+                    let iso_auto = current.parse::<u32>().is_err();
+                    out.push(CameraParameter::Boolean {
+                        param_type: ParameterType::IsoAuto,
+                        current: iso_auto,
+                        disabled: false,
+                    });
+                    // When auto is on the concrete ISO is read-only; show the first
+                    // value as a placeholder and disable the control.
+                    let iso_current = if iso_auto {
+                        options[0].value.clone()
+                    } else {
+                        current
+                    };
+                    out.push(CameraParameter::RangeSelect {
+                        param_type: ParameterType::Iso,
+                        current: iso_current,
+                        options,
+                        disabled: iso_auto,
+                    });
+                }
+                // Shutter speed: drop the bulb entry — it is a long-exposure mode,
+                // not a discrete speed. Its label is localized too ("pose longue"
+                // in French), so we exclude any choice with no digit; every real
+                // speed has one ("30", "1/60", "0.5"…), bulb does not.
+                ParameterType::ShutterSpeed => {
+                    let options: Vec<ParameterOption> = choices
+                        .iter()
+                        .filter(|c| c.chars().any(|ch| ch.is_ascii_digit()))
+                        .map(|c| ParameterOption { label: c.clone(), value: c.clone() })
+                        .collect();
+                    out.push(CameraParameter::RangeSelect {
+                        param_type: ParameterType::ShutterSpeed,
+                        current,
+                        options,
+                        disabled: false,
+                    });
+                }
+                // Image quality: the server only ever returns JPEG (capture is
+                // hardcoded to image/jpeg), so hide RAW / RAW+JPEG formats —
+                // selecting one would break capture.
+                ParameterType::ImageQuality => {
+                    let options: Vec<ParameterOption> = choices
+                        .iter()
+                        .filter(|c| !c.to_uppercase().contains("RAW"))
+                        .map(|c| ParameterOption { label: c.clone(), value: c.clone() })
+                        .collect();
+                    out.push(CameraParameter::Select {
+                        param_type: ParameterType::ImageQuality,
+                        current,
+                        options,
+                        disabled: false,
+                    });
+                }
+                _ => {
+                    let options: Vec<ParameterOption> = choices
+                        .iter()
+                        .map(|c| ParameterOption { label: c.clone(), value: c.clone() })
+                        .collect();
+                    out.push(if is_ordered(pt) {
+                        CameraParameter::RangeSelect {
+                            param_type: pt,
+                            current,
+                            options,
+                            disabled: false,
                         }
-                    })
-                    .collect();
-                let current = r.choice();
-                out.push(if is_ordered(pt) {
-                    CameraParameter::RangeSelect {
-                        param_type: pt,
-                        current,
-                        options,
-                        disabled: false,
-                    }
-                } else {
-                    CameraParameter::Select {
-                        param_type: pt,
-                        current,
-                        options,
-                        disabled: false,
-                    }
-                });
+                    } else {
+                        CameraParameter::Select {
+                            param_type: pt,
+                            current,
+                            options,
+                            disabled: false,
+                        }
+                    });
+                }
             }
         }
         Widget::Range(r) => {
