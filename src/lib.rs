@@ -99,8 +99,6 @@ pub fn parse_args() -> Args {
 
     Args {
         token: token.unwrap_or_else(|| {
-            #[cfg(target_os = "android")]
-            { return "token".to_string(); }
             #[allow(unreachable_code)]
             uuid::Uuid::new_v4().to_string()
         }),

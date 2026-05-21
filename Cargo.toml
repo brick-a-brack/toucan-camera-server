@@ -4,7 +4,7 @@ version = "0.0.5"
 edition = "2021"
 
 [lib]
-name = "toucan_camera_server_lib"
+name = "toucan_camera"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
