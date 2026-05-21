@@ -885,17 +885,20 @@ fn get_parameters_impl(
 
     // RangeSelect: ordered numeric progression (aperture, ISO, …).
     // Select:      arbitrary discrete choices (WB, AF mode, …).
-    type Spec = (ParameterType, u32, fn(i32) -> String);
+    // The filter predicate drops options that should not be exposed (e.g. RAW formats).
+    type Spec = (ParameterType, u32, fn(i32) -> String, fn(i32) -> bool);
 
     let range_select_specs: &[Spec] = &[
-        (ParameterType::Aperture,             PROP_AV,            decode_av),
-        (ParameterType::ExposureCompensation, PROP_EXPOSURE_COMP, decode_ev),
+        (ParameterType::Aperture,             PROP_AV,            decode_av,           |_| true),
+        (ParameterType::ExposureCompensation, PROP_EXPOSURE_COMP, decode_ev,           |_| true),
     ];
 
     let select_specs: &[Spec] = &[
-        (ParameterType::ImageQuality,    PROP_IMAGE_QUALITY,     decode_image_quality),
-        (ParameterType::WhiteBalance,    PROP_WHITE_BALANCE,     decode_wb),
-        (ParameterType::ColorTemperature,PROP_COLOR_TEMPERATURE, decode_color_temp),
+        // RAW-containing formats are excluded: capture returns only JPEG.
+        // All RAW codes have byte 2 == 0x64 (e.g. 0x0064ff0f, 0x00640013, …).
+        (ParameterType::ImageQuality,    PROP_IMAGE_QUALITY,     decode_image_quality, |c| (c as u32 >> 16) & 0xFF != 0x64),
+        (ParameterType::WhiteBalance,    PROP_WHITE_BALANCE,     decode_wb,            |_| true),
+        (ParameterType::ColorTemperature,PROP_COLOR_TEMPERATURE, decode_color_temp,    |_| true),
     ];
 
     let mut result = Vec::new();
@@ -904,7 +907,7 @@ fn get_parameters_impl(
         (range_select_specs as &[Spec], true),
         (select_specs        as &[Spec], false),
     ] {
-        for &(param_type, prop_id, decode) in specs {
+        for &(param_type, prop_id, decode, keep) in specs {
             let mut desc = EdsPropertyDesc {
                 form: 0, access: 0, num_elements: 0, prop_desc: [0; 128],
             };
@@ -930,11 +933,17 @@ fn get_parameters_impl(
 
             let options = desc.prop_desc[..desc.num_elements as usize]
                 .iter()
-                .map(|&code| ParameterOption {
+                .copied()
+                .filter(|&code| keep(code))
+                .map(|code| ParameterOption {
                     label: decode(code),
                     value: code.to_string(),
                 })
-                .collect();
+                .collect::<Vec<_>>();
+
+            if options.is_empty() {
+                continue;
+            }
 
             result.push(if is_range_select {
                 CameraParameter::RangeSelect { param_type, current, options, disabled: false }
