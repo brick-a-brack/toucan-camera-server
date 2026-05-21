@@ -307,6 +307,86 @@
       font-style: italic;
       padding: 1rem 0;
     }
+
+    /* Remote peers */
+    #peers-section {
+      max-width: 960px;
+      margin-bottom: 2rem;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 10px;
+      padding: 1.1rem 1.2rem;
+    }
+
+    .section-title {
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: .04em;
+      color: #fff;
+      margin-bottom: .9rem;
+    }
+
+    .peer-add {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .5rem;
+      align-items: center;
+    }
+
+    .peer-input {
+      background: #252525;
+      border: 1px solid #3a3a3a;
+      color: #e0e0e0;
+      border-radius: 5px;
+      padding: .42rem .6rem;
+      font-size: .85rem;
+    }
+
+    .peer-input:focus {
+      outline: none;
+      border-color: #666;
+    }
+
+    #peer-url {
+      flex: 2 1 220px;
+    }
+
+    #peer-token {
+      flex: 1 1 140px;
+    }
+
+    #peers-list {
+      margin-top: .4rem;
+    }
+
+    .peers-empty {
+      color: #555;
+      font-style: italic;
+      font-size: .9rem;
+      margin-top: .8rem;
+    }
+
+    .peer-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: .6rem 0;
+      border-top: 1px solid #2a2a2a;
+    }
+
+    .peer-url {
+      flex: 1;
+      font-size: .9rem;
+      word-break: break-all;
+    }
+
+    .peer-token-val {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: .8rem;
+      color: #93c5fd;
+      word-break: break-all;
+      max-width: 40%;
+    }
   </style>
 </head>
 
@@ -315,6 +395,17 @@
     Toucan Camera Server
     <button id="refresh-btn" onclick="loadCameras()">Refresh</button>
   </h1>
+  <section id="peers-section" style="display:none">
+    <h2 class="section-title">Remote peers</h2>
+    <div class="peer-add">
+      <input id="peer-url" class="peer-input" type="text" placeholder="host:port or http://host:port">
+      <input id="peer-token" class="peer-input" type="text" placeholder="token (optional)">
+      <button id="peer-add-btn" class="btn btn-connect" onclick="addPeer()">Add peer</button>
+    </div>
+    <p class="panel-error" id="peer-add-err"></p>
+    <div id="peers-list"></div>
+  </section>
+
   <div id="camera-list">
     <p id="empty">Loading…</p>
   </div>
@@ -337,6 +428,86 @@
         throw new Error(data.error ?? `HTTP ${res.status}`);
       }
       return res;
+    }
+
+    // -------------------------------------------------------------------------
+    // Remote peers
+    // -------------------------------------------------------------------------
+
+    async function loadPeers() {
+      const section = document.getElementById('peers-section');
+      // The /peers routes only exist when the server is built with the remote
+      // backend; hide the whole panel otherwise.
+      let res;
+      try {
+        res = await fetch('/peers', { headers: { 'Authorization': `Bearer ${TOKEN}` } });
+      } catch {
+        section.style.display = 'none';
+        return;
+      }
+      if (res.status === 404) { section.style.display = 'none'; return; }
+      section.style.display = '';
+
+      const list = document.getElementById('peers-list');
+      try {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error ?? `HTTP ${res.status}`);
+        }
+        renderPeers(await res.json());
+      } catch (e) {
+        list.innerHTML = `<p class="peers-empty">Error: ${escHtml(e.message)}</p>`;
+      }
+    }
+
+    function renderPeers(peers) {
+      const list = document.getElementById('peers-list');
+      if (!peers.length) {
+        list.innerHTML = '<p class="peers-empty">No peer registered.</p>';
+        return;
+      }
+      list.innerHTML = peers.map(p => `
+        <div class="peer-row">
+          <span class="peer-url">${escHtml(p.url)}</span>
+          <span class="peer-token-val">${p.token ? escHtml(p.token) : '—'}</span>
+          <button class="btn btn-disconnect" onclick="deletePeer('${escHtml(p.id)}')">Remove</button>
+        </div>`).join('');
+    }
+
+    async function addPeer() {
+      const urlEl = document.getElementById('peer-url');
+      const tokenEl = document.getElementById('peer-token');
+      const errEl = document.getElementById('peer-add-err');
+      const btn = document.getElementById('peer-add-btn');
+
+      errEl.textContent = '';
+      const url = urlEl.value.trim();
+      if (!url) { errEl.textContent = 'URL is required.'; return; }
+
+      const body = { url };
+      if (tokenEl.value.trim()) body.token = tokenEl.value.trim();
+
+      btn.disabled = true;
+      btn.textContent = 'Checking…';
+      try {
+        // The server validates connectivity; a peer it can't reach is not stored.
+        await api('POST', '/peers', body);
+        urlEl.value = ''; tokenEl.value = '';
+        await loadPeers();
+        await loadCameras();
+      } catch (e) {
+        errEl.textContent = e.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Add peer';
+      }
+    }
+
+    async function deletePeer(id) {
+      try { await api('DELETE', `/peers/${id}`); }
+      catch (e) { alert(`Remove failed: ${e.message}`); }
+      await loadPeers();
+      await loadCameras();
     }
 
     // -------------------------------------------------------------------------
@@ -726,7 +897,8 @@
     }
 
     loadCameras();
-    setInterval(loadCameras, 5000);
+    loadPeers();
+    setInterval(() => { loadCameras(); loadPeers(); }, 5000);
   </script>
 </body>
 

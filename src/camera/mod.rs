@@ -147,7 +147,7 @@ pub enum ParameterType {
 
 /// Device information returned by `list_devices`.
 /// The `id` field is the opaque encoded ID suitable for use in subsequent API calls.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInfo {
     /// Opaque, URL-safe device identifier (base64url encoded).
     pub id: String,
@@ -159,7 +159,7 @@ pub struct DeviceInfo {
 
 /// One option in a Select or RangeSelect parameter.
 /// `value` is the opaque string key passed back to `set_parameter`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParameterOption {
     /// Human-readable label (e.g. "f/5.6", "1/500", "ISO 400").
     pub label: String,
@@ -179,7 +179,7 @@ pub struct ParameterOption {
 /// - `select`       — arbitrary discrete choices; `current` matches one `option.value`.
 /// - `range_select` — ordered discrete values with numeric progression (ISO, aperture);
 ///                    rendered as a select but values are semantically ordered.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CameraParameter {
     Boolean {
@@ -233,6 +233,8 @@ pub enum CameraError {
     NotConnected,
     #[error("operation not supported by this backend")]
     NotSupported,
+    #[error("remote backend error: {0}")]
+    Remote(String),
 }
 
 // ---------------------------------------------------------------------------

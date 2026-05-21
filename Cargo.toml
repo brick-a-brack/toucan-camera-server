@@ -17,6 +17,8 @@ backend-canon = []
 backend-webcam-macos = []
 backend-webcam-windows = ["dep:windows", "dep:windows-core", "dep:image"]
 backend-camera2-android = ["dep:image"]
+# Relays cameras exposed by other toucan-camera-server instances over HTTP.
+backend-remote = ["dep:reqwest"]
 
 [dependencies]
 axum = "0.8"
@@ -29,6 +31,9 @@ thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tower-http = { version = "0.6", features = ["cors"] }
+# HTTP client for the remote backend. No TLS stack: peers are reached over plain
+# HTTP on the LAN (the server itself is HTTP-only), keeping the dependency light.
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "stream"] }
 image = { version = "0.25", optional = true, default-features = false, features = ["jpeg"] }
 windows-core = { version = "0.58", optional = true }
 windows = { version = "0.58", optional = true, features = [
@@ -44,3 +49,7 @@ windows = { version = "0.58", optional = true, features = [
 [build-dependencies]
 cc = "1"
 winresource = "0.1"
+
+[dev-dependencies]
+# `ServiceExt::oneshot` drives the router in-process for integration tests.
+tower = { version = "0.5", features = ["util"] }

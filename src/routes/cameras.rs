@@ -35,6 +35,9 @@ pub struct AppState {
     pub backends: BackendState,
     pub live_views: LiveViewSenders,
     pub token: Arc<RwLock<String>>,
+    /// Shared peer registry, also held by the remote backend.
+    #[cfg(feature = "backend-remote")]
+    pub peers: Arc<crate::backends::remote::PeerRegistry>,
 }
 
 impl axum::extract::FromRef<AppState> for BackendState {
@@ -44,11 +47,17 @@ impl axum::extract::FromRef<AppState> for BackendState {
 }
 
 impl AppState {
-    pub fn new(backends: BackendState, token: Arc<RwLock<String>>) -> Self {
+    pub fn new(
+        backends: BackendState,
+        token: Arc<RwLock<String>>,
+        #[cfg(feature = "backend-remote")] peers: Arc<crate::backends::remote::PeerRegistry>,
+    ) -> Self {
         Self {
             backends,
             live_views: Arc::new(Mutex::new(HashMap::new())),
             token,
+            #[cfg(feature = "backend-remote")]
+            peers,
         }
     }
 }

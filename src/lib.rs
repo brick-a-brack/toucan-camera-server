@@ -33,10 +33,32 @@ async fn health() -> Json<HealthCheck> {
     })
 }
 
-pub fn build_backends() -> BackendState {
+/// Result of [`build_backends`]: the backend registry plus any shared state the
+/// route layer needs to reference directly (currently the remote peer registry).
+pub struct BuiltBackends {
+    pub state: BackendState,
+    #[cfg(feature = "backend-remote")]
+    pub peers: Arc<backends::remote::PeerRegistry>,
+}
+
+pub fn build_backends() -> BuiltBackends {
     #[allow(unused_mut)]
     let mut map: HashMap<String, Arc<dyn camera::CameraBackend>> = HashMap::new();
     eprintln!("[main] build_backends() called");
+
+    // The peer registry is shared between the remote backend (which reads it to
+    // route and fan out requests) and the /peers routes (which mutate it).
+    #[cfg(feature = "backend-remote")]
+    let peers = Arc::new(backends::remote::PeerRegistry::new());
+
+    #[cfg(feature = "backend-remote")]
+    match backends::remote::RemoteBackend::new(peers.clone()) {
+        Ok(b) => {
+            let b: Arc<dyn camera::CameraBackend> = Arc::new(b);
+            map.insert(b.backend_id().to_string(), b);
+        }
+        Err(e) => eprintln!("[error] Remote backend failed to initialize: {e}"),
+    }
 
     #[cfg(feature = "backend-canon")]
     match backends::canon::CanonBackend::new() {
@@ -76,7 +98,11 @@ pub fn build_backends() -> BackendState {
     }
 
     eprintln!("[main] registered backends: {:?}", map.keys().collect::<Vec<_>>());
-    Arc::new(map)
+    BuiltBackends {
+        state: Arc::new(map),
+        #[cfg(feature = "backend-remote")]
+        peers,
+    }
 }
 
 pub struct Args {
@@ -148,6 +174,34 @@ static ANDROID_TOKEN: std::sync::Mutex<String> = std::sync::Mutex::new(String::n
 #[cfg(target_os = "android")]
 static ACTIVE_TOKEN: std::sync::Mutex<Option<Arc<RwLock<String>>>> = std::sync::Mutex::new(None);
 
+/// Builds the full axum router (routes + auth + CORS) from an [`AppState`].
+/// Shared by [`run_server`] and the integration tests.
+pub fn build_router(state: AppState) -> Router {
+    #[allow(unused_mut)]
+    let mut app = Router::new()
+        .route("/", get(index))
+        .route("/health", get(health))
+        .route("/cameras", get(cameras::list_cameras))
+        .route("/cameras/{id}/connect", put(cameras::connect_camera))
+        .route("/cameras/{id}/disconnect", put(cameras::disconnect_camera))
+        .route("/cameras/{id}/parameters", get(cameras::get_parameters))
+        .route("/cameras/{id}/parameters", put(cameras::set_parameter))
+        .route("/cameras/{id}/liveview", get(cameras::live_view))
+        .route("/cameras/{id}/capture", axum::routing::post(cameras::capture_photo));
+
+    #[cfg(feature = "backend-remote")]
+    {
+        use routes::peers;
+        app = app
+            .route("/peers", get(peers::list_peers).post(peers::add_peer))
+            .route("/peers/{id}", axum::routing::delete(peers::delete_peer));
+    }
+
+    app.with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(state, auth::auth_middleware))
+        .layer(CorsLayer::permissive())
+}
+
 pub async fn run_server() {
     let args  = parse_args();
     let port  = resolve_port(args.port);
@@ -167,22 +221,15 @@ pub async fn run_server() {
         *ACTIVE_TOKEN.lock().unwrap() = Some(token.clone());
     }
 
-    let backends = build_backends();
-    let state = AppState::new(backends, token.clone());
+    let built = build_backends();
+    let state = AppState::new(
+        built.state,
+        token.clone(),
+        #[cfg(feature = "backend-remote")]
+        built.peers.clone(),
+    );
 
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/health", get(health))
-        .route("/cameras", get(cameras::list_cameras))
-        .route("/cameras/{id}/connect", put(cameras::connect_camera))
-        .route("/cameras/{id}/disconnect", put(cameras::disconnect_camera))
-        .route("/cameras/{id}/parameters", get(cameras::get_parameters))
-        .route("/cameras/{id}/parameters", put(cameras::set_parameter))
-        .route("/cameras/{id}/liveview", get(cameras::live_view))
-        .route("/cameras/{id}/capture", axum::routing::post(cameras::capture_photo))
-        .with_state(state.clone())
-        .layer(axum::middleware::from_fn_with_state(state, auth::auth_middleware))
-        .layer(CorsLayer::permissive());
+    let app = build_router(state);
 
     eprintln!("[info] binding on port {port}");
     let listener = bind_listener(port).await;
