@@ -50,7 +50,12 @@
       "Bash(awk 'NR==1 || /0000000000000000:1F68/')",
       "Bash(awk 'NR==1 || /00000000:1F68/')",
       "Bash(adb forward *)",
-      "Bash(echo \"FAILED \\(exit $?\\)\")"
+      "Bash(echo \"FAILED \\(exit $?\\)\")",
+      "Bash(adb devices *)",
+      "PowerShell(cargo ndk *)",
+      "Bash(./gradlew installDebug)",
+      "Bash(./gradlew assembleDebug)",
+      "Bash(xargs grep *)"
     ]
   }
 }

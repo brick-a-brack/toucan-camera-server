@@ -19,7 +19,7 @@ class CameraServerService : Service() {
         var isRunning = false
 
         init {
-            System.loadLibrary("toucan_camera_server")
+            System.loadLibrary("toucan_camera_server_lib")
         }
 
         @JvmStatic

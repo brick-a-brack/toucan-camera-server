@@ -6,7 +6,7 @@ fn main() {
     std::thread::spawn(|| {
         tokio::runtime::Runtime::new()
             .expect("failed to build tokio runtime")
-            .block_on(toucan_camera_server::run_server());
+            .block_on(toucan_camera_server_lib::run_server());
     });
 
     // Pump the main CF run loop forever. The EDSDK's IOKit USB notifications
@@ -21,5 +21,5 @@ fn main() {
 #[cfg(not(target_os = "macos"))]
 #[tokio::main]
 async fn main() {
-    toucan_camera_server::run_server().await;
+    toucan_camera_server_lib::run_server().await;
 }
