@@ -213,13 +213,13 @@ jobs:
             echo "ERROR: at least one transitive dependency missing"; exit 1
           fi
           cd -
-          tar czf dist/toucan-camera-server-linux.tar.gz -C dist toucan-camera-server-linux
+          cd dist && zip -r toucan-camera-server-linux.zip toucan-camera-server-linux && cd -
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: toucan-camera-server-linux
-          path: dist/toucan-camera-server-linux.tar.gz
+          path: dist/toucan-camera-server-linux.zip
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -375,7 +375,7 @@ jobs:
             gh release upload "$DRAFT_TAG" \
               dist/toucan-camera-server-macos.zip \
               dist/toucan-camera-server-windows.zip \
-              dist/toucan-camera-server-linux.tar.gz \
+              dist/toucan-camera-server-linux.zip \
               dist/toucan-camera-server-android.zip \
               dist/toucan-camera-lib-android.zip \
               --repo "$GITHUB_REPOSITORY" \
