@@ -976,6 +976,7 @@ int wc_get_parameters(void *handle, WcParamDesc *out, int capacity) {
                         push_option(p, 0, "Disabled");
                         push_option(p, 1, "50 Hz");
                         push_option(p, 2, "60 Hz");
+                        push_option(p, 3, "Auto");
                         emitted = YES;
                         break;
                     case CTRL_RANGE:

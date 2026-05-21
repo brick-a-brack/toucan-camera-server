@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use axum::{
     body::Body,
@@ -26,13 +26,18 @@ pub type BackendState = Arc<HashMap<String, Arc<dyn CameraBackend>>>;
 
 /// One broadcast sender per active live-view device.
 /// The key is the opaque (encoded) device ID.
-type LiveViewSenders = Arc<Mutex<HashMap<String, broadcast::Sender<Arc<Bytes>>>>>;
+/// Wrapped in Arc so the capture loop can use ptr_eq to avoid removing a
+/// sender that was replaced by a newer connection while the loop was exiting.
+type LiveViewSenders = Arc<Mutex<HashMap<String, Arc<broadcast::Sender<Arc<Bytes>>>>>>;
 
 #[derive(Clone)]
 pub struct AppState {
     pub backends: BackendState,
     pub live_views: LiveViewSenders,
-    pub token: String,
+    pub token: Arc<RwLock<String>>,
+    /// Shared peer registry, also held by the remote backend.
+    #[cfg(feature = "backend-remote")]
+    pub peers: Arc<crate::backends::remote::PeerRegistry>,
 }
 
 impl axum::extract::FromRef<AppState> for BackendState {
@@ -42,11 +47,17 @@ impl axum::extract::FromRef<AppState> for BackendState {
 }
 
 impl AppState {
-    pub fn new(backends: BackendState, token: String) -> Self {
+    pub fn new(
+        backends: BackendState,
+        token: Arc<RwLock<String>>,
+        #[cfg(feature = "backend-remote")] peers: Arc<crate::backends::remote::PeerRegistry>,
+    ) -> Self {
         Self {
             backends,
             live_views: Arc::new(Mutex::new(HashMap::new())),
             token,
+            #[cfg(feature = "backend-remote")]
+            peers,
         }
     }
 }
@@ -124,10 +135,13 @@ pub async fn get_parameters(
 }
 
 pub async fn disconnect_camera(
-    State(backends): State<BackendState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    dispatch(&backends, &id, |b, native_id| b.disconnect(native_id))
+    // Drop the live-view sender before disconnecting so the capture loop stops
+    // and the next connection always starts with a fresh sender.
+    state.live_views.lock().await.remove(&id);
+    dispatch(&state.backends, &id, |b, native_id| b.disconnect(native_id))
 }
 
 pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -174,10 +188,9 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
     let rx = {
         let mut senders = state.live_views.lock().await;
         let sender = senders.entry(id.clone()).or_insert_with(|| {
-            // Buffer a few frames to absorb jitter without adding latency.
             let (tx, _) = broadcast::channel::<Arc<Bytes>>(4);
-            tx
-        });
+            Arc::new(tx)
+        }).clone();
 
         let rx = sender.subscribe();
 
@@ -187,12 +200,19 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
             let tx = sender.clone();
             let backend_loop = backend.clone();
             let native_id = dev_id.native_id.clone();
+            let live_views_loop = state.live_views.clone();
+            let opaque_id_loop = id.clone();
 
             tokio::spawn(async move {
                 // Cap at 30 fps (≈32 ms/frame). Backends slower than this run
                 // at their natural pace; fast backends (AVFoundation) are
                 // prevented from spinning at CPU speed.
                 let frame_interval = tokio::time::Duration::from_millis(32);
+                // Break after ~10 s of consecutive not-ready frames to avoid
+                // spinning forever when the camera stalls (e.g. after a
+                // parameter change that disrupts the capture pipeline).
+                let mut consecutive_misses: u32 = 0;
+                const MAX_CONSECUTIVE_MISSES: u32 = 300;
 
                 loop {
                     let tick = tokio::time::Instant::now();
@@ -209,6 +229,7 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
 
                     match result {
                         Ok(Ok(jpeg)) => {
+                            consecutive_misses = 0;
                             let mut buf = format!(
                                 "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
                                 jpeg.len()
@@ -223,7 +244,12 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                             }
                         }
                         Ok(Err(crate::camera::CameraError::SdkError(0x0000_A102))) => {
-                            // EDS_ERR_OBJECT_NOTREADY: EVF not ready yet, skip frame.
+                            // EVF / camera not ready yet — skip frame.
+                            consecutive_misses += 1;
+                            if consecutive_misses >= MAX_CONSECUTIVE_MISSES {
+                                eprintln!("[warn] live view stalled for {native_id} after {consecutive_misses} consecutive misses, stopping loop");
+                                break;
+                            }
                         }
                         Ok(Err(e)) => {
                             eprintln!("[error] live view frame error for {native_id}: {e}");
@@ -237,6 +263,15 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                         tokio::time::sleep(frame_interval - elapsed).await;
                     }
                 }
+
+                // Remove the sender only if it is still ours. A reconnect may have
+                // already replaced it with a new sender — in that case, leave it alone.
+                let mut senders = live_views_loop.lock().await;
+                if let Some(current) = senders.get(&opaque_id_loop) {
+                    if Arc::ptr_eq(current, &tx) {
+                        senders.remove(&opaque_id_loop);
+                    }
+                }
             });
         }
 
@@ -244,10 +279,18 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
     };
 
     // Convert the broadcast receiver into an HTTP body stream.
-    let stream = BroadcastStream::new(rx).filter_map(|res| match res {
-        Ok(frame) => Some(Ok::<Bytes, std::io::Error>((*frame).clone())),
-        Err(_) => None, // lagged frames — just skip
-    });
+    // When the broadcast channel closes (capture loop stopped), chain a deliberate
+    // IO error so axum resets the TCP connection instead of ending the response
+    // cleanly. A clean end is invisible to the browser (onerror never fires on the
+    // <img> element), leaving the live view panel frozen with the last frame.
+    let stream = BroadcastStream::new(rx)
+        .filter_map(|res| match res {
+            Ok(frame) => Some(Ok::<Bytes, std::io::Error>((*frame).clone())),
+            Err(_) => None, // lagged frames — just skip
+        })
+        .chain(tokio_stream::iter(std::iter::once(Err::<Bytes, std::io::Error>(
+            std::io::Error::new(std::io::ErrorKind::ConnectionReset, "live view stream closed"),
+        ))));
 
     Response::builder()
         .header(

@@ -213,12 +213,14 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
                         param_type: pt,
                         current,
                         options,
+                        disabled: false,
                     }
                 } else {
                     CameraParameter::Select {
                         param_type: pt,
                         current,
                         options,
+                        disabled: false,
                     }
                 });
             }
@@ -235,6 +237,7 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
                     min: *range.start() as i32,
                     max: *range.end() as i32,
                     step: step as i32,
+                    disabled: false,
                 });
             }
         }
@@ -251,6 +254,7 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
                         ParameterOption { label: "Off".into(), value: "0".into() },
                         ParameterOption { label: "On".into(),  value: "1".into() },
                     ],
+                    disabled: false,
                 });
             }
         }
@@ -275,9 +279,6 @@ fn param_type_for(name: &str) -> Option<ParameterType> {
         "colortemperature" | "color_temperature" => Some(ParameterType::ColorTemperature),
         "exposurecompensation" | "exposure_compensation" => Some(ParameterType::ExposureCompensation),
         "imageformat" | "image_format" | "imagequality" | "image_quality" => Some(ParameterType::ImageQuality),
-        "focusmode" | "focus_mode" => Some(ParameterType::FocusMode),
-        "exposuremetermode" | "meteringmode" | "metering_mode" => Some(ParameterType::MeteringMode),
-        "capturemode" | "drivemode" | "drive_mode" => Some(ParameterType::DriveMode),
         _ => None,
     }
 }
@@ -291,9 +292,6 @@ fn config_key_for(param_type: ParameterType) -> Option<&'static str> {
         ParameterType::ColorTemperature     => Some("colortemperature"),
         ParameterType::ExposureCompensation => Some("exposurecompensation"),
         ParameterType::ImageQuality         => Some("imageformat"),
-        ParameterType::FocusMode            => Some("focusmode"),
-        ParameterType::MeteringMode         => Some("exposuremetermode"),
-        ParameterType::DriveMode            => Some("capturemode"),
         _ => None,
     }
 }
