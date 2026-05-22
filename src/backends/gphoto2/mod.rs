@@ -34,11 +34,34 @@ impl GPhoto2Backend {
         // consistent between reads and writes.
         std::env::set_var("LC_ALL", "C");
 
+        // If libgphoto2's plugins were bundled next to the binary (build.rs
+        // `copy_gphoto2_bundle`), point libgphoto2 at them so the server runs
+        // without a system libgphoto2 install. No-op otherwise → dev builds use
+        // the system install.
+        Self::use_bundled_plugins();
+
         let context = gphoto2::Context::new().map_err(map_err)?;
         let connected: Arc<Mutex<HashMap<String, gphoto2::Camera>>> =
             Arc::new(Mutex::new(HashMap::new()));
         spawn_keepalive(connected.clone());
         Ok(Self { context, connected })
+    }
+
+    /// Point `CAMLIBS`/`IOLIBS` at plugin directories shipped next to the
+    /// executable, if present. Must run before the first gphoto2 call.
+    fn use_bundled_plugins() {
+        let Ok(exe) = std::env::current_exe() else {
+            return;
+        };
+        let Some(dir) = exe.parent() else {
+            return;
+        };
+        for (var, sub) in [("CAMLIBS", "camlibs"), ("IOLIBS", "iolibs")] {
+            let path = dir.join(sub);
+            if path.is_dir() {
+                std::env::set_var(var, &path);
+            }
+        }
     }
 
     /// Returns a clone of the live `Camera` handle for `native_id`.
@@ -301,13 +324,13 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
                 ParameterType::Iso => {
                     let options: Vec<ParameterOption> = choices
                         .iter()
-                        .filter(|c| c.parse::<u32>().is_ok())
+                        .filter(|&c| is_concrete_iso(c))
                         .map(|c| ParameterOption { label: c.clone(), value: c.clone() })
                         .collect();
                     if options.is_empty() {
                         return;
                     }
-                    let iso_auto = current.parse::<u32>().is_err();
+                    let iso_auto = !is_concrete_iso(&current);
                     out.push(CameraParameter::Boolean {
                         param_type: ParameterType::IsoAuto,
                         current: iso_auto,
@@ -334,7 +357,7 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
                 ParameterType::ShutterSpeed => {
                     let options: Vec<ParameterOption> = choices
                         .iter()
-                        .filter(|c| c.chars().any(|ch| ch.is_ascii_digit()))
+                        .filter(|&c| is_real_shutter_speed(c))
                         .map(|c| ParameterOption { label: c.clone(), value: c.clone() })
                         .collect();
                     out.push(CameraParameter::RangeSelect {
@@ -350,7 +373,7 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
                 ParameterType::ImageQuality => {
                     let options: Vec<ParameterOption> = choices
                         .iter()
-                        .filter(|c| !c.to_uppercase().contains("RAW"))
+                        .filter(|&c| is_jpeg_format(c))
                         .map(|c| ParameterOption { label: c.clone(), value: c.clone() })
                         .collect();
                     out.push(CameraParameter::Select {
@@ -454,6 +477,30 @@ fn config_key_for(param_type: ParameterType) -> Option<&'static str> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Value classification — locale-independent, since libgphoto2 localizes labels.
+// ---------------------------------------------------------------------------
+
+/// A concrete (non-auto) ISO value. libgphoto2 reports the auto choice with a
+/// localized label ("Auto" / "Automatique"…), but every real ISO is a plain
+/// integer — so anything that does not parse as one is the auto entry.
+fn is_concrete_iso(choice: &str) -> bool {
+    choice.parse::<u32>().is_ok()
+}
+
+/// A real shutter speed. The bulb entry is localized too ("Bulb" / "pose
+/// longue"), but unlike every real speed ("30", "1/60", "0.5") it has no digit.
+fn is_real_shutter_speed(choice: &str) -> bool {
+    choice.chars().any(|c| c.is_ascii_digit())
+}
+
+/// A JPEG image-quality choice. RAW / RAW+JPEG / cRAW formats contain "RAW"; the
+/// server only ever returns JPEG (capture is hardcoded to image/jpeg), so we hide
+/// them — selecting one would break capture.
+fn is_jpeg_format(choice: &str) -> bool {
+    !choice.to_uppercase().contains("RAW")
+}
+
 /// Parameters whose values form an ordered numeric progression (ISO, aperture,
 /// shutter speed, exposure compensation) should render as `RangeSelect` so the
 /// UI knows the order is meaningful.
@@ -466,4 +513,86 @@ fn is_ordered(pt: ParameterType) -> bool {
             | ParameterType::ExposureCompensation
             | ParameterType::ColorTemperature
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_known_config_keys_and_ignores_unknown() {
+        assert_eq!(param_type_for("iso"), Some(ParameterType::Iso));
+        assert_eq!(param_type_for("shutterspeed"), Some(ParameterType::ShutterSpeed));
+        assert_eq!(param_type_for("aperture"), Some(ParameterType::Aperture));
+        assert_eq!(param_type_for("imageformat"), Some(ParameterType::ImageQuality));
+        assert_eq!(param_type_for("focusmode"), None); // intentionally not exposed
+        assert_eq!(param_type_for("somethingelse"), None);
+    }
+
+    #[test]
+    fn config_key_round_trips_through_param_type_for() {
+        for pt in [
+            ParameterType::Iso,
+            ParameterType::ShutterSpeed,
+            ParameterType::Aperture,
+            ParameterType::WhiteBalance,
+            ParameterType::ColorTemperature,
+            ParameterType::ExposureCompensation,
+            ParameterType::ImageQuality,
+        ] {
+            let key = config_key_for(pt).expect("each mapped type has a config key");
+            assert_eq!(param_type_for(key), Some(pt), "key {key:?} should round-trip");
+        }
+    }
+
+    #[test]
+    fn iso_auto_is_the_only_non_numeric_choice() {
+        assert!(is_concrete_iso("100"));
+        assert!(is_concrete_iso("6400"));
+        assert!(!is_concrete_iso("Auto"));
+        assert!(!is_concrete_iso("Automatique")); // localized label still detected
+    }
+
+    #[test]
+    fn bulb_is_the_digitless_shutter_choice() {
+        assert!(is_real_shutter_speed("30"));
+        assert!(is_real_shutter_speed("1/4000"));
+        assert!(is_real_shutter_speed("0.5"));
+        assert!(!is_real_shutter_speed("Bulb"));
+        assert!(!is_real_shutter_speed("pose longue")); // localized label still detected
+    }
+
+    #[test]
+    fn raw_formats_are_filtered_out() {
+        assert!(is_jpeg_format("L"));
+        assert!(is_jpeg_format("cL"));
+        assert!(is_jpeg_format("S2"));
+        assert!(!is_jpeg_format("RAW"));
+        assert!(!is_jpeg_format("RAW + L"));
+        assert!(!is_jpeg_format("cRAW")); // compact RAW is still RAW
+    }
+
+    #[test]
+    fn ordered_covers_numeric_progressions_only() {
+        assert!(is_ordered(ParameterType::Iso));
+        assert!(is_ordered(ParameterType::Aperture));
+        assert!(is_ordered(ParameterType::ShutterSpeed));
+        assert!(!is_ordered(ParameterType::WhiteBalance));
+        assert!(!is_ordered(ParameterType::ImageQuality));
+    }
+
+    #[test]
+    fn non_canon_models_are_never_deferred() {
+        assert!(!owned_by_other_backend("Nikon D750"));
+        assert!(!owned_by_other_backend("Sony Alpha 7"));
+    }
+
+    #[test]
+    fn canon_is_deferred_only_when_edsdk_is_compiled_in() {
+        // Canon bodies are handed to the EDSDK backend only when it is built in.
+        assert_eq!(
+            owned_by_other_backend("Canon EOS 600D"),
+            cfg!(feature = "backend-canon")
+        );
+    }
 }
