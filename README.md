@@ -73,7 +73,7 @@ Feel free to make pull-requests or report issues 😉
 
 | Backend                      | Windows | macOS | Linux | Android |
 | ---------------------------- | ------- | ----- | ----- | ------- |
-| Webcams / Cameras            | 🟢¹     | 🟢²   | 🟠³   | 🟢⁴     |
+| Webcams / Cameras            | 🟢¹     | 🟢²   | 🟢³   | 🟢⁴     |
 | Canon EOS (EDSDK)            | 🟢      | 🟢    | 🟢    | 🔴      |
 | Various cameras (libgphoto2) | 🔴      | 🟢⁶   | 🟢⁶   | 🔴      |
 | Remote (other instances)     | 🟢⁵     | 🟢⁵   | 🟢⁵   | 🟢⁵     |

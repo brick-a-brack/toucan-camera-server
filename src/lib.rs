@@ -78,6 +78,15 @@ pub fn build_backends() -> BuiltBackends {
         Err(e) => eprintln!("[error] gphoto2 backend failed to initialize: {e}"),
     }
 
+    #[cfg(all(feature = "backend-webcam-linux", target_os = "linux"))]
+    match backends::webcam_linux::WebcamLinuxBackend::new() {
+        Ok(b) => {
+            let b: Arc<dyn camera::CameraBackend> = Arc::new(b);
+            map.insert(b.backend_id().to_string(), b);
+        }
+        Err(e) => eprintln!("[error] Linux webcam backend failed to initialize: {e}"),
+    }
+
     #[cfg(all(feature = "backend-webcam-macos", target_os = "macos"))]
     match backends::webcam_macos::WebcamMacosBackend::new() {
         Ok(b) => {

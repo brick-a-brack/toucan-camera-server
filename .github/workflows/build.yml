@@ -193,6 +193,8 @@ jobs:
   #   - libusb-1.0 (typically pre-installed)
   #   - libgphoto2 (the gphoto2 backend links it dynamically; not bundled)
   #   - read/write permissions on the camera USB node (see Canon udev rules)
+  #   - webcam access: shipped install.sh sets up a uaccess udev rule so the
+  #     active desktop user gets ACL access to /dev/video* without group changes
   # ---------------------------------------------------------------------------
   build-linux:
     name: Build (Linux x86_64)
@@ -223,7 +225,7 @@ jobs:
         run: |
           cargo build --release \
             --target x86_64-unknown-linux-gnu \
-            --features backend-canon,backend-gphoto2,backend-remote
+            --features backend-canon,backend-gphoto2,backend-webcam-linux,backend-remote
 
       - name: Package
         run: |
@@ -242,6 +244,11 @@ jobs:
             done < "$REL/gphoto2-bundle.manifest"
             cp -R "$REL/camlibs" "$REL/iolibs" "$OUT/" 2>/dev/null || true
           fi
+          # Webcam permissions setup — udev rule + install script.
+          # End-user runs ./install.sh once after extraction (uses sudo).
+          cp packaging/linux/99-toucan-camera.rules "$OUT/"
+          cp packaging/linux/install.sh "$OUT/"
+          chmod +x "$OUT/install.sh"
           # Sanity checks against the bundled layout:
           #  1. The binary must resolve libEDSDK.so via rpath=$ORIGIN.
           #  2. No dependency in the full transitive graph may be missing.
