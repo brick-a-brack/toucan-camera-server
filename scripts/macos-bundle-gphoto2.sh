@@ -53,13 +53,20 @@ relink() {
 }
 
 # 1. Flat libs: lipo the two arches, give a relocatable id, repoint sibling deps.
-while IFS= read -r lib; do
+# `|| [ -n "$lib" ]` so the final manifest entry is processed even if the file
+# has no trailing newline — otherwise `read` drops it at EOF and that lib never
+# gets bundled while the binary is still relinked to it (dangling reference).
+while IFS= read -r lib || [ -n "$lib" ]; do
   [ -n "$lib" ] || continue
   if [ -f "$X86_DIR/$lib" ] && [ -f "$ARM_DIR/$lib" ]; then
     lipo -create "$X86_DIR/$lib" "$ARM_DIR/$lib" -output "$OUT/$lib"
     chmod u+w "$OUT/$lib"
     install_name_tool -id "@executable_path/$lib" "$OUT/$lib"
     relink "$OUT/$lib" "@loader_path"
+  else
+    echo "WARNING: '$lib' is in the manifest but missing from a per-arch dir" \
+         "(x86: $( [ -f "$X86_DIR/$lib" ] && echo yes || echo no )," \
+         "arm: $( [ -f "$ARM_DIR/$lib" ] && echo yes || echo no )) — not bundled"
   fi
 done < "$MANIFEST"
 
@@ -79,6 +86,40 @@ done
 
 # 3. The binary: point its bundled-lib dependencies next to itself.
 relink "$OUT/toucan-camera-server" "@executable_path"
+
+# 4. Verify the bundle is self-contained: every @executable_path / @loader_path
+# dependency of the binary, the flat dylibs and the plugins must resolve to a
+# file we actually shipped. This turns a silently-incomplete bundle (the kind
+# that crashes at launch with "Library not loaded") into a hard CI failure.
+verify_fail=0
+verify_refs() {
+  f="$1"
+  refs=$(
+    { otool -arch arm64 -L "$f" 2>/dev/null || true
+      otool -arch x86_64 -L "$f" 2>/dev/null || true
+    } | awk '/@executable_path\/|@loader_path\// { print $1 }' | sort -u
+  )
+  while IFS= read -r ref || [ -n "$ref" ]; do
+    [ -n "$ref" ] || continue
+    base="$(basename "$ref")"
+    # Flat libs live in $OUT; plugins reference them one dir up (@loader_path/..).
+    if [ ! -f "$OUT/$base" ] && [ ! -f "$(dirname "$f")/$base" ]; then
+      echo "VERIFY FAIL: $(basename "$f") needs '$ref' but '$base' is not in the bundle"
+      verify_fail=1
+    fi
+  done <<< "$refs"
+}
+
+verify_refs "$OUT/toucan-camera-server"
+for dylib in "$OUT"/*.dylib; do [ -e "$dylib" ] && verify_refs "$dylib"; done
+for sub in camlibs iolibs; do
+  for so in "$OUT/$sub"/*.so; do [ -e "$so" ] && verify_refs "$so"; done
+done
+
+if [ "$verify_fail" -ne 0 ]; then
+  echo "ERROR: gphoto2 macOS bundle is incomplete — see VERIFY FAIL lines above"
+  exit 1
+fi
 
 echo "gphoto2 macOS bundle assembled in $OUT:"
 echo "  $(echo "$OUT"/*.dylib | wc -w) dylibs, $(ls "$OUT"/camlibs 2>/dev/null | wc -l) camlibs, $(ls "$OUT"/iolibs 2>/dev/null | wc -l) iolibs"

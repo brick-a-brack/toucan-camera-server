@@ -319,9 +319,13 @@ fn copy_gphoto2_bundle() {
         .iter()
         .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
         .collect();
+    // Trailing newline is required: the CI packaging scripts read this file with
+    // `while read`, which silently drops a final line that is not newline-
+    // terminated — leaving that lib unbundled while the binary still gets
+    // relinked to it (dangling @executable_path/$ORIGIN reference → launch crash).
     let _ = std::fs::write(
         profile_dir.join("gphoto2-bundle.manifest"),
-        manifest.join("\n"),
+        format!("{}\n", manifest.join("\n")),
     );
 
     if is_linux {

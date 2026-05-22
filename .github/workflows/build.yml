@@ -235,7 +235,9 @@ jobs:
           # gphoto2 runtime bundle staged by build.rs (libs from the manifest +
           # camlibs/iolibs plugin dirs), each already given an $ORIGIN rpath.
           if [ -f "$REL/gphoto2-bundle.manifest" ]; then
-            while IFS= read -r lib; do
+            # `|| [ -n "$lib" ]` so the final manifest entry is copied even if the
+            # file has no trailing newline (otherwise `read` drops it at EOF).
+            while IFS= read -r lib || [ -n "$lib" ]; do
               [ -n "$lib" ] && cp "$REL/$lib" "$OUT/"
             done < "$REL/gphoto2-bundle.manifest"
             cp -R "$REL/camlibs" "$REL/iolibs" "$OUT/" 2>/dev/null || true
