@@ -1,0 +1,12 @@
+# Toucan Camera Server — webcam access
+#
+# Tag every V4L2 device with `uaccess`, which makes systemd-logind grant the
+# currently active desktop user read/write access via POSIX ACLs. Same
+# mechanism used by browsers and other camera apps, so users don't need to be
+# added to the `video` group manually.
+#
+# Drop this file in /etc/udev/rules.d/ then run:
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --subsystem-match=video4linux
+
+SUBSYSTEM=="video4linux", TAG+="uaccess"
