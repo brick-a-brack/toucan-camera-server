@@ -7,7 +7,6 @@ use v4l::capability::Flags;
 use v4l::context;
 use v4l::control::{self, MenuItem};
 use v4l::format::FourCC;
-use v4l::framesize::FrameSizeEnum;
 use v4l::io::traits::CaptureStream;
 use v4l::prelude::*;
 use v4l::video::Capture;
@@ -17,10 +16,12 @@ use crate::camera::{
     ParameterType,
 };
 
-/// Pixel format we negotiate with the camera. Most modern UVC webcams expose
-/// MJPG natively, which lets us stream JPEG frames straight out of the kernel
-/// buffer without any encoding step on our side.
+/// Pixel formats we negotiate with the camera. MJPG is preferred (the camera
+/// already emits JPEG, so frames stream straight out of the kernel buffer).
+/// YUYV is the fallback for resolutions a camera only offers uncompressed; we
+/// transcode those frames to JPEG ourselves, just like the Windows backend.
 const MJPG: [u8; 4] = *b"MJPG";
+const YUYV: [u8; 4] = *b"YUYV";
 
 /// Default resolution we try at connect time. The user can change it later via
 /// the `VideoFormat` parameter.
@@ -29,7 +30,10 @@ const DEFAULT_HEIGHT: u32 = 720;
 const BUFFER_COUNT:   u32 = 4;
 
 /// Block at most this long when waiting for a frame from the kernel queue.
-const FRAME_TIMEOUT: Duration = Duration::from_secs(1);
+/// Generous because high-bandwidth uncompressed modes (large YUYV) can take a
+/// while to deliver their first frame after STREAMON while the USB isochronous
+/// bandwidth is negotiated, especially at low frame rates (e.g. 2 fps).
+const FRAME_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // V4L2 control IDs — from linux/videodev2.h
@@ -81,6 +85,12 @@ struct ConnectedDevice {
     /// without needing a second open of the file (which some drivers reject
     /// while streaming).
     device: Device,
+    /// True when the negotiated format is MJPG (frames are already JPEG). When
+    /// false the format is YUYV and frames are transcoded to JPEG per capture.
+    is_mjpg: bool,
+    /// Negotiated frame dimensions — needed to transcode YUYV frames.
+    width:  u32,
+    height: u32,
 }
 
 impl WebcamLinuxBackend {
@@ -96,8 +106,18 @@ fn map_io(err: std::io::Error) -> CameraError {
     CameraError::SdkError(0)
 }
 
-/// Negotiates MJPG at (width, height) on the device, allocates buffers, and
-/// returns a started stream with its lifetime extended to `'static`.
+/// A started capture stream plus the format the driver actually negotiated.
+struct StartedStream {
+    /// SAFETY: lifetime extended to `'static` — see the SAFETY block below.
+    stream:  MmapStream<'static>,
+    is_mjpg: bool,
+    width:   u32,
+    height:  u32,
+}
+
+/// Negotiates (width, height) on the device — MJPG when the camera offers that
+/// resolution compressed, otherwise YUYV — allocates buffers, and returns a
+/// started stream with its lifetime extended to `'static`.
 ///
 /// SAFETY: `MmapStream<'a>`'s `'a` is purely phantom — see v4l 0.14
 /// src/io/mmap/{stream,arena}.rs. The stream owns:
@@ -110,21 +130,32 @@ unsafe fn start_stream(
     device: &Device,
     width:  u32,
     height: u32,
-) -> Result<MmapStream<'static>, CameraError> {
+) -> Result<StartedStream, CameraError> {
+    // Prefer MJPG when the camera offers this resolution compressed; otherwise
+    // fall back to YUYV (transcoded to JPEG on capture).
+    let fourcc = if discrete_sizes(device, MJPG).contains(&(width, height)) {
+        MJPG
+    } else {
+        YUYV
+    };
+
     let mut wanted = device.format().map_err(map_io)?;
-    wanted.fourcc = FourCC::new(&MJPG);
+    wanted.fourcc = FourCC::new(&fourcc);
     wanted.width  = width;
     wanted.height = height;
     let actual = device.set_format(&wanted).map_err(map_io)?;
-    if actual.fourcc.repr != MJPG {
+
+    let is_mjpg = actual.fourcc.repr == MJPG;
+    if !is_mjpg && actual.fourcc.repr != YUYV {
         eprintln!(
-            "[webcam_linux] camera does not support MJPG (driver chose {:?})",
+            "[webcam_linux] camera produced an unsupported format ({:?})",
             actual.fourcc,
         );
         return Err(CameraError::NotSupported);
     }
     eprintln!(
-        "[webcam_linux] negotiated format: MJPG {}x{}",
+        "[webcam_linux] negotiated format: {} {}x{}",
+        if is_mjpg { "MJPG" } else { "YUYV" },
         actual.width, actual.height,
     );
 
@@ -132,7 +163,12 @@ unsafe fn start_stream(
         MmapStream::with_buffers(device, Type::VideoCapture, BUFFER_COUNT).map_err(map_io)?;
     stream.set_timeout(FRAME_TIMEOUT);
 
-    Ok(std::mem::transmute::<MmapStream<'_>, MmapStream<'static>>(stream))
+    Ok(StartedStream {
+        stream:  std::mem::transmute::<MmapStream<'_>, MmapStream<'static>>(stream),
+        is_mjpg,
+        width:  actual.width,
+        height: actual.height,
+    })
 }
 
 impl CameraBackend for WebcamLinuxBackend {
@@ -188,12 +224,18 @@ impl CameraBackend for WebcamLinuxBackend {
         }
 
         let device = Device::with_path(native_id).map_err(map_io)?;
-        let stream = unsafe { start_stream(&device, DEFAULT_WIDTH, DEFAULT_HEIGHT)? };
+        let started = unsafe { start_stream(&device, DEFAULT_WIDTH, DEFAULT_HEIGHT)? };
 
         let mut connected = self.connected.lock().expect("webcam_linux mutex poisoned");
         connected.insert(
             native_id.to_string(),
-            ConnectedDevice { stream: Some(stream), device },
+            ConnectedDevice {
+                stream:  Some(started.stream),
+                device,
+                is_mjpg: started.is_mjpg,
+                width:   started.width,
+                height:  started.height,
+            },
         );
         Ok(())
     }
@@ -325,13 +367,46 @@ impl CameraBackend for WebcamLinuxBackend {
             .get_mut(native_id)
             .ok_or(CameraError::NotConnected)?;
 
+        let is_mjpg = dev.is_mjpg;
+        let (width, height) = (dev.width, dev.height);
+
         let stream = dev.stream.as_mut().ok_or(CameraError::NotConnected)?;
-        let (buf, meta) = CaptureStream::next(stream).map_err(map_io)?;
-        // V4L2 maps each MJPG buffer at the driver's worst-case `sizeimage`, so the
-        // slice is padded with trailing zeros past the actual frame. Trim to
-        // `bytesused` to return a tight JPEG like the macOS / Windows backends.
-        let used = (meta.bytesused as usize).min(buf.len());
-        Ok(buf[..used].to_vec())
+
+        // A complete YUYV frame is exactly 2 bytes/pixel (UVC adds no row padding).
+        let expected_yuyv = width as usize * height as usize * 2;
+
+        // Read one frame per call (like the macOS / Windows backends), skipping any
+        // torn/incomplete frame, until we get a complete one or hit the retry cap.
+        //
+        // We deliberately do NOT manually drain the V4L2 queue: a poll()-based drain
+        // can't distinguish POLLIN from POLLERR/POLLHUP (the v4l crate only exposes
+        // the fd count, not the revents), so under the heavy bandwidth of high-res
+        // YUYV it would mistake an error condition for "buffer ready", DQBUF a
+        // not-cleanly-ready buffer, and hand back stale/partial pixels — the exact
+        // "blocks of the previous frame" artifact (and sometimes EINVAL). DQBUF on
+        // its own only ever returns complete buffers, and the capture loop's own
+        // cadence keeps latency bounded.
+        const MAX_READS: u32 = 4;
+        for _ in 0..MAX_READS {
+            let (buf, meta) = CaptureStream::next(stream).map_err(map_io)?;
+            if meta.flags.contains(v4l::buffer::Flags::ERROR) {
+                continue; // torn frame — discard, try the next
+            }
+            let used = (meta.bytesused as usize).min(buf.len());
+            if is_mjpg {
+                // MJPG frames are already JPEG — return them tight, like macOS / Windows.
+                return Ok(buf[..used].to_vec());
+            } else if used >= expected_yuyv {
+                // YUYV is uncompressed — transcode the complete frame to JPEG.
+                let frame = buf[..expected_yuyv].to_vec();
+                return yuyv_to_jpeg(&frame, width, height);
+            }
+            // A short YUYV buffer is an incomplete frame — discard and retry.
+        }
+
+        // Only torn/incomplete frames this round — signal "not ready" so the live
+        // view loop skips and retries instead of tearing down the stream.
+        Err(CameraError::SdkError(0x0000_A102))
     }
 
     fn capture_photo(&self, native_id: &str) -> Result<Vec<u8>, CameraError> {
@@ -361,8 +436,11 @@ impl CameraBackend for WebcamLinuxBackend {
             // Reconfigure and restart. If this fails, we leave `stream = None`
             // and surface the error — the user can retry with another format
             // or call disconnect/connect.
-            let new_stream = unsafe { start_stream(&dev.device, width, height)? };
-            dev.stream = Some(new_stream);
+            let started = unsafe { start_stream(&dev.device, width, height)? };
+            dev.stream  = Some(started.stream);
+            dev.is_mjpg = started.is_mjpg;
+            dev.width   = started.width;
+            dev.height  = started.height;
             return Ok(());
         }
 
@@ -395,35 +473,47 @@ impl CameraBackend for WebcamLinuxBackend {
 // VideoFormat enumeration
 // ---------------------------------------------------------------------------
 
-/// Builds the `VideoFormat` parameter from the device's enumerable framesizes
-/// for MJPG. Returns `None` if the camera doesn't expose any MJPG mode.
-fn build_video_format_param(device: &Device) -> Option<CameraParameter> {
-    let framesizes = device.enum_framesizes(FourCC::new(&MJPG)).ok()?;
-
-    // Expand stepwise ranges to discrete sizes; deduplicate; sort by total
-    // pixels descending (highest quality first).
-    let mut sizes: Vec<(u32, u32)> = framesizes
-        .into_iter()
-        .flat_map(|fs| {
-            // `to_discrete` flattens both Discrete and Stepwise. For Stepwise
-            // ranges this can produce many entries; UVC cameras almost always
-            // report Discrete though.
-            let _ = matches!(fs.size, FrameSizeEnum::Discrete(_));
-            fs.size.to_discrete().into_iter().map(|d| (d.width, d.height))
+/// All discrete (width, height) sizes the device offers for `fourcc`.
+/// `to_discrete` flattens both Discrete and Stepwise framesizes; UVC cameras
+/// almost always report Discrete. Returns empty if the format is unsupported.
+fn discrete_sizes(device: &Device, fourcc: [u8; 4]) -> Vec<(u32, u32)> {
+    device
+        .enum_framesizes(FourCC::new(&fourcc))
+        .map(|framesizes| {
+            framesizes
+                .into_iter()
+                .flat_map(|fs| fs.size.to_discrete().into_iter().map(|d| (d.width, d.height)))
+                .collect()
         })
-        .collect();
-    sizes.sort_unstable();
-    sizes.dedup();
-    sizes.sort_by_key(|(w, h)| std::cmp::Reverse((*w as u64) * (*h as u64)));
+        .unwrap_or_default()
+}
+
+/// Builds the `VideoStreamFormat` parameter from every resolution the camera
+/// exposes, in MJPG and/or YUYV. MJPG is preferred when a resolution is offered
+/// in both (already compressed); a resolution available only uncompressed is
+/// offered as YUYV and transcoded to JPEG on capture. This mirrors the Windows
+/// backend, which also enumerates both codecs. Returns `None` if fewer than two
+/// distinct resolutions exist (no real choice).
+fn build_video_format_param(device: &Device) -> Option<CameraParameter> {
+    // resolution -> is_mjpg. Insert YUYV first, then MJPG so MJPG wins on overlap.
+    let mut by_res: HashMap<(u32, u32), bool> = HashMap::new();
+    for size in discrete_sizes(device, YUYV) {
+        by_res.insert(size, false);
+    }
+    for size in discrete_sizes(device, MJPG) {
+        by_res.insert(size, true);
+    }
 
     // A selector with a single option is no real choice — hide it, mirroring the
     // Windows backend (`formats.len() > 1`) and the project-wide convention.
-    if sizes.len() < 2 {
+    if by_res.len() < 2 {
         return None;
     }
 
-    // Cap at 50 entries to keep the UI sane on cameras that report stepwise
-    // ranges expanding to thousands of options.
+    // Sort by total pixels descending (highest quality first); cap the list to
+    // keep the UI sane on cameras that report many stepwise sizes.
+    let mut sizes: Vec<((u32, u32), bool)> = by_res.into_iter().collect();
+    sizes.sort_by_key(|((w, h), _)| std::cmp::Reverse((*w as u64) * (*h as u64)));
     sizes.truncate(50);
 
     let current_format = device.format().ok()?;
@@ -431,8 +521,9 @@ fn build_video_format_param(device: &Device) -> Option<CameraParameter> {
 
     let options = sizes
         .into_iter()
-        .map(|(w, h)| ParameterOption {
-            label: format!("{}\u{00d7}{}", w, h), // U+00D7 MULTIPLICATION SIGN
+        .map(|((w, h), is_mjpg)| ParameterOption {
+            // U+00D7 MULTIPLICATION SIGN; codec suffix so YUV-only modes are clear.
+            label: format!("{}\u{00d7}{} {}", w, h, if is_mjpg { "MJPEG" } else { "YUV" }),
             value: format!("{}x{}", w, h),
         })
         .collect();
@@ -443,6 +534,34 @@ fn build_video_format_param(device: &Device) -> Option<CameraParameter> {
         options,
         disabled: false,
     })
+}
+
+/// Converts a YUYV (a.k.a. YUY2) frame to a JPEG buffer. YUYV packs two pixels
+/// into four bytes: Y0 U0 Y1 V0. Mirrors the Windows backend's conversion.
+fn yuyv_to_jpeg(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, CameraError> {
+    let mut rgb: Vec<u8> = Vec::with_capacity((width * height * 3) as usize);
+
+    for chunk in data.chunks_exact(4) {
+        let y0 = chunk[0] as f32;
+        let u  = chunk[1] as f32 - 128.0;
+        let y1 = chunk[2] as f32;
+        let v  = chunk[3] as f32 - 128.0;
+
+        for y in [y0, y1] {
+            let r = (y + 1.402 * v).clamp(0.0, 255.0) as u8;
+            let g = (y - 0.344_136 * u - 0.714_136 * v).clamp(0.0, 255.0) as u8;
+            let b = (y + 1.772 * u).clamp(0.0, 255.0) as u8;
+            rgb.extend_from_slice(&[r, g, b]);
+        }
+    }
+
+    let img = image::RgbImage::from_raw(width, height, rgb)
+        .ok_or(CameraError::SdkError(0xDEAD_0001))?;
+    let mut jpeg_buf: Vec<u8> = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut std::io::Cursor::new(&mut jpeg_buf), image::ImageFormat::Jpeg)
+        .map_err(|_| CameraError::SdkError(0xDEAD_0002))?;
+    Ok(jpeg_buf)
 }
 
 fn parse_resolution(s: &str) -> Option<(u32, u32)> {

@@ -14,7 +14,7 @@ path = "src/main.rs"
 [features]
 default = []
 backend-canon = []
-backend-webcam-linux = ["dep:v4l"]
+backend-webcam-linux = ["dep:v4l", "dep:image"]
 backend-gphoto2 = ["dep:gphoto2"]
 backend-webcam-macos = []
 backend-webcam-windows = ["dep:windows", "dep:windows-core", "dep:image"]
