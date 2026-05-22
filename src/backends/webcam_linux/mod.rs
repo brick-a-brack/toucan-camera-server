@@ -54,6 +54,13 @@ const CID_FOCUS_ABSOLUTE:         u32 = 0x009a090a;
 const CID_FOCUS_AUTO:             u32 = 0x009a090c;
 const CID_ZOOM_ABSOLUTE:          u32 = 0x009a090d;
 
+// V4L2_CID_EXPOSURE_AUTO is a 4-entry menu (enum v4l2_exposure_auto_type), but
+// the macOS and Windows backends model auto-exposure as a simple on/off toggle.
+// We present it the same way: MANUAL means "auto off"; APERTURE_PRIORITY is the
+// value UVC cameras accept for "auto on".
+const V4L2_EXPOSURE_MANUAL:            i64 = 1;
+const V4L2_EXPOSURE_APERTURE_PRIORITY: i64 = 3;
+
 /// V4L2-backed webcam backend (Linux only).
 pub struct WebcamLinuxBackend {
     connected: Mutex<HashMap<String, ConnectedDevice>>,
@@ -97,6 +104,7 @@ fn map_io(err: std::io::Error) -> CameraError {
 ///   - an `Arc<Handle>` cloned from `dev.handle()` (refcounted fd),
 ///   - an `Arena<'a>` whose `bufs: Vec<&'a mut [u8]>` point to kernel mmap'd
 ///     pages that `Arena::Drop` releases via `munmap`.
+///
 /// No reference into the local borrowed `device` survives the call.
 unsafe fn start_stream(
     device: &Device,
@@ -124,7 +132,7 @@ unsafe fn start_stream(
         MmapStream::with_buffers(device, Type::VideoCapture, BUFFER_COUNT).map_err(map_io)?;
     stream.set_timeout(FRAME_TIMEOUT);
 
-    Ok(std::mem::transmute(stream))
+    Ok(std::mem::transmute::<MmapStream<'_>, MmapStream<'static>>(stream))
 }
 
 impl CameraBackend for WebcamLinuxBackend {
@@ -223,8 +231,12 @@ impl CameraBackend for WebcamLinuxBackend {
                 continue;
             };
 
+            // DISABLED / read-only / write-only / button / control-class entries
+            // are never settable, so they are dropped entirely. INACTIVE entries
+            // (e.g. exposure time while auto-exposure is on) are kept but rendered
+            // disabled, matching the macOS and Windows backends which always
+            // surface a value parameter and only grey it out.
             if desc.flags.contains(control::Flags::DISABLED)
-                || desc.flags.contains(control::Flags::INACTIVE)
                 || desc.flags.contains(control::Flags::READ_ONLY)
                 || desc.flags.contains(control::Flags::WRITE_ONLY)
                 || desc.typ == control::Type::Button
@@ -232,6 +244,7 @@ impl CameraBackend for WebcamLinuxBackend {
             {
                 continue;
             }
+            let inactive = desc.flags.contains(control::Flags::INACTIVE);
 
             let current = match dev.device.control(desc.id) {
                 Ok(c) => match c.value {
@@ -242,6 +255,27 @@ impl CameraBackend for WebcamLinuxBackend {
                 Err(_) => continue,
             };
 
+            // Auto-exposure is a V4L2 menu; expose it as a boolean toggle like the
+            // other backends. Auto is on unless the camera reports MANUAL.
+            if param_type == ParameterType::ExposureAuto {
+                params.push(CameraParameter::Boolean {
+                    param_type,
+                    current:  current != V4L2_EXPOSURE_MANUAL,
+                    disabled: inactive,
+                });
+                continue;
+            }
+
+            // White balance / hue / focus auto are plain boolean V4L2 controls.
+            if is_boolean_param(param_type) {
+                params.push(CameraParameter::Boolean {
+                    param_type,
+                    current:  current != 0,
+                    disabled: inactive,
+                });
+                continue;
+            }
+
             let param = match desc.typ {
                 control::Type::Integer | control::Type::Integer64 => CameraParameter::Range {
                     param_type,
@@ -249,16 +283,12 @@ impl CameraBackend for WebcamLinuxBackend {
                     min: desc.minimum as i32,
                     max: desc.maximum as i32,
                     step: if desc.step == 0 { 1 } else { desc.step as i32 },
-                    disabled: false,
+                    disabled: inactive,
                 },
-                control::Type::Boolean => CameraParameter::Select {
+                control::Type::Boolean => CameraParameter::Boolean {
                     param_type,
-                    current: current.to_string(),
-                    options: vec![
-                        ParameterOption { label: "Off".into(), value: "0".into() },
-                        ParameterOption { label: "On".into(),  value: "1".into() },
-                    ],
-                    disabled: false,
+                    current:  current != 0,
+                    disabled: inactive,
                 },
                 control::Type::Menu | control::Type::IntegerMenu => {
                     let options: Vec<ParameterOption> = desc
@@ -277,7 +307,7 @@ impl CameraBackend for WebcamLinuxBackend {
                         param_type,
                         current: current.to_string(),
                         options,
-                        disabled: false,
+                        disabled: inactive,
                     }
                 }
                 _ => continue,
@@ -286,7 +316,7 @@ impl CameraBackend for WebcamLinuxBackend {
             params.push(param);
         }
 
-        Ok(params)
+        Ok(finalize_disabled(params))
     }
 
     fn get_live_view_frame(&self, native_id: &str) -> Result<Vec<u8>, CameraError> {
@@ -296,8 +326,12 @@ impl CameraBackend for WebcamLinuxBackend {
             .ok_or(CameraError::NotConnected)?;
 
         let stream = dev.stream.as_mut().ok_or(CameraError::NotConnected)?;
-        let (buf, _meta) = CaptureStream::next(stream).map_err(map_io)?;
-        Ok(buf.to_vec())
+        let (buf, meta) = CaptureStream::next(stream).map_err(map_io)?;
+        // V4L2 maps each MJPG buffer at the driver's worst-case `sizeimage`, so the
+        // slice is padded with trailing zeros past the actual frame. Trim to
+        // `bytesused` to return a tight JPEG like the macOS / Windows backends.
+        let used = (meta.bytesused as usize).min(buf.len());
+        Ok(buf[..used].to_vec())
     }
 
     fn capture_photo(&self, native_id: &str) -> Result<Vec<u8>, CameraError> {
@@ -333,7 +367,20 @@ impl CameraBackend for WebcamLinuxBackend {
         }
 
         let cid = param_type_to_cid(param_type).ok_or(CameraError::NotSupported)?;
-        let int_value: i64 = value.parse().map_err(|_| CameraError::NotSupported)?;
+
+        // Auto-exposure is a menu: translate the on/off toggle the other backends
+        // send onto APERTURE_PRIORITY (auto) / MANUAL (manual). Every other
+        // parameter takes either a boolean ("true"/"false") or an integer value.
+        let int_value: i64 = if param_type == ParameterType::ExposureAuto {
+            if value == "true" { V4L2_EXPOSURE_APERTURE_PRIORITY } else { V4L2_EXPOSURE_MANUAL }
+        } else {
+            match value {
+                "true"  => 1,
+                "false" => 0,
+                v       => v.parse().map_err(|_| CameraError::NotSupported)?,
+            }
+        };
+
         dev.device
             .set_control(control::Control {
                 id:    cid,
@@ -369,7 +416,9 @@ fn build_video_format_param(device: &Device) -> Option<CameraParameter> {
     sizes.dedup();
     sizes.sort_by_key(|(w, h)| std::cmp::Reverse((*w as u64) * (*h as u64)));
 
-    if sizes.is_empty() {
+    // A selector with a single option is no real choice — hide it, mirroring the
+    // Windows backend (`formats.len() > 1`) and the project-wide convention.
+    if sizes.len() < 2 {
         return None;
     }
 
@@ -415,7 +464,7 @@ fn cid_to_param_type(cid: u32) -> Option<ParameterType> {
         CID_AUTO_WHITE_BALANCE     => Some(ParameterType::WhiteBalanceAuto),
         CID_GAMMA                  => Some(ParameterType::Gamma),
         CID_GAIN                   => Some(ParameterType::Gain),
-        CID_WHITE_BALANCE_TEMP     => Some(ParameterType::ColorTemperature),
+        CID_WHITE_BALANCE_TEMP     => Some(ParameterType::WhiteBalance),
         CID_SHARPNESS              => Some(ParameterType::Sharpness),
         CID_BACKLIGHT_COMPENSATION => Some(ParameterType::BacklightCompensation),
         CID_POWER_LINE_FREQUENCY   => Some(ParameterType::PowerLineFrequency),
@@ -440,7 +489,7 @@ fn param_type_to_cid(pt: ParameterType) -> Option<u32> {
         ParameterType::WhiteBalanceAuto      => Some(CID_AUTO_WHITE_BALANCE),
         ParameterType::Gamma                 => Some(CID_GAMMA),
         ParameterType::Gain                  => Some(CID_GAIN),
-        ParameterType::ColorTemperature      => Some(CID_WHITE_BALANCE_TEMP),
+        ParameterType::WhiteBalance          => Some(CID_WHITE_BALANCE_TEMP),
         ParameterType::Sharpness             => Some(CID_SHARPNESS),
         ParameterType::BacklightCompensation => Some(CID_BACKLIGHT_COMPENSATION),
         ParameterType::PowerLineFrequency    => Some(CID_POWER_LINE_FREQUENCY),
@@ -453,4 +502,80 @@ fn param_type_to_cid(pt: ParameterType) -> Option<u32> {
         ParameterType::Zoom                  => Some(CID_ZOOM_ABSOLUTE),
         _ => None,
     }
+}
+
+/// Returns true for ParameterTypes presented as an on/off boolean: the
+/// auto/manual toggles (plain boolean V4L2 controls) plus backlight compensation,
+/// which is a 0/1 control on UVC cameras (matching the Windows backend).
+/// Auto-exposure is intentionally excluded: it is a menu control handled
+/// separately.
+fn is_boolean_param(pt: ParameterType) -> bool {
+    matches!(
+        pt,
+        ParameterType::WhiteBalanceAuto
+            | ParameterType::HueAuto
+            | ParameterType::FocusAuto
+            | ParameterType::BacklightCompensation
+    )
+}
+
+/// Applies the cross-backend "disabled" rules so the Linux backend behaves like
+/// the macOS and Windows webcam backends:
+///  - a value parameter is disabled while its `*_auto` toggle is active;
+///  - gain is disabled while auto-exposure is active (mirrors the Windows backend);
+///  - pan / tilt / roll are disabled while zoom is at its minimum.
+///
+/// Inactive controls were already flagged disabled at construction time; this
+/// only ever sets `disabled = true`, never clears it.
+fn finalize_disabled(mut params: Vec<CameraParameter>) -> Vec<CameraParameter> {
+    // (value_type, auto_type): disable value_type when auto_type current == true.
+    const PAIRS: &[(ParameterType, ParameterType)] = &[
+        (ParameterType::WhiteBalance, ParameterType::WhiteBalanceAuto),
+        (ParameterType::Exposure,     ParameterType::ExposureAuto),
+        (ParameterType::Hue,          ParameterType::HueAuto),
+        (ParameterType::Focus,        ParameterType::FocusAuto),
+    ];
+
+    // Auto toggles that are currently enabled.
+    let active_autos: Vec<ParameterType> = params
+        .iter()
+        .filter_map(|p| match p {
+            CameraParameter::Boolean { param_type, current: true, .. } => Some(*param_type),
+            _ => None,
+        })
+        .collect();
+
+    let exposure_is_auto = active_autos.contains(&ParameterType::ExposureAuto);
+
+    // Zoom at minimum → no room to pan/tilt/roll (mirrors the Windows backend).
+    let zoom_is_min = params.iter().any(|p| matches!(
+        p,
+        CameraParameter::Range { param_type: ParameterType::Zoom, current, min, .. } if current <= min
+    ));
+
+    for p in &mut params {
+        let pt = match p {
+            CameraParameter::Range { param_type, .. }
+            | CameraParameter::Select { param_type, .. }
+            | CameraParameter::RangeSelect { param_type, .. } => *param_type,
+            CameraParameter::Boolean { .. } => continue,
+        };
+
+        let disabled_by_auto = PAIRS
+            .iter()
+            .any(|&(vt, at)| pt == vt && active_autos.contains(&at));
+        let disabled_gain = pt == ParameterType::Gain && exposure_is_auto;
+        let disabled_ptz = zoom_is_min
+            && matches!(pt, ParameterType::Pan | ParameterType::Tilt | ParameterType::Roll);
+
+        if disabled_by_auto || disabled_gain || disabled_ptz {
+            match p {
+                CameraParameter::Range { disabled, .. }
+                | CameraParameter::Select { disabled, .. }
+                | CameraParameter::RangeSelect { disabled, .. } => *disabled = true,
+                CameraParameter::Boolean { .. } => {}
+            }
+        }
+    }
+    params
 }

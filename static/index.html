@@ -787,7 +787,10 @@
       } catch (e) {
         alert(`Failed to set ${formatParamName(kind)}: ${e.message}`);
       } finally {
-        input.disabled = false;
+        // Re-fetch all parameters: a range change can flip other params' disabled
+        // state (e.g. zoom enables/disables pan/tilt), just like the boolean and
+        // select setters do.
+        await refreshParams(deviceId);
       }
     }
 
