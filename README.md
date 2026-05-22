@@ -9,6 +9,7 @@
 - 📡 **Live view** - View the camera feed in real time (MJPEG Stream).
 - 📸 **Take photos** - Take photos with any camera.
 - ⚙️ **Change settings** - Update camera settings easily.
+- 🔗 **Relay remote cameras** - Connect to other ToucanCameraServer instances and control their cameras as if they were local.
 
 ## Get started
 
@@ -20,6 +21,7 @@ Start the server — a token is generated automatically and the URL to open is p
 
 ```
 [config] PORT=8040
+[config] EXPOSE=false
 [config] TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 [info] Listening on http://127.0.0.1:8040/?token=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
@@ -28,10 +30,13 @@ Open the printed URL in a browser to access the web UI. The token is already inc
 
 **Options**
 
-| Flag              | Description                                                              |
-| ----------------- | ------------------------------------------------------------------------ |
-| `--port <port>`   | Port to listen on (default: `8040`, falls back to a free port if in use) |
-| `--token <token>` | Authentication token (default: auto-generated UUID v4)                   |
+| Flag              | Description                                                                       |
+| ----------------- | --------------------------------------------------------------------------------- |
+| `--port <port>`   | Port to listen on (default: `8040`, falls back to a free port if in use)          |
+| `--token <token>` | Authentication token (default: auto-generated UUID v4)                            |
+| `--expose`        | Bind to `0.0.0.0` (reachable from the LAN) instead of `127.0.0.1` (loopback only) |
+
+By default the server is reachable only from the local machine. Use `--expose` to make it reachable from other devices on the network (it always stays protected by the token). On Android the server is exposed on the LAN automatically.
 
 ## Authentication
 
@@ -44,21 +49,42 @@ Every request must include the token, either as a header or a query parameter:
 
 Requests with an invalid or missing token receive a `403 Forbidden` response.
 
+## Remote cameras
+
+A server can relay cameras from other ToucanCameraServer instances ("peers") on the network. Remote cameras then show up in `GET /cameras` (and the web UI) tagged with the peer's `host:port`, and you can connect, stream, capture, and change settings on them exactly like local cameras.
+
+Manage peers from the **Remote peers** panel in the web UI, or via the API:
+
+| Method   | Endpoint      | Description                                                          |
+| -------- | ------------- | ------------------------------------------------------------------- |
+| `GET`    | `/peers`      | List registered peers                                               |
+| `POST`   | `/peers`      | Register a peer — body `{ "url": "192.168.1.5:8040", "token": "…" }` |
+| `DELETE` | `/peers/{id}` | Remove a peer                                                       |
+
+The `url` may be given as `host:port` or `http://host:port`. The `token` is the **peer's** own authentication token, and is optional. When adding a peer, the server checks that it is reachable and that the token is valid — an unreachable or invalid peer is rejected and never stored.
+
+> Peers are kept in memory only and are not persisted across restarts. For two machines to reach each other, start each server with `--expose`.
+
 ## Contribute
 
 Feel free to make pull-requests or report issues 😉
 
 ## Compatibility
 
-| Backend                              | Windows | macOS | Linux |
-| ------------------------------------ | ------- | ----- | ----- |
-| Webcams macOS (AVFoundation / IOKit) | 🔴      | 🟢    | 🔴    |
-| Webcams Windows (MediaFoundation)    | 🟢      | 🔴    | 🔴    |
-| Webcams Linux (V4L2)                 | 🔴      | 🔴    | 🟠    |
-| Canon EOS (EDSDK)                    | 🟢      | 🟢    | 🟢    |
-| Nikon (Nikon SDKs)                   | 🟠      | 🟠    | 🔴    |
-| Various cameras (libgphoto2)         | 🔴      | 🟠    | 🟠    |
+| Backend                      | Windows | macOS | Linux | Android |
+| ---------------------------- | ------- | ----- | ----- | ------- |
+| Webcams / Cameras            | 🟢¹     | 🟢²   | 🟠³   | 🟢⁴     |
+| Canon EOS (EDSDK)            | 🟢      | 🟢    | 🟢    | 🔴      |
+| Various cameras (libgphoto2) | 🔴      | 🟢⁶   | 🟢⁶   | 🔴      |
+| Remote (other instances)     | 🟢⁵     | 🟢⁵   | 🟢⁵   | 🟢⁵     |
 
 🟢 - Supported  
 🟠 - Planned  
 🔴 - Not compatible / possible
+
+1. Using MediaFoundation
+2. Using AVFoundation and IOKit
+3. Using V4L2
+4. Using camera2
+5. Relayed over HTTP — see [Remote cameras](#remote-cameras)
+6. Using libgphoto2 — Nikon, Sony, Fuji and many other PTP/USB cameras. Requires `libgphoto2` installed on the machine (`brew install libgphoto2` on macOS, `apt install libgphoto2` on Linux); it is linked dynamically and not bundled. On builds that also include the Canon EDSDK backend, Canon bodies are driven by EDSDK and the rest by libgphoto2.

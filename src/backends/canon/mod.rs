@@ -41,6 +41,11 @@ const SHUTTER_OFF: i32 = 0x00000000;
 const OBJ_EVENT_ALL: u32 = 0x00000200;
 const OBJ_EVENT_DIR_ITEM_REQUEST_TRANSFER: u32 = 0x00000208;
 
+// kEdsStateEvent_All / kEdsStateEvent_Shutdown / kEdsStateEvent_WillSoonShutDown
+const STATE_EVENT_ALL: u32 = 0x00000300;
+const STATE_EVENT_SHUTDOWN: u32 = 0x00000301;
+const STATE_EVENT_WILL_SOON_SHUTDOWN: u32 = 0x00000303;
+
 // kEdsPropID_SaveTo / kEdsSaveTo_Host
 const PROP_SAVE_TO: u32 = 0x0000000b;
 const SAVE_TO_HOST: u32 = 2;
@@ -54,14 +59,15 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 // Shooting property IDs — from EDSDKTypes.h
 const PROP_DRIVE_MODE:           u32 = 0x00000401; // kEdsPropID_DriveMode
 const PROP_ISO:                  u32 = 0x00000402; // kEdsPropID_ISOSpeed
-const PROP_METERING_MODE:        u32 = 0x00000403; // kEdsPropID_MeteringMode
-const PROP_AF_MODE:              u32 = 0x00000404; // kEdsPropID_AFMode
 const PROP_AV:                   u32 = 0x00000405; // kEdsPropID_Av
 const PROP_TV:                   u32 = 0x00000406; // kEdsPropID_Tv
 const PROP_EXPOSURE_COMP:        u32 = 0x00000407; // kEdsPropID_ExposureCompensation
 const PROP_IMAGE_QUALITY:        u32 = 0x00000100; // kEdsPropID_ImageQuality
 const PROP_WHITE_BALANCE:        u32 = 0x00000106; // kEdsPropID_WhiteBalance
 const PROP_COLOR_TEMPERATURE:    u32 = 0x00000107; // kEdsPropID_ColorTemperature
+const PROP_EVF_ZOOM:             u32 = 0x00000507; // kEdsPropID_Evf_Zoom
+const PROP_EVF_ZOOM_POSITION:    u32 = 0x00000508; // kEdsPropID_Evf_ZoomPosition
+const PROP_EVF_COORDINATE_SYS:   u32 = 0x00000540; // kEdsPropID_Evf_CoordinateSystem
 
 #[repr(C)]
 struct EdsDirectoryItemInfo {
@@ -79,6 +85,18 @@ struct EdsCapacity {
     number_of_free_clusters: i32,
     bytes_per_sector:        i32,
     reset:                   u32, // EdsBool
+}
+
+#[repr(C)]
+struct EdsPoint {
+    x: i32,
+    y: i32,
+}
+
+#[repr(C)]
+struct EdsSize {
+    width:  i32,
+    height: i32,
 }
 
 #[repr(C)]
@@ -148,6 +166,12 @@ extern "C" {
         in_handler: Option<unsafe extern "C" fn(u32, EdsBaseRef, *mut std::ffi::c_void) -> u32>,
         in_context: *mut std::ffi::c_void,
     ) -> u32;
+    fn EdsSetCameraStateEventHandler(
+        in_camera_ref: EdsCameraRef,
+        in_event: u32,
+        in_handler: Option<unsafe extern "C" fn(u32, u32, *mut std::ffi::c_void) -> u32>,
+        in_context: *mut std::ffi::c_void,
+    ) -> u32;
     fn EdsGetDirectoryItemInfo(
         in_dir_item_ref: EdsDirectoryItemRef,
         out_dir_item_info: *mut EdsDirectoryItemInfo,
@@ -166,10 +190,36 @@ extern "C" {
 // Object event callback
 // ---------------------------------------------------------------------------
 
-// Stores the EdsDirectoryItemRef received in the object event callback.
 // Only accessed on the canon-sdk thread.
 thread_local! {
     static PENDING_DIR_ITEM: RefCell<Option<EdsDirectoryItemRef>> = RefCell::new(None);
+    // Camera refs that have reported a shutdown/disconnect state event.
+    static SHUTDOWN_CAMERA_REFS: RefCell<Vec<EdsCameraRef>> = RefCell::new(Vec::new());
+    // Last zoom level set via set_parameter_impl, keyed by device_id.
+    // Used as fallback in get_parameters_impl when the EVF frame is not yet ready.
+    static EVF_ZOOM_CACHE: RefCell<std::collections::HashMap<String, u32>> = RefCell::new(std::collections::HashMap::new());
+    // Last known coordinate system and position from a successful EVF download,
+    // keyed by device_id: (coord_width, coord_height, pos_x, pos_y).
+    static EVF_COORD_CACHE: RefCell<std::collections::HashMap<String, (i32, i32, i32, i32)>> = RefCell::new(std::collections::HashMap::new());
+}
+
+/// Called by the EDSDK on the SDK thread when a camera state event fires.
+///
+/// On `kEdsStateEvent_Shutdown` or `kEdsStateEvent_WillSoonShutDown` the camera
+/// has physically disconnected. We record its ref (passed as context) so the
+/// SDK thread loop can remove it from the connected map on the next tick.
+unsafe extern "C" fn state_event_callback(
+    event: u32,
+    _event_data: u32,
+    context: *mut std::ffi::c_void,
+) -> u32 {
+    if event == STATE_EVENT_SHUTDOWN || event == STATE_EVENT_WILL_SOON_SHUTDOWN {
+        let camera_ref = context as EdsCameraRef;
+        if !camera_ref.is_null() {
+            SHUTDOWN_CAMERA_REFS.with(|s| s.borrow_mut().push(camera_ref));
+        }
+    }
+    EDS_ERR_OK
 }
 
 /// Called by the EDSDK on the SDK thread when a camera object event fires.
@@ -225,9 +275,19 @@ enum Command {
         value: i32, // already parsed from the string value at the trait boundary
         reply: mpsc::Sender<Result<(), CameraError>>,
     },
+    SetIsoManual {
+        device_id: String,
+        reply: mpsc::Sender<Result<(), CameraError>>,
+    },
     CapturePhoto {
         device_id: String,
         reply: mpsc::Sender<Result<Vec<u8>, CameraError>>,
+    },
+    SetEvfZoomAxis {
+        device_id: String,
+        axis_is_x: bool,
+        value: i32,
+        reply: mpsc::Sender<Result<(), CameraError>>,
     },
     Shutdown,
 }
@@ -358,8 +418,55 @@ impl CameraBackend for CanonBackend {
         param_type: ParameterType,
         value: &str,
     ) -> Result<(), CameraError> {
+        // IsoAuto maps to PROP_ISO: 0x00 = auto; switching to manual uses the first available
+        // non-auto ISO value queried live from the camera (avoids hardcoding a value the camera
+        // may not support).
+        if param_type == ParameterType::IsoAuto {
+            let (reply_tx, reply_rx) = mpsc::channel();
+            if value == "true" {
+                self.tx
+                    .send(Command::SetParameter {
+                        device_id: native_id.to_string(),
+                        prop_id: PROP_ISO,
+                        value: 0x00,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
+            } else {
+                self.tx
+                    .send(Command::SetIsoManual {
+                        device_id: native_id.to_string(),
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
+            }
+            return reply_rx
+                .recv()
+                .unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)));
+        }
+
+let value: i32 = value.parse().map_err(|_| CameraError::NotSupported)?;
+
+        // Zoom position axes are composite (EdsPoint) — handled via a dedicated command.
+        match param_type {
+            ParameterType::LiveViewPan | ParameterType::LiveViewTilt => {
+                let (reply_tx, reply_rx) = mpsc::channel();
+                self.tx
+                    .send(Command::SetEvfZoomAxis {
+                        device_id: native_id.to_string(),
+                        axis_is_x: param_type == ParameterType::LiveViewPan,
+                        value,
+                        reply: reply_tx,
+                    })
+                    .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
+                return reply_rx
+                    .recv()
+                    .unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)));
+            }
+            _ => {}
+        }
+
         let prop_id = type_to_prop_id(param_type).ok_or(CameraError::NotSupported)?;
-        let value: i32 = value.parse().map_err(|_| CameraError::NotSupported)?;
         let (reply_tx, reply_rx) = mpsc::channel();
         self.tx
             .send(Command::SetParameter {
@@ -386,6 +493,7 @@ impl CameraBackend for CanonBackend {
             .recv()
             .unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)))
     }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +517,24 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
 
     loop {
         unsafe { EdsGetEvent() };
+
+        // Remove cameras that have physically disconnected (state event fired).
+        SHUTDOWN_CAMERA_REFS.with(|s| {
+            for stale_ref in s.borrow_mut().drain(..) {
+                if let Some(device_id) = connected
+                    .iter()
+                    .find(|(_, &r)| r == stale_ref)
+                    .map(|(id, _)| id.clone())
+                {
+                    eprintln!("[canon] camera {device_id} disconnected unexpectedly");
+                    connected.remove(&device_id);
+                    unsafe {
+                        EdsCloseSession(stale_ref);
+                        EdsRelease(stale_ref);
+                    }
+                }
+            }
+        });
 
         // Reset the auto-power-off timer for every connected camera every 30 s.
         if last_keepalive.elapsed() >= KEEPALIVE_INTERVAL {
@@ -440,8 +566,14 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
             Ok(Command::SetParameter { device_id, prop_id, value, reply }) => {
                 let _ = reply.send(set_parameter_impl(&device_id, prop_id, value, &connected));
             }
+            Ok(Command::SetIsoManual { device_id, reply }) => {
+                let _ = reply.send(set_iso_manual_impl(&device_id, &connected));
+            }
             Ok(Command::CapturePhoto { device_id, reply }) => {
                 let _ = reply.send(capture_photo_impl(&device_id, &connected));
+            }
+            Ok(Command::SetEvfZoomAxis { device_id, axis_is_x, value, reply }) => {
+                let _ = reply.send(set_evf_zoom_axis_impl(&device_id, axis_is_x, value, &connected));
             }
             Ok(Command::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -567,8 +699,14 @@ fn connect_impl(
     device_id: &str,
     connected: &mut HashMap<String, EdsCameraRef>,
 ) -> Result<(), CameraError> {
-    if connected.contains_key(device_id) {
-        return Ok(()); // idempotent
+    // Close any existing session before opening a new one. This ensures that a
+    // reconnect after a physical disconnect (stale ref) or after the camera was
+    // already logically connected always results in a clean, fresh session.
+    if let Some(old_ref) = connected.remove(device_id) {
+        unsafe {
+            EdsCloseSession(old_ref); // may fail if camera already gone — ignore
+            EdsRelease(old_ref);
+        }
     }
 
     let camera_ref = find_camera_ref(device_id)?;
@@ -597,6 +735,18 @@ fn connect_impl(
         }
         return Err(CameraError::SdkError(err));
     }
+
+    // Force single-shot drive mode — stop motion captures one frame at a time.
+    let drive_single: i32 = 0;
+    unsafe {
+        EdsSetPropertyData(
+            camera_ref,
+            PROP_DRIVE_MODE,
+            0,
+            std::mem::size_of::<i32>() as u32,
+            &drive_single as *const i32 as *const std::ffi::c_void,
+        )
+    };
 
     // Direct captured photos to the host so that DirItemRequestTransfer fires.
     let save_to: u32 = SAVE_TO_HOST;
@@ -632,6 +782,17 @@ fn connect_impl(
         )
     };
 
+    // Register the state event handler to detect physical disconnects.
+    // Pass camera_ref as context so the callback can identify which camera disconnected.
+    unsafe {
+        EdsSetCameraStateEventHandler(
+            camera_ref,
+            STATE_EVENT_ALL,
+            Some(state_event_callback),
+            camera_ref,
+        )
+    };
+
     connected.insert(device_id.to_string(), camera_ref);
     Ok(())
 }
@@ -643,6 +804,9 @@ fn disconnect_impl(
     let camera_ref = connected
         .remove(device_id)
         .ok_or_else(|| CameraError::DeviceNotFound(device_id.to_string()))?;
+
+    EVF_ZOOM_CACHE.with(|c| c.borrow_mut().remove(device_id));
+    EVF_COORD_CACHE.with(|c| c.borrow_mut().remove(device_id));
 
     unsafe {
         EdsCloseSession(camera_ref);
@@ -721,22 +885,20 @@ fn get_parameters_impl(
 
     // RangeSelect: ordered numeric progression (aperture, ISO, …).
     // Select:      arbitrary discrete choices (WB, AF mode, …).
-    type Spec = (ParameterType, u32, fn(i32) -> String);
+    // The filter predicate drops options that should not be exposed (e.g. RAW formats).
+    type Spec = (ParameterType, u32, fn(i32) -> String, fn(i32) -> bool);
 
     let range_select_specs: &[Spec] = &[
-        (ParameterType::Aperture,             PROP_AV,            decode_av),
-        (ParameterType::ShutterSpeed,         PROP_TV,            decode_tv),
-        (ParameterType::Iso,                  PROP_ISO,           decode_iso),
-        (ParameterType::ExposureCompensation, PROP_EXPOSURE_COMP, decode_ev),
+        (ParameterType::Aperture,             PROP_AV,            decode_av,           |_| true),
+        (ParameterType::ExposureCompensation, PROP_EXPOSURE_COMP, decode_ev,           |_| true),
     ];
 
     let select_specs: &[Spec] = &[
-        (ParameterType::ImageQuality,    PROP_IMAGE_QUALITY,     decode_image_quality),
-        (ParameterType::WhiteBalance,    PROP_WHITE_BALANCE,     decode_wb),
-        (ParameterType::ColorTemperature,PROP_COLOR_TEMPERATURE, decode_color_temp),
-        (ParameterType::MeteringMode,    PROP_METERING_MODE,     decode_metering),
-        (ParameterType::AfMode,          PROP_AF_MODE,           decode_af),
-        (ParameterType::DriveMode,       PROP_DRIVE_MODE,        decode_drive),
+        // RAW-containing formats are excluded: capture returns only JPEG.
+        // All RAW codes have byte 2 == 0x64 (e.g. 0x0064ff0f, 0x00640013, …).
+        (ParameterType::ImageQuality,    PROP_IMAGE_QUALITY,     decode_image_quality, |c| (c as u32 >> 16) & 0xFF != 0x64),
+        (ParameterType::WhiteBalance,    PROP_WHITE_BALANCE,     decode_wb,            |_| true),
+        (ParameterType::ColorTemperature,PROP_COLOR_TEMPERATURE, decode_color_temp,    |_| true),
     ];
 
     let mut result = Vec::new();
@@ -745,7 +907,7 @@ fn get_parameters_impl(
         (range_select_specs as &[Spec], true),
         (select_specs        as &[Spec], false),
     ] {
-        for &(param_type, prop_id, decode) in specs {
+        for &(param_type, prop_id, decode, keep) in specs {
             let mut desc = EdsPropertyDesc {
                 form: 0, access: 0, num_elements: 0, prop_desc: [0; 128],
             };
@@ -771,18 +933,219 @@ fn get_parameters_impl(
 
             let options = desc.prop_desc[..desc.num_elements as usize]
                 .iter()
-                .map(|&code| ParameterOption {
+                .copied()
+                .filter(|&code| keep(code))
+                .map(|code| ParameterOption {
                     label: decode(code),
+                    value: code.to_string(),
+                })
+                .collect::<Vec<_>>();
+
+            if options.is_empty() {
+                continue;
+            }
+
+            result.push(if is_range_select {
+                CameraParameter::RangeSelect { param_type, current, options, disabled: false }
+            } else {
+                CameraParameter::Select { param_type, current, options, disabled: false }
+            });
+        }
+    }
+
+    // ShutterSpeed: Bulb (0x0C) excluded — not usable for stop motion.
+    {
+        let mut tv_desc = EdsPropertyDesc { form: 0, access: 0, num_elements: 0, prop_desc: [0; 128] };
+        let tv_err = unsafe { EdsGetPropertyDesc(camera_ref, PROP_TV, &mut tv_desc) };
+        if tv_err == EDS_ERR_OK && tv_desc.num_elements > 0 && tv_desc.access != 0 {
+            let mut current_code: i32 = 0;
+            let read_err = unsafe {
+                EdsGetPropertyData(
+                    camera_ref, PROP_TV, 0,
+                    std::mem::size_of::<i32>() as u32,
+                    &mut current_code as *mut i32 as *mut std::ffi::c_void,
+                )
+            };
+            if read_err != EDS_ERR_OK { current_code = 0; }
+
+            let options: Vec<ParameterOption> = tv_desc.prop_desc[..tv_desc.num_elements as usize]
+                .iter()
+                .filter(|&&code| code != 0x0C)
+                .map(|&code| ParameterOption {
+                    label: decode_tv(code),
                     value: code.to_string(),
                 })
                 .collect();
 
-            result.push(if is_range_select {
-                CameraParameter::RangeSelect { param_type, current, options }
-            } else {
-                CameraParameter::Select { param_type, current, options }
+            result.push(CameraParameter::RangeSelect {
+                param_type: ParameterType::ShutterSpeed,
+                current: current_code.to_string(),
+                options,
+                disabled: false,
             });
         }
+    }
+
+    // ISO: IsoAuto boolean + Iso RangeSelect (disabled when auto, 0x00 excluded from options).
+    {
+        let mut iso_desc = EdsPropertyDesc { form: 0, access: 0, num_elements: 0, prop_desc: [0; 128] };
+        let iso_err = unsafe { EdsGetPropertyDesc(camera_ref, PROP_ISO, &mut iso_desc) };
+        if iso_err == EDS_ERR_OK && iso_desc.num_elements > 0 && iso_desc.access != 0 {
+            let mut current_code: i32 = 0;
+            let read_err = unsafe {
+                EdsGetPropertyData(
+                    camera_ref, PROP_ISO, 0,
+                    std::mem::size_of::<i32>() as u32,
+                    &mut current_code as *mut i32 as *mut std::ffi::c_void,
+                )
+            };
+            if read_err != EDS_ERR_OK { current_code = 0; }
+
+            let iso_auto = current_code == 0x00;
+
+            result.push(CameraParameter::Boolean {
+                param_type: ParameterType::IsoAuto,
+                current: iso_auto,
+                disabled: false,
+            });
+
+            let options: Vec<ParameterOption> = iso_desc.prop_desc[..iso_desc.num_elements as usize]
+                .iter()
+                .filter(|&&code| code != 0x00)
+                .map(|&code| ParameterOption {
+                    label: decode_iso(code),
+                    value: code.to_string(),
+                })
+                .collect();
+
+            let iso_current = if iso_auto {
+                options.first().map(|o| o.value.clone()).unwrap_or_default()
+            } else {
+                current_code.to_string()
+            };
+
+            result.push(CameraParameter::RangeSelect {
+                param_type: ParameterType::Iso,
+                current: iso_current,
+                options,
+                disabled: iso_auto,
+            });
+        }
+    }
+
+    // EVF zoom position — read coordinate system for max range, current point for value.
+    // EVF zoom level + position must be read from an evfImageRef (not cameraRef).
+    // On many bodies (e.g. 600D), reading them from cameraRef returns NOT_SUPPORTED.
+    // Zoom Select is always added; position Range only when coordinate system is readable.
+    //
+    // evf_zoom is pre-seeded from the cache set by set_parameter_impl so that a
+    // stale or unavailable EVF frame (OBJECT_NOTREADY) does not falsely report Fit.
+    let mut evf_zoom: u32 = EVF_ZOOM_CACHE.with(|c| {
+        c.borrow().get(device_id).copied().unwrap_or(1)
+    });
+    let mut coord_sys = EdsSize { width: 0, height: 0 };
+    let mut pos = EdsPoint { x: 0, y: 0 };
+    let mut coord_sys_ok = false;
+
+    let mut stream: EdsStreamRef = std::ptr::null_mut();
+    if unsafe { EdsCreateMemoryStream(0, &mut stream) } == EDS_ERR_OK {
+        let mut evf_image: EdsEvfImageRef = std::ptr::null_mut();
+        if unsafe { EdsCreateEvfImageRef(stream, &mut evf_image) } == EDS_ERR_OK {
+            // Retry a few times on OBJECT_NOTREADY — the live view loop may have
+            // just consumed the latest frame leaving none buffered yet.
+            let mut dl_err = unsafe { EdsDownloadEvfImage(camera_ref, evf_image) };
+            let mut retries = 0;
+            while dl_err == 0x0000_A102 && retries < 4 {
+                unsafe { EdsGetEvent() };
+                std::thread::sleep(Duration::from_millis(16));
+                dl_err = unsafe { EdsDownloadEvfImage(camera_ref, evf_image) };
+                retries += 1;
+            }
+            if dl_err == EDS_ERR_OK {
+                // Read zoom from EVF as the primary source.
+                // Guard: if EVF reports Fit (1) but the cache holds a non-1 value,
+                // the EVF frame is stale (mid-transition) — keep the cached value.
+                let mut reported_zoom: u32 = 0;
+                let zoom_err = unsafe {
+                    EdsGetPropertyData(
+                        evf_image, PROP_EVF_ZOOM, 0,
+                        std::mem::size_of::<u32>() as u32,
+                        &mut reported_zoom as *mut u32 as *mut std::ffi::c_void,
+                    )
+                };
+                if zoom_err == EDS_ERR_OK {
+                    let cached = EVF_ZOOM_CACHE.with(|c| c.borrow().get(device_id).copied());
+                    // Trust EVF value unless it says Fit while cache says otherwise
+                    if reported_zoom != 1 || cached.is_none() || cached == Some(1) {
+                        evf_zoom = reported_zoom;
+                    }
+                }
+
+                let cs_err = unsafe {
+                    EdsGetPropertyData(
+                        evf_image, PROP_EVF_COORDINATE_SYS, 0,
+                        std::mem::size_of::<EdsSize>() as u32,
+                        &mut coord_sys as *mut EdsSize as *mut std::ffi::c_void,
+                    )
+                };
+
+                if cs_err == EDS_ERR_OK && coord_sys.width > 0 && coord_sys.height > 0 {
+                    unsafe {
+                        EdsGetPropertyData(
+                            evf_image, PROP_EVF_ZOOM_POSITION, 0,
+                            std::mem::size_of::<EdsPoint>() as u32,
+                            &mut pos as *mut EdsPoint as *mut std::ffi::c_void,
+                        )
+                    };
+                    coord_sys_ok = true;
+                    EVF_COORD_CACHE.with(|c| {
+                        c.borrow_mut().insert(
+                            device_id.to_string(),
+                            (coord_sys.width, coord_sys.height, pos.x, pos.y),
+                        );
+                    });
+                }
+            }
+            unsafe { EdsRelease(evf_image) };
+        }
+        unsafe { EdsRelease(stream) };
+    }
+
+    // If the EVF download failed, fall back to the last known coord_sys so
+    // pan/tilt controls don't disappear on a transient OBJECT_NOTREADY.
+    if !coord_sys_ok {
+        EVF_COORD_CACHE.with(|c| {
+            if let Some(&(cw, ch, px, py)) = c.borrow().get(device_id) {
+                coord_sys = EdsSize { width: cw, height: ch };
+                pos = EdsPoint { x: px, y: py };
+                coord_sys_ok = true;
+            }
+        });
+    }
+
+    result.push(CameraParameter::Select {
+        param_type: ParameterType::LiveViewZoom,
+        current: evf_zoom.to_string(),
+        options: vec![
+            ParameterOption { label: "Fit".to_string(), value: "1".to_string() },
+            ParameterOption { label: "5x".to_string(),  value: "5".to_string() },
+            ParameterOption { label: "6x".to_string(),  value: "6".to_string() },
+            ParameterOption { label: "10x".to_string(), value: "10".to_string() },
+            ParameterOption { label: "15x".to_string(), value: "15".to_string() },
+        ],
+        disabled: false,
+    });
+
+    if coord_sys_ok {
+        let pan_tilt_disabled = evf_zoom == 1;
+        result.push(CameraParameter::Range {
+            param_type: ParameterType::LiveViewPan,
+            current: pos.x, min: 0, max: coord_sys.width, step: 1, disabled: pan_tilt_disabled,
+        });
+        result.push(CameraParameter::Range {
+            param_type: ParameterType::LiveViewTilt,
+            current: pos.y, min: 0, max: coord_sys.height, step: 1, disabled: pan_tilt_disabled,
+        });
     }
 
     Ok(result)
@@ -902,10 +1265,8 @@ fn type_to_prop_id(param_type: ParameterType) -> Option<u32> {
         ParameterType::Iso                 => Some(PROP_ISO),
         ParameterType::WhiteBalance        => Some(PROP_WHITE_BALANCE),
         ParameterType::ColorTemperature    => Some(PROP_COLOR_TEMPERATURE),
-        ParameterType::MeteringMode        => Some(PROP_METERING_MODE),
-        ParameterType::AfMode              => Some(PROP_AF_MODE),
-        ParameterType::DriveMode           => Some(PROP_DRIVE_MODE),
         ParameterType::ExposureCompensation=> Some(PROP_EXPOSURE_COMP),
+        ParameterType::LiveViewZoom                => Some(PROP_EVF_ZOOM),
         _ => None,
     }
 }
@@ -931,6 +1292,159 @@ fn set_parameter_impl(
         )
     };
 
+    if err != EDS_ERR_OK {
+        return Err(CameraError::SdkError(err));
+    }
+
+    if prop_id == PROP_EVF_ZOOM {
+        let target_zoom = value as u32;
+
+        // Cache the zoom immediately so get_parameters_impl can report the
+        // correct value even if the EVF frame is not yet ready (OBJECT_NOTREADY
+        // is common right after the live view loop has drained available frames).
+        EVF_ZOOM_CACHE.with(|c| c.borrow_mut().insert(device_id.to_string(), target_zoom));
+
+        // Poll the EVF until it confirms the new zoom level (up to 500 ms),
+        // then center the position. Checking actual_zoom guards against using
+        // a stale coord_sys (zoom=1 range) which would set an out-of-range
+        // position and cause some bodies to silently reset the zoom to Fit.
+        let deadline = std::time::Instant::now() + Duration::from_millis(500);
+        loop {
+            unsafe { EdsGetEvent() };
+            std::thread::sleep(Duration::from_millis(32));
+
+            let mut stream: EdsStreamRef = std::ptr::null_mut();
+            if unsafe { EdsCreateMemoryStream(0, &mut stream) } != EDS_ERR_OK {
+                break;
+            }
+            let mut evf_image: EdsEvfImageRef = std::ptr::null_mut();
+            let evf_created = unsafe { EdsCreateEvfImageRef(stream, &mut evf_image) } == EDS_ERR_OK;
+            let mut confirmed = false;
+            if evf_created && unsafe { EdsDownloadEvfImage(camera_ref, evf_image) } == EDS_ERR_OK {
+                let mut actual_zoom: u32 = 0;
+                unsafe {
+                    EdsGetPropertyData(
+                        evf_image, PROP_EVF_ZOOM, 0,
+                        std::mem::size_of::<u32>() as u32,
+                        &mut actual_zoom as *mut u32 as *mut std::ffi::c_void,
+                    )
+                };
+                if actual_zoom == target_zoom {
+                    // Zoom confirmed — center position if zoomed in.
+                    if target_zoom > 1 {
+                        let mut coord_sys = EdsSize { width: 0, height: 0 };
+                        let cs_err = unsafe {
+                            EdsGetPropertyData(
+                                evf_image, PROP_EVF_COORDINATE_SYS, 0,
+                                std::mem::size_of::<EdsSize>() as u32,
+                                &mut coord_sys as *mut EdsSize as *mut std::ffi::c_void,
+                            )
+                        };
+                        if cs_err == EDS_ERR_OK && coord_sys.width > 0 && coord_sys.height > 0 {
+                            let center = EdsPoint {
+                                x: coord_sys.width / 2,
+                                y: coord_sys.height / 2,
+                            };
+                            unsafe {
+                                EdsSetPropertyData(
+                                    camera_ref, PROP_EVF_ZOOM_POSITION, 0,
+                                    std::mem::size_of::<EdsPoint>() as u32,
+                                    &center as *const EdsPoint as *const std::ffi::c_void,
+                                )
+                            };
+                        }
+                    }
+                    confirmed = true;
+                }
+            }
+            if evf_created {
+                unsafe { EdsRelease(evf_image) };
+            }
+            unsafe { EdsRelease(stream) };
+
+            if confirmed || std::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn set_iso_manual_impl(
+    device_id: &str,
+    connected: &HashMap<String, EdsCameraRef>,
+) -> Result<(), CameraError> {
+    let camera_ref = connected
+        .get(device_id)
+        .copied()
+        .ok_or(CameraError::NotConnected)?;
+
+    let mut desc = EdsPropertyDesc { form: 0, access: 0, num_elements: 0, prop_desc: [0; 128] };
+    let err = unsafe { EdsGetPropertyDesc(camera_ref, PROP_ISO, &mut desc) };
+    if err != EDS_ERR_OK {
+        return Err(CameraError::SdkError(err));
+    }
+
+    let first_manual = desc.prop_desc[..desc.num_elements as usize]
+        .iter()
+        .copied()
+        .find(|&v| v != 0x00)
+        .ok_or(CameraError::NotSupported)?;
+
+    let err = unsafe {
+        EdsSetPropertyData(
+            camera_ref,
+            PROP_ISO,
+            0,
+            std::mem::size_of::<i32>() as u32,
+            &first_manual as *const i32 as *const std::ffi::c_void,
+        )
+    };
+    if err != EDS_ERR_OK {
+        return Err(CameraError::SdkError(err));
+    }
+    Ok(())
+}
+
+fn set_evf_zoom_axis_impl(
+    device_id: &str,
+    axis_is_x: bool,
+    value: i32,
+    connected: &HashMap<String, EdsCameraRef>,
+) -> Result<(), CameraError> {
+    let camera_ref = connected
+        .get(device_id)
+        .copied()
+        .ok_or(CameraError::NotConnected)?;
+
+    // Read the current position so we only update one axis.
+    let mut current = EdsPoint { x: 0, y: 0 };
+    unsafe {
+        EdsGetPropertyData(
+            camera_ref,
+            PROP_EVF_ZOOM_POSITION,
+            0,
+            std::mem::size_of::<EdsPoint>() as u32,
+            &mut current as *mut EdsPoint as *mut std::ffi::c_void,
+        )
+    };
+
+    let point = if axis_is_x {
+        EdsPoint { x: value, y: current.y }
+    } else {
+        EdsPoint { x: current.x, y: value }
+    };
+
+    let err = unsafe {
+        EdsSetPropertyData(
+            camera_ref,
+            PROP_EVF_ZOOM_POSITION,
+            0,
+            std::mem::size_of::<EdsPoint>() as u32,
+            &point as *const EdsPoint as *const std::ffi::c_void,
+        )
+    };
     if err != EDS_ERR_OK {
         return Err(CameraError::SdkError(err));
     }
@@ -1149,9 +1663,15 @@ fn decode_wb(code: i32) -> String {
         10 => "Custom WB 1",
         11 => "Custom WB 2",
         12 => "Custom WB 3",
+        15 => "White paper 2",
+        16 => "White paper 3",
+        18 => "White paper 4",
+        19 => "White paper 5",
         20 => "Custom WB 4",
         21 => "Custom WB 5",
-        -1 => "Auto (white priority)",
+        23 => "Auto white priority", // kEdsWhiteBalance_AwbWhite
+        -1 => "Click WB",             // kEdsWhiteBalance_Click
+        -2 => "Pasted",               // kEdsWhiteBalance_Pasted
         _ => return format!("0x{code:02X}"),
     };
     label.to_string()
@@ -1161,44 +1681,6 @@ fn decode_color_temp(code: i32) -> String {
     format!("{code}K")
 }
 
-fn decode_metering(code: i32) -> String {
-    let label = match code {
-        1 => "Spot",
-        3 => "Evaluative",
-        4 => "Partial",
-        5 => "Center-weighted",
-        _ => return format!("0x{code:02X}"),
-    };
-    label.to_string()
-}
-
-fn decode_af(code: i32) -> String {
-    let label = match code {
-        0 => "One-Shot",
-        1 => "AI Servo",
-        2 => "AI Focus",
-        3 => "Manual",
-        _ => return format!("0x{code:02X}"),
-    };
-    label.to_string()
-}
-
-fn decode_drive(code: i32) -> String {
-    let label = match code {
-        0  => "Single",
-        1  => "Continuous high",
-        2  => "Video",
-        4  => "Self-timer 2s",
-        5  => "Self-timer 10s",
-        6  => "Silent single",
-        7  => "AF servo high",
-        10 => "Continuous low",
-        16 => "Silent continuous",
-        17 => "Silent continuous low",
-        _ => return format!("0x{code:02X}"),
-    };
-    label.to_string()
-}
 
 fn decode_image_quality(code: i32) -> String {
     let label = match code as u32 {

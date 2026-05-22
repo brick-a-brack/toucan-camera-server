@@ -249,6 +249,7 @@ impl CameraBackend for WebcamLinuxBackend {
                     min: desc.minimum as i32,
                     max: desc.maximum as i32,
                     step: if desc.step == 0 { 1 } else { desc.step as i32 },
+                    disabled: false,
                 },
                 control::Type::Boolean => CameraParameter::Select {
                     param_type,
@@ -257,6 +258,7 @@ impl CameraBackend for WebcamLinuxBackend {
                         ParameterOption { label: "Off".into(), value: "0".into() },
                         ParameterOption { label: "On".into(),  value: "1".into() },
                     ],
+                    disabled: false,
                 },
                 control::Type::Menu | control::Type::IntegerMenu => {
                     let options: Vec<ParameterOption> = desc
@@ -275,6 +277,7 @@ impl CameraBackend for WebcamLinuxBackend {
                         param_type,
                         current: current.to_string(),
                         options,
+                        disabled: false,
                     }
                 }
                 _ => continue,
@@ -314,7 +317,7 @@ impl CameraBackend for WebcamLinuxBackend {
 
         // VideoFormat is special: we have to stop the stream, change format,
         // then restart the stream. All other parameters map to V4L2 controls.
-        if param_type == ParameterType::VideoFormat {
+        if param_type == ParameterType::VideoStreamFormat {
             let (width, height) = parse_resolution(value).ok_or(CameraError::NotSupported)?;
 
             // Drop the active stream first. V4L2 requires REQBUFS=0 (which the
@@ -386,9 +389,10 @@ fn build_video_format_param(device: &Device) -> Option<CameraParameter> {
         .collect();
 
     Some(CameraParameter::Select {
-        param_type: ParameterType::VideoFormat,
+        param_type: ParameterType::VideoStreamFormat,
         current,
         options,
+        disabled: false,
     })
 }
 
@@ -407,20 +411,20 @@ fn cid_to_param_type(cid: u32) -> Option<ParameterType> {
         CID_CONTRAST               => Some(ParameterType::Contrast),
         CID_SATURATION             => Some(ParameterType::Saturation),
         CID_HUE                    => Some(ParameterType::Hue),
-        CID_HUE_AUTO               => Some(ParameterType::HueMode),
-        CID_AUTO_WHITE_BALANCE     => Some(ParameterType::WhiteBalanceMode),
+        CID_HUE_AUTO               => Some(ParameterType::HueAuto),
+        CID_AUTO_WHITE_BALANCE     => Some(ParameterType::WhiteBalanceAuto),
         CID_GAMMA                  => Some(ParameterType::Gamma),
         CID_GAIN                   => Some(ParameterType::Gain),
         CID_WHITE_BALANCE_TEMP     => Some(ParameterType::ColorTemperature),
         CID_SHARPNESS              => Some(ParameterType::Sharpness),
         CID_BACKLIGHT_COMPENSATION => Some(ParameterType::BacklightCompensation),
         CID_POWER_LINE_FREQUENCY   => Some(ParameterType::PowerLineFrequency),
-        CID_EXPOSURE_AUTO          => Some(ParameterType::ExposureMode),
+        CID_EXPOSURE_AUTO          => Some(ParameterType::ExposureAuto),
         CID_EXPOSURE_ABSOLUTE      => Some(ParameterType::Exposure),
         CID_PAN_ABSOLUTE           => Some(ParameterType::Pan),
         CID_TILT_ABSOLUTE          => Some(ParameterType::Tilt),
         CID_FOCUS_ABSOLUTE         => Some(ParameterType::Focus),
-        CID_FOCUS_AUTO             => Some(ParameterType::FocusMode),
+        CID_FOCUS_AUTO             => Some(ParameterType::FocusAuto),
         CID_ZOOM_ABSOLUTE          => Some(ParameterType::Zoom),
         _ => None,
     }
@@ -432,20 +436,20 @@ fn param_type_to_cid(pt: ParameterType) -> Option<u32> {
         ParameterType::Contrast              => Some(CID_CONTRAST),
         ParameterType::Saturation            => Some(CID_SATURATION),
         ParameterType::Hue                   => Some(CID_HUE),
-        ParameterType::HueMode               => Some(CID_HUE_AUTO),
-        ParameterType::WhiteBalanceMode      => Some(CID_AUTO_WHITE_BALANCE),
+        ParameterType::HueAuto               => Some(CID_HUE_AUTO),
+        ParameterType::WhiteBalanceAuto      => Some(CID_AUTO_WHITE_BALANCE),
         ParameterType::Gamma                 => Some(CID_GAMMA),
         ParameterType::Gain                  => Some(CID_GAIN),
         ParameterType::ColorTemperature      => Some(CID_WHITE_BALANCE_TEMP),
         ParameterType::Sharpness             => Some(CID_SHARPNESS),
         ParameterType::BacklightCompensation => Some(CID_BACKLIGHT_COMPENSATION),
         ParameterType::PowerLineFrequency    => Some(CID_POWER_LINE_FREQUENCY),
-        ParameterType::ExposureMode          => Some(CID_EXPOSURE_AUTO),
+        ParameterType::ExposureAuto          => Some(CID_EXPOSURE_AUTO),
         ParameterType::Exposure              => Some(CID_EXPOSURE_ABSOLUTE),
         ParameterType::Pan                   => Some(CID_PAN_ABSOLUTE),
         ParameterType::Tilt                  => Some(CID_TILT_ABSOLUTE),
         ParameterType::Focus                 => Some(CID_FOCUS_ABSOLUTE),
-        ParameterType::FocusMode             => Some(CID_FOCUS_AUTO),
+        ParameterType::FocusAuto             => Some(CID_FOCUS_AUTO),
         ParameterType::Zoom                  => Some(CID_ZOOM_ABSOLUTE),
         _ => None,
     }

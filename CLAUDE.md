@@ -5,7 +5,7 @@
 
 ## Project overview
 REST API to control cameras (DSLR and webcams) from multiple vendors and operating systems.
-The API is consumed locally — it binds exclusively to `127.0.0.1`, no authentication required.
+The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token>` or `?token=`). It binds to `127.0.0.1` by default (loopback only); pass `--expose` to bind `0.0.0.0` (LAN). On Android it always binds `0.0.0.0`. `BIND_ADDR` overrides the bind address on any platform.
 
 ## Code style
 - Follow standard Rust conventions (`rustfmt`, `clippy`).
@@ -24,20 +24,31 @@ The API is consumed locally — it binds exclusively to `127.0.0.1`, no authenti
 
 ### CameraBackend trait
 - Every backend must implement the `CameraBackend` trait defined in `src/camera/mod.rs`.
-- Current trait methods: `backend_id`, `list_devices`, `connect`, `disconnect`, `is_connected`, `get_parameters`, `get_live_view_frame`.
-- Future methods: `capture_photo`, `set_parameter`.
+- Current trait methods: `backend_id`, `list_devices`, `connect`, `disconnect`, `is_connected`, `get_parameters`, `get_live_view_frame`, `set_parameter`, `capture_photo`.
 - `backend_id()` returns the backend's unique name (e.g. `"canon"`). It is used to build opaque device IDs and to key the backend registry.
 - Route handlers must only interact with the `CameraBackend` trait — never with a concrete backend type.
 
 ### Backend registry & app state
 - `BackendState` is `Arc<HashMap<String, Arc<dyn CameraBackend>>>`, keyed by `backend_id()`.
-- The axum app state is `AppState` (in `src/routes/cameras.rs`), which wraps both `BackendState` and `LiveViewSenders`.
+- The axum app state is `AppState` (in `src/routes/cameras.rs`), which wraps `BackendState`, `LiveViewSenders`, the auth token (`Arc<RwLock<String>>`), and — when `backend-remote` is enabled — the shared peer registry.
 - `FromRef<AppState> for BackendState` is implemented so handlers that only need backends can extract `State<BackendState>` directly.
-- Backends are registered at startup in `build_backends()` in `main.rs`.
+- Backends are registered at startup in `build_backends()` in `lib.rs` (returns `BuiltBackends`, which also carries the peer registry when `backend-remote` is on).
 - If a backend fails to initialize (e.g. SDK DLL not found), it is skipped with an error log — the server starts anyway.
-- Each backend is gated behind a Cargo feature flag: `backend-canon`, `backend-nikon`, `backend-webcam-linux`, `backend-webcam-windows`, `backend-webcam-macos`.
-- Backend code lives in `src/backends/<name>.rs` (`#[cfg(feature = "backend-<name>")]`).
-- Currently in scope: `backend-canon` only. Others will be added later.
+- Each backend is gated behind a Cargo feature flag: `backend-canon`, `backend-gphoto2`, `backend-webcam-macos`, `backend-webcam-windows`, `backend-camera2-android`, `backend-remote`.
+- Backend code lives in `src/backends/<name>/mod.rs` (`#[cfg(feature = "backend-<name>")]`).
+- Active backends: `backend-canon` (Windows / macOS / Linux), `backend-gphoto2` (macOS / Linux), `backend-webcam-windows` (Windows), `backend-webcam-macos` (macOS), `backend-camera2-android` (Android), `backend-remote` (all platforms).
+- `backend-canon` and `backend-gphoto2` can be built together (release builds do, on macOS/Linux): EDSDK owns Canon bodies, gphoto2 hides them and covers other vendors — see the gphoto2 backend section.
+
+### Remote backend
+- `backend-remote` relays cameras exposed by other toucan-camera-server instances ("peers") over HTTP, so they appear in `/cameras` and are controllable like local devices.
+- `backend_id()` is `"remote"`. Native ID format: `"<peer_url>|<remote_opaque_id>"` where `peer_url` is the normalized peer base URL (e.g. `http://192.168.1.5:8040`) and `remote_opaque_id` is the peer's own opaque device ID. Neither part contains `|`, so the first `|` is the separator. The route layer then wraps it as the usual `base64url("remote:<peer_url>|<remote_opaque_id>")`.
+- **Sync trait over async HTTP**: the backend owns a dedicated multi-threaded tokio runtime. Each synchronous `CameraBackend` method spawns an owned (`'static`) future on that runtime and blocks on a `std::sync::mpsc` reply — the same "block on a channel" pattern as the SDK-thread backends, with no nested `block_on`.
+- **HTTP client**: `reqwest` with `default-features = false` (no TLS). Peers are reached over plain HTTP on the LAN. Per-request timeouts apply to control calls; the live-view stream is intentionally untimed.
+- **Live view**: `get_live_view_frame` starts a per-device relay task that reads the peer's MJPEG stream and keeps the latest JPEG in a shared cell; polls return that frame (or `SdkError(0x0000_A102)` "not ready" while empty). The relay self-terminates ~2 s after polling stops, closing the upstream connection.
+- **Connection state** is tracked locally (a `HashSet` of native IDs) — `connect`/`disconnect` proxy to the peer and update the set; `is_connected` and the `connected` flag in `list_devices` read from it.
+- **Peers** are managed via `/peers` routes and held in an in-memory `PeerRegistry` (`Arc<RwLock<Vec<Peer>>>`) shared between the backend and the routes via `AppState.peers` (no on-disk persistence). Each peer has an id, normalized URL, and optional bearer token sent on every proxied request. The token is returned by the API (the server is local, so the UI can display it).
+- **Add-time validation**: `POST /peers` calls `validate_peer` (hits the peer's `/health` with the given token) before registering. A peer that is unreachable, rejects the token, or is not a toucan-camera-server is refused with 502 and never stored.
+- Code: `src/backends/remote/mod.rs` (backend + MJPEG relay) and `src/backends/remote/peers.rs` (registry).
 
 ### Canon SDK thread
 - The EDSDK relies on Windows messages internally and does not work on tokio worker threads.
@@ -82,7 +93,8 @@ The API is consumed locally — it binds exclusively to `127.0.0.1`, no authenti
 
 ### HTTP layer
 - Framework: `axum` (not actix-web).
-- The server binds exclusively to `127.0.0.1` — never `0.0.0.0`.
+- The server binds to `127.0.0.1` by default (loopback); the `--expose` flag binds `0.0.0.0` (LAN), and Android always does. `BIND_ADDR` overrides on any platform (highest precedence). See `resolve_bind_addr()` / `parse_args()` in `lib.rs`.
+- Every route is wrapped by `auth::auth_middleware` (a `.layer()` on the whole router), so all endpoints — including `/`, `/health`, `/cameras`, and `/peers` — require the bearer token.
 - All routes must be registered explicitly; no catch-all wildcards unless intentional.
 - JSON is the response format for all non-binary endpoints.
 - State changes (connect, disconnect) use `PUT` — they are idempotent.
@@ -95,9 +107,15 @@ GET  /health                         — healthcheck JSON
 GET  /cameras                        — list all devices across all active backends (includes connected: bool)
 PUT  /cameras/{id}/connect           — open a session with a device
 PUT  /cameras/{id}/disconnect        — close a session with a device
-GET  /cameras/{id}/parameters        — list settable parameters with current value and allowed options (requires connected)
+GET  /cameras/{id}/parameters        — list all parameters with current value, allowed options, and disabled flag (requires connected)
 PUT  /cameras/{id}/parameters        — set a parameter value (requires connected)
 GET  /cameras/{id}/liveview          — MJPEG stream (requires connected, returns 409 if not)
+POST /cameras/{id}/capture           — capture a single JPEG photo, returns raw bytes (requires connected)
+
+# Remote backend only (feature `backend-remote`)
+GET    /peers                        — list registered peers (returns id, url, token — token surfaced for the local UI)
+POST   /peers                        — register a peer { url, token? }; validates the peer's /health first (502 if unreachable, wrong token, or not a toucan instance), so dead peers are never stored. Idempotent per URL, returns 201
+DELETE /peers/{id}                   — remove a peer (204, or 404 if unknown)
 ```
 
 ### Web UI
@@ -146,6 +164,28 @@ GET  /cameras/{id}/liveview          — MJPEG stream (requires connected, retur
 | exposure_time_absolute | CT | 0x04 | 4 (100µs units) |
 | zoom_absolute | CT | 0x0B | 2 |
 
+### Camera2 backend (Android)
+- Source: `src/backends/camera2_android/bridge.c` (NDK Camera2 + Media NDK) + `src/backends/camera2_android/mod.rs` (Rust actor over `std::sync::mpsc`, like the other native backends).
+- `backend_id()` is `"camera2-android"`. Compiled only for `target_os = "android"`, gated behind `backend-camera2-android`.
+- Build: `build.rs` compiles `bridge.c` with the NDK clang toolchain (needs `ANDROID_NDK_HOME`/`NDK_HOME`, API level 24+) and links `camera2ndk`, `mediandk`, `android`, `log`.
+- The crate is built as a `cdylib` loaded by the Kotlin `CameraServerService` via JNI. The `startServer` / `stopServer` / `setToken` entry points live in `lib.rs` (`android_jni` module).
+- On Android the HTTP server binds to `0.0.0.0` by default (LAN-accessible) instead of `127.0.0.1`; `BIND_ADDR` overrides. The pairing token is supplied from Kotlin via `setToken()` and can change while running.
+
+### gphoto2 backend (libgphoto2)
+- Source: `src/backends/gphoto2/mod.rs`. Pure Rust over the `gphoto2` crate (libgphoto2 PTP/USB cameras). `backend_id()` is `"gphoto2"`. Compiled only for `target_os = "linux"` / `"macos"`, gated behind `backend-gphoto2`.
+- **System dependency**: `libgphoto2` must be discoverable via `pkg-config` (`brew install libgphoto2 pkg-config` / `apt install libgphoto2-dev pkg-config`). Linked dynamically and **not bundled** — end users need libgphoto2 installed at runtime (like libusb on Linux). No actor thread: the `gphoto2` crate's `Camera`/`Context` are `Send + Sync` and serialize per-camera calls internally; open handles live in an `Arc<Mutex<HashMap>>`.
+- **Coexistence with the Canon EDSDK backend**: when `backend-canon` is also compiled in, it owns Canon bodies (native EVF live view + zoom/pan/tilt, full property set). The gphoto2 backend hides Canon models via `owned_by_other_backend(model)` = `cfg!(feature = "backend-canon") && model.to_lowercase().starts_with("canon")`, filtering `list_devices` and guarding `connect`, so the same camera never appears under both backends nor has the two drivers contend for USB. Without `backend-canon`, gphoto2 handles Canon too.
+- **Locale**: libgphoto2 localizes choice labels via gettext (e.g. French "Automatique"/"pose longue", decimal "0,5"). `GPhoto2Backend::new()` sets `LC_ALL=C` before the first gphoto2 call so labels and numeric formatting are stable English/ASCII (and option `value`s round-trip consistently to `set_choice`). Value classification is still locale-independent as defence (see below).
+- **Parameter curation** (in `walk_widget` + `get_parameters`), mirroring the Canon backend's intent:
+  - ISO is split into an `IsoAuto` boolean + an `Iso` selector; `Iso` is `disabled` when auto is on. The auto choice is detected as the only non-numeric one (`is_concrete_iso`).
+  - Shutter speed drops the bulb entry — detected as the only choice with no digit (`is_real_shutter_speed`).
+  - Image quality drops RAW / RAW+JPEG / cRAW formats (`is_jpeg_format`), since capture is JPEG-only.
+  - `select`/`range_select` parameters with fewer than two options are hidden (no real choice — e.g. exposure compensation in Manual mode).
+  - Read-only widgets are skipped. Config-key name → `ParameterType` mapping is in `param_type_for`; the reverse (for `set_parameter`) is `config_key_for`.
+- **Keep-alive**: Canon bodies refuse to have `autopoweroff` disabled (PTP `0x2019` Device Busy), so a background `gphoto2-keepalive` thread (`spawn_keepalive`) pings every connected camera every 30 s via `camera.config()` — any PTP activity resets the body's idle timer (the EOS Utility trick), preventing it from sleeping and vanishing mid-session.
+- **Live view / capture**: `get_live_view_frame` uses `capture_preview()` (no shutter actuation); `capture_photo` uses `capture_image()` + in-memory download (JPEG only — make sure the body is in a JPEG image-quality mode).
+- Unit tests for the pure logic (key mapping, the auto/bulb/RAW heuristics incl. localized labels, Canon deferral) live in the file's `#[cfg(test)]` module; run with `cargo test --features backend-gphoto2`.
+
 ## Canon SDK
 - SDK files live in `external/EDSDK/` (git-ignored).
 - Windows 64-bit library: `external/EDSDK/EDSDKv132010W/Windows/EDSDK_64/Library/EDSDK.lib`
@@ -158,17 +198,33 @@ GET  /cameras/{id}/liveview          — MJPEG stream (requires connected, retur
 ## File structure
 ```
 src/
-  main.rs             — server startup, backend registry, route registration
+  main.rs             — binary entry point (macOS CFRunLoop pump; #[tokio::main] elsewhere)
+  lib.rs              — run_server, build_backends, build_router, Android JNI entry points
+  auth.rs             — bearer-token auth middleware (Authorization header or ?token=)
   camera/
     mod.rs            — CameraBackend trait, DeviceId, DeviceInfo, CameraError,
                         CameraParameter, ParameterOption
   backends/
     mod.rs            — feature-gated module declarations
-    canon.rs          — FFI bindings + impl CameraBackend for CanonBackend
+    canon/
+      mod.rs          — FFI bindings + impl CameraBackend for CanonBackend
                         (actor pattern, SDK thread, code→label decode tables)
+    gphoto2/
+      mod.rs          — libgphoto2 backend (PTP/USB cameras): param curation,
+                        LC_ALL=C labels, keep-alive thread, Canon deferral to EDSDK
+    webcam_windows/
+      mod.rs          — MediaFoundation + DirectShow backend (Windows webcams)
+    webcam_macos/
+      mod.rs          — AVFoundation/CMIO/IOKit backend (macOS webcams), C bridge in bridge.m
+    camera2_android/
+      mod.rs          — Camera2 + Media NDK backend (Android), C bridge in bridge.c
+    remote/
+      mod.rs          — HTTP-proxying backend + MJPEG live-view relay (RemoteBackend)
+      peers.rs        — in-memory PeerRegistry shared with the /peers routes
   routes/
     mod.rs
     cameras.rs        — AppState, BackendState, LiveViewSenders, route handlers
+    peers.rs          — /peers management handlers (feature backend-remote)
 static/
   index.html          — web UI source (embedded in binary at compile time)
 build.rs              — SDK linking + DLL copy based on active features and target OS

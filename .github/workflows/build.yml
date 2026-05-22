@@ -5,6 +5,7 @@ on:
     branches:
       - master
       - dev
+      - feature/libgphoto2
   workflow_dispatch:
 
 env:
@@ -54,17 +55,40 @@ jobs:
 
           hdiutil detach "$MOUNT_POINT" -quiet
 
+      - name: Install libgphoto2 (both arches for the universal binary)
+        run: |
+          set -eo pipefail
+          # Native arm64 build deps (Homebrew at /opt/homebrew).
+          brew install pkg-config libgphoto2
+          # The universal binary's x86_64 slice needs an x86_64 libgphoto2, but the
+          # arm64 runner ships no Intel Homebrew. Install one at /usr/local under
+          # Rosetta and pull the Intel bottle there.
+          sudo softwareupdate --install-rosetta --agree-to-license || true
+          if [ ! -x /usr/local/bin/brew ]; then
+            curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o /tmp/brew-install.sh
+            arch -x86_64 /bin/bash -c "NONINTERACTIVE=1 /bin/bash /tmp/brew-install.sh"
+          fi
+          arch -x86_64 /usr/local/bin/brew install libgphoto2
+
       - name: Build x86_64
+        env:
+          # Cross-link against the Intel libgphoto2 under /usr/local. brew symlinks
+          # every formula's .pc into <prefix>/lib/pkgconfig, covering libgphoto2,
+          # libgphoto2_port and their deps.
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
+          PKG_CONFIG_ALLOW_CROSS: "1"
         run: |
           cargo build --release \
             --target x86_64-apple-darwin \
-            --features backend-webcam-macos,backend-canon
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-remote
 
       - name: Build arm64
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig
         run: |
           cargo build --release \
             --target aarch64-apple-darwin \
-            --features backend-webcam-macos,backend-canon
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-remote
 
       - name: Create universal binary with lipo
         run: |
@@ -90,6 +114,14 @@ jobs:
           if [ -d "$FRAMEWORK_SRC" ]; then
             cp -R "$FRAMEWORK_SRC" dist/toucan-camera-server-macos/
           fi
+
+          # gphoto2 runtime: lipo-merge the per-arch libs/plugins staged by
+          # build.rs and rewrite their install names to be relocatable, so the
+          # universal binary ships without a system libgphoto2.
+          bash scripts/macos-bundle-gphoto2.sh \
+            target/x86_64-apple-darwin/release \
+            target/aarch64-apple-darwin/release \
+            dist/toucan-camera-server-macos
 
           cd dist/toucan-camera-server-macos
           zip -r ../toucan-camera-server-macos.zip .
@@ -122,7 +154,7 @@ jobs:
         run: |
           cargo build --release `
             --target x86_64-pc-windows-msvc `
-            --features backend-webcam-windows,backend-canon
+            --features backend-webcam-windows,backend-canon,backend-remote
 
       - name: Package into zip
         shell: pwsh
@@ -159,6 +191,7 @@ jobs:
   # ship the binary alongside libEDSDK.so, found at runtime via rpath=$ORIGIN.
   # Runtime requirements on the target Linux host:
   #   - libusb-1.0 (typically pre-installed)
+  #   - libgphoto2 (the gphoto2 backend links it dynamically; not bundled)
   #   - read/write permissions on the camera USB node (see Canon udev rules)
   #   - webcam access: shipped install.sh sets up a uaccess udev rule so the
   #     active desktop user gets ACL access to /dev/video* without group changes
@@ -176,7 +209,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config unzip libusb-1.0-0
+            build-essential pkg-config unzip libusb-1.0-0 libgphoto2-dev patchelf
 
       - name: Install Canon EDSDK
         run: |
@@ -192,14 +225,25 @@ jobs:
         run: |
           cargo build --release \
             --target x86_64-unknown-linux-gnu \
-            --features backend-canon,backend-webcam-linux
+            --features backend-canon,backend-gphoto2,backend-webcam-linux,backend-remote
 
       - name: Package
         run: |
           OUT="dist/toucan-camera-server-linux"
+          REL="target/x86_64-unknown-linux-gnu/release"
           mkdir -p "$OUT"
-          cp target/x86_64-unknown-linux-gnu/release/toucan-camera-server "$OUT/"
-          cp target/x86_64-unknown-linux-gnu/release/libEDSDK.so "$OUT/"
+          cp "$REL/toucan-camera-server" "$OUT/"
+          cp "$REL/libEDSDK.so" "$OUT/"
+          # gphoto2 runtime bundle staged by build.rs (libs from the manifest +
+          # camlibs/iolibs plugin dirs), each already given an $ORIGIN rpath.
+          if [ -f "$REL/gphoto2-bundle.manifest" ]; then
+            # `|| [ -n "$lib" ]` so the final manifest entry is copied even if the
+            # file has no trailing newline (otherwise `read` drops it at EOF).
+            while IFS= read -r lib || [ -n "$lib" ]; do
+              [ -n "$lib" ] && cp "$REL/$lib" "$OUT/"
+            done < "$REL/gphoto2-bundle.manifest"
+            cp -R "$REL/camlibs" "$REL/iolibs" "$OUT/" 2>/dev/null || true
+          fi
           # Webcam permissions setup — udev rule + install script.
           # End-user runs ./install.sh once after extraction (uses sudo).
           cp packaging/linux/99-toucan-camera.rules "$OUT/"
@@ -219,13 +263,109 @@ jobs:
             echo "ERROR: at least one transitive dependency missing"; exit 1
           fi
           cd -
-          tar czf dist/toucan-camera-server-linux.tar.gz -C dist toucan-camera-server-linux
+          cd dist && zip -r toucan-camera-server-linux.zip toucan-camera-server-linux && cd -
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: toucan-camera-server-linux
-          path: dist/toucan-camera-server-linux.tar.gz
+          path: dist/toucan-camera-server-linux.zip
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Android — arm64-v8a
+  # Builds the Rust cdylib with cargo-ndk, then assembles a debug APK and a
+  # debug AAB with Gradle. Release signing can be added later via secrets.
+  # ---------------------------------------------------------------------------
+  build-android:
+    name: Build (Android)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install Android NDK
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "ndk;27.2.12479018" >/dev/null
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
+
+      - name: Install Rust targets
+        run: rustup target add aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build Rust library
+        run: |
+          cargo ndk \
+            -t arm64-v8a \
+            -o android/app/src/main/jniLibs \
+            build --release --features backend-camera2-android,backend-remote
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bump Android version
+        run: node .github/workflows/androidBumpVersion.js
+
+      - name: Build AAB (release)
+        run: |
+          chmod +x android/gradlew
+          cd android && ./gradlew bundleRelease
+
+      - name: Setup Bundletool
+        run: wget https://github.com/google/bundletool/releases/download/1.15.4/bundletool-all-1.15.4.jar -O bundletool.jar
+
+      - name: Sign AAB and extract signed APK
+        run: |
+          echo ${{ secrets.KS_KEY_B64 }} | base64 -d > keystore.jks
+          java -jar bundletool.jar build-apks \
+            --bundle=android/app/build/outputs/bundle/release/app-release.aab \
+            --output=android/app/build/outputs/bundle/release/app-release.apks \
+            --mode=universal \
+            --ks=keystore.jks \
+            --ks-pass=pass:${{ secrets.KS_STORE_PASS }} \
+            --ks-key-alias=${{ secrets.KS_ALIAS }} \
+            --key-pass=pass:${{ secrets.KS_ALIAS_PASS }}
+          jarsigner -verbose -sigalg SHA256withRSA -digestalg SHA-256 \
+            -storepass ${{ secrets.KS_STORE_PASS }} \
+            -keystore keystore.jks \
+            android/app/build/outputs/bundle/release/app-release.aab \
+            ${{ secrets.KS_ALIAS }} \
+            -keypass ${{ secrets.KS_ALIAS_PASS }}
+          cd android/app/build/outputs/bundle/release/
+          unzip -p app-release.apks universal.apk > app-release.apk
+
+      - name: Package outputs
+        run: |
+          mkdir -p app-android
+          cp android/app/build/outputs/bundle/release/app-release.aab \
+             app-android/toucan-camera-server.aab
+          cp android/app/build/outputs/bundle/release/app-release.apk \
+             app-android/toucan-camera-server.apk
+          cd app-android && zip -r ../toucan-camera-server-android.zip . && cd ..
+          cd android/app/src/main/jniLibs/arm64-v8a && zip -r $GITHUB_WORKSPACE/toucan-camera-lib-android.zip . && cd $GITHUB_WORKSPACE
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toucan-camera-server-android
+          path: toucan-camera-server-android.zip
+          if-no-files-found: error
+
+      - name: Upload lib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toucan-camera-server-lib-android
+          path: toucan-camera-lib-android.zip
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -235,7 +375,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: Attach to draft release
-    needs: [build-macos, build-windows, build-linux]
+    needs: [build-macos, build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -258,6 +398,18 @@ jobs:
           name: toucan-camera-server-linux
           path: dist/
 
+      - name: Download Android app artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toucan-camera-server-android
+          path: dist/
+
+      - name: Download Android lib artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toucan-camera-server-lib-android
+          path: dist/
+
       - name: Attach assets to current draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -273,7 +425,9 @@ jobs:
             gh release upload "$DRAFT_TAG" \
               dist/toucan-camera-server-macos.zip \
               dist/toucan-camera-server-windows.zip \
-              dist/toucan-camera-server-linux.tar.gz \
+              dist/toucan-camera-server-linux.zip \
+              dist/toucan-camera-server-android.zip \
+              dist/toucan-camera-lib-android.zip \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
           else
