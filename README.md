@@ -87,4 +87,6 @@ Feel free to make pull-requests or report issues 😉
 3. Using V4L2
 4. Using camera2
 5. Relayed over HTTP — see [Remote cameras](#remote-cameras)
-6. Using libgphoto2 — Nikon, Sony, Fuji and many other PTP/USB cameras. Requires `libgphoto2` installed on the machine (`brew install libgphoto2` on macOS, `apt install libgphoto2` on Linux); it is linked dynamically and not bundled. On builds that also include the Canon EDSDK backend, Canon bodies are driven by EDSDK and the rest by libgphoto2.
+6. Using libgphoto2 — Nikon, Sony, Fuji and many other PTP/USB cameras.
+
+> All native dependencies (Canon EDSDK, libgphoto2 and its camera drivers, …) are packaged inside the release archives — just download, unzip and run, nothing else to install.
