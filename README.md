@@ -75,6 +75,7 @@ Feel free to make pull-requests or report issues 😉
 | ---------------------------- | ------- | ----- | ----- | ------- |
 | Webcams / Cameras            | 🟢¹     | 🟢²   | 🟠³   | 🟢⁴     |
 | Canon EOS (EDSDK)            | 🟢      | 🟢    | 🟢    | 🔴      |
+| Various cameras (libgphoto2) | 🔴      | 🟢⁶   | 🟢⁶   | 🔴      |
 | Remote (other instances)     | 🟢⁵     | 🟢⁵   | 🟢⁵   | 🟢⁵     |
 
 🟢 - Supported  
@@ -86,3 +87,4 @@ Feel free to make pull-requests or report issues 😉
 3. Using V4L2
 4. Using camera2
 5. Relayed over HTTP — see [Remote cameras](#remote-cameras)
+6. Using libgphoto2 — Nikon, Sony, Fuji and many other PTP/USB cameras. Requires `libgphoto2` installed on the machine (`brew install libgphoto2` on macOS, `apt install libgphoto2` on Linux); it is linked dynamically and not bundled. On builds that also include the Canon EDSDK backend, Canon bodies are driven by EDSDK and the rest by libgphoto2.

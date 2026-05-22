@@ -14,6 +14,7 @@ path = "src/main.rs"
 [features]
 default = []
 backend-canon = []
+backend-gphoto2 = ["dep:gphoto2"]
 backend-webcam-macos = []
 backend-webcam-windows = ["dep:windows", "dep:windows-core", "dep:image"]
 backend-camera2-android = ["dep:image"]
@@ -35,6 +36,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 # HTTP on the LAN (the server itself is HTTP-only), keeping the dependency light.
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "stream"] }
 image = { version = "0.25", optional = true, default-features = false, features = ["jpeg"] }
+gphoto2 = { version = "3.4", optional = true }
 windows-core = { version = "0.58", optional = true }
 windows = { version = "0.58", optional = true, features = [
     "implement",

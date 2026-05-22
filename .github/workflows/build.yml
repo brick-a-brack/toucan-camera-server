@@ -5,7 +5,7 @@ on:
     branches:
       - master
       - dev
-      - feature/android
+      - feature/libgphoto2
   workflow_dispatch:
 
 env:
@@ -55,17 +55,40 @@ jobs:
 
           hdiutil detach "$MOUNT_POINT" -quiet
 
+      - name: Install libgphoto2 (both arches for the universal binary)
+        run: |
+          set -eo pipefail
+          # Native arm64 build deps (Homebrew at /opt/homebrew).
+          brew install pkg-config libgphoto2
+          # The universal binary's x86_64 slice needs an x86_64 libgphoto2, but the
+          # arm64 runner ships no Intel Homebrew. Install one at /usr/local under
+          # Rosetta and pull the Intel bottle there.
+          sudo softwareupdate --install-rosetta --agree-to-license || true
+          if [ ! -x /usr/local/bin/brew ]; then
+            curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o /tmp/brew-install.sh
+            arch -x86_64 /bin/bash -c "NONINTERACTIVE=1 /bin/bash /tmp/brew-install.sh"
+          fi
+          arch -x86_64 /usr/local/bin/brew install libgphoto2
+
       - name: Build x86_64
+        env:
+          # Cross-link against the Intel libgphoto2 under /usr/local. brew symlinks
+          # every formula's .pc into <prefix>/lib/pkgconfig, covering libgphoto2,
+          # libgphoto2_port and their deps.
+          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
+          PKG_CONFIG_ALLOW_CROSS: "1"
         run: |
           cargo build --release \
             --target x86_64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-remote
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-remote
 
       - name: Build arm64
+        env:
+          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig
         run: |
           cargo build --release \
             --target aarch64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-remote
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-remote
 
       - name: Create universal binary with lipo
         run: |
@@ -91,6 +114,14 @@ jobs:
           if [ -d "$FRAMEWORK_SRC" ]; then
             cp -R "$FRAMEWORK_SRC" dist/toucan-camera-server-macos/
           fi
+
+          # gphoto2 runtime: lipo-merge the per-arch libs/plugins staged by
+          # build.rs and rewrite their install names to be relocatable, so the
+          # universal binary ships without a system libgphoto2.
+          bash scripts/macos-bundle-gphoto2.sh \
+            target/x86_64-apple-darwin/release \
+            target/aarch64-apple-darwin/release \
+            dist/toucan-camera-server-macos
 
           cd dist/toucan-camera-server-macos
           zip -r ../toucan-camera-server-macos.zip .
@@ -160,6 +191,7 @@ jobs:
   # ship the binary alongside libEDSDK.so, found at runtime via rpath=$ORIGIN.
   # Runtime requirements on the target Linux host:
   #   - libusb-1.0 (typically pre-installed)
+  #   - libgphoto2 (the gphoto2 backend links it dynamically; not bundled)
   #   - read/write permissions on the camera USB node (see Canon udev rules)
   # ---------------------------------------------------------------------------
   build-linux:
@@ -175,7 +207,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config unzip libusb-1.0-0
+            build-essential pkg-config unzip libusb-1.0-0 libgphoto2-dev patchelf
 
       - name: Install Canon EDSDK
         run: |
@@ -191,14 +223,23 @@ jobs:
         run: |
           cargo build --release \
             --target x86_64-unknown-linux-gnu \
-            --features backend-canon,backend-remote
+            --features backend-canon,backend-gphoto2,backend-remote
 
       - name: Package
         run: |
           OUT="dist/toucan-camera-server-linux"
+          REL="target/x86_64-unknown-linux-gnu/release"
           mkdir -p "$OUT"
-          cp target/x86_64-unknown-linux-gnu/release/toucan-camera-server "$OUT/"
-          cp target/x86_64-unknown-linux-gnu/release/libEDSDK.so "$OUT/"
+          cp "$REL/toucan-camera-server" "$OUT/"
+          cp "$REL/libEDSDK.so" "$OUT/"
+          # gphoto2 runtime bundle staged by build.rs (libs from the manifest +
+          # camlibs/iolibs plugin dirs), each already given an $ORIGIN rpath.
+          if [ -f "$REL/gphoto2-bundle.manifest" ]; then
+            while IFS= read -r lib; do
+              [ -n "$lib" ] && cp "$REL/$lib" "$OUT/"
+            done < "$REL/gphoto2-bundle.manifest"
+            cp -R "$REL/camlibs" "$REL/iolibs" "$OUT/" 2>/dev/null || true
+          fi
           # Sanity checks against the bundled layout:
           #  1. The binary must resolve libEDSDK.so via rpath=$ORIGIN.
           #  2. No dependency in the full transitive graph may be missing.

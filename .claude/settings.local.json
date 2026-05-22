@@ -24,10 +24,13 @@
       "Bash(cargo metadata *)",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(p['name'],p['version']\\) for p in d['packages']]\")",
       "Bash(cargo clippy *)",
-      "Bash(~/.cargo/bin/cargo search *)",
       "WebFetch(domain:docs.rs)",
-      "Bash(chmod +x /Users/mbaco/Documents/dev/brickabrack/bird-camera-server/packaging/linux/install.sh)",
+      "Bash(~/.cargo/bin/cargo search *)",
+      "Bash(~/.cargo/bin/cargo info *)",
+      "Bash(brew list *)",
+      "Bash(pkg-config --modversion libgphoto2)",
       "Bash(~/.cargo/bin/cargo check *)",
+      "Bash(chmod +x /Users/mbaco/Documents/dev/brickabrack/bird-camera-server/packaging/linux/install.sh)",
       "Bash(~/.cargo/bin/cargo fetch *)",
       "Bash(python -m json.tool)",
       "WebFetch(domain:chromium.googlesource.com)",
@@ -55,7 +58,6 @@
       "PowerShell(cargo ndk *)",
       "Bash(./gradlew installDebug)",
       "Bash(./gradlew assembleDebug)",
-<<<<<<< HEAD
       "Bash(xargs grep *)",
       "Bash(adb uninstall *)",
       "Bash(xargs ls *)",
@@ -64,9 +66,6 @@
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\mbaco\\\\Documents\\\\dev\\\\brickabrack\\\\bird-camera-server\\\\android\\\\app\\\\build\" -Recurse | Where-Object { -not $_.PSIsContainer } | Select-Object -First 30 FullName)",
       "PowerShell(Get-Item *)",
       "PowerShell(adb install *)"
-=======
-      "Bash(xargs grep *)"
->>>>>>> 73a5afe8264056374f2b54e35e19dd72b07d66e8
     ]
   }
 }
