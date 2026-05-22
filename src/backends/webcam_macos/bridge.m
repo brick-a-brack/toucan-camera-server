@@ -136,6 +136,10 @@ didFinishProcessingPhoto:(AVCapturePhoto *)photo
 #define UVC_VC_PROCESSING_UNIT 0x05
 #define UVC_ITT_CAMERA         0x0201
 
+// Camera Terminal PanTilt Absolute control: a single 8-byte control holding
+// int32 pan (arc seconds) followed by int32 tilt — NOT two separate selectors.
+#define UVC_CT_PANTILT_ABSOLUTE 0x0D
+
 // Walk the USB configuration descriptor to find the VideoControl interface number,
 // Processing Unit ID, and Camera Terminal ID.
 static int uvc_parse_config(IOUSBDeviceInterface **dev,
@@ -358,8 +362,9 @@ static const ControlDesc kControls[] = {
     { "focus_mode",                0x08, NO,   1, 0,                                        0,                                CTRL_BOOL_MANUAL_AUTO, AVF_FOCUS,         NULL                    },
     { "iris_absolute",             0x09, NO,   2, 0,                                        0,                                CTRL_RANGE,            AVF_NONE,          NULL                    },
     { "zoom_absolute",             0x0B, NO,   2, kCMIOZoomControlClassID,                  0,                                CTRL_RANGE,            AVF_NONE,          NULL                    },
-    { "pan_absolute",              0x0D, NO,   4, 0,                                        0,                                CTRL_RANGE,            AVF_NONE,          NULL                    },
-    { "tilt_absolute",             0x0E, NO,   4, 0,                                        0,                                CTRL_RANGE,            AVF_NONE,          NULL                    },
+    // pan_absolute / tilt_absolute are NOT in this table: UVC packs them into a
+    // single 8-byte CT_PANTILT_ABSOLUTE control (0x0D), handled out of the generic
+    // loop in wc_get_parameters / wc_set_parameter (see UVC_CT_PANTILT_ABSOLUTE).
 };
 static const int kControlCount = (int)(sizeof(kControls) / sizeof(kControls[0]));
 
@@ -390,6 +395,10 @@ static const int kControlCount = (int)(sizeof(kControls) / sizeof(kControls[0]))
 - (int)uvcGetSelector:(uint8_t)selector request:(uint8_t)req isPU:(BOOL)isPU out:(int32_t *)out size:(uint8_t)size;
 // Write a UVC control by kind name (handles exposure_mode AE-mode mapping internally).
 - (int)uvcWriteKind:(const char *)kind value:(int32_t)value;
+// Read the combined 8-byte CT_PANTILT_ABSOLUTE control (pan + tilt) for one request.
+- (int)uvcGetPanTilt:(uint8_t)req pan:(int32_t *)pan tilt:(int32_t *)tilt;
+// Write the combined 8-byte CT_PANTILT_ABSOLUTE control (both axes at once).
+- (int)uvcSetPanTilt:(int32_t)pan tilt:(int32_t)tilt;
 @end
 
 @implementation WcSessionHandle {
@@ -459,6 +468,28 @@ static const int kControlCount = (int)(sizeof(kControls) / sizeof(kControls[0]))
     NSLog(@"[uvc] write kind=%s value=%d bytes=[%02X %02X %02X %02X]",
           kind, (int)uvcVal, buf[0], buf[1], buf[2], buf[3]);
     return uvc_set_cur(_uvcIF, unitID, d->uvc_selector, _uvcVCIf, buf, d->uvc_size);
+}
+
+- (int)uvcGetPanTilt:(uint8_t)req pan:(int32_t *)pan tilt:(int32_t *)tilt {
+    if (!_uvcIF || !_uvcCT) return -1;
+    uint8_t buf[8] = {0};
+    if (uvc_get_req(_uvcIF, req, _uvcCT, UVC_CT_PANTILT_ABSOLUTE, _uvcVCIf, buf, 8) != 0)
+        return -1;
+    int32_t p, t;
+    memcpy(&p, buf,     4);  // dwPanAbsolute  (little-endian on the wire = host)
+    memcpy(&t, buf + 4, 4);  // dwTiltAbsolute
+    *pan  = p;
+    *tilt = t;
+    return 0;
+}
+
+- (int)uvcSetPanTilt:(int32_t)pan tilt:(int32_t)tilt {
+    if (!_uvcIF || !_uvcCT) return -1;
+    uint8_t buf[8] = {0};
+    memcpy(buf,     &pan,  4);
+    memcpy(buf + 4, &tilt, 4);
+    NSLog(@"[uvc] write pantilt pan=%d tilt=%d", pan, tilt);
+    return uvc_set_cur(_uvcIF, _uvcCT, UVC_CT_PANTILT_ABSOLUTE, _uvcVCIf, buf, 8);
 }
 @end
 
@@ -930,12 +961,26 @@ int wc_get_parameters(void *handle, WcParamDesc *out, int capacity) {
 
         // --- Range controls: try CMIO first, fall back to UVC GET_CUR/MIN/MAX ---
         if (d->presentation == CTRL_RANGE) {
+            BOOL haveUvc = (d->uvc_is_pu ? [h uvcHasPU] : [h uvcHasCT]);
+
             if (d->cmio_class && cmioMap) {
                 NSNumber *ctrlNum = cmioMap[@(d->cmio_class)];
                 if (ctrlNum)
                     emitted = cmio_read_range(p, (CMIOObjectID)ctrlNum.unsignedIntValue);
             }
-            if (!emitted && (d->uvc_is_pu ? [h uvcHasPU] : [h uvcHasCT])) {
+
+            // CMIO's NativeValue is cached by the kernel driver and does NOT reflect
+            // our UVC SET_CUR writes, so the value read back goes stale and the UI
+            // snaps the control back to its previous value. When we can talk UVC
+            // directly, re-read the live current value there — the same channel we
+            // write to — while keeping CMIO's min/max range.
+            if (emitted && haveUvc) {
+                int32_t cur = 0;
+                if ([h uvcGetSelector:d->uvc_selector request:0x81 isPU:d->uvc_is_pu out:&cur size:d->uvc_size] == 0)
+                    p->current = (int)cur;
+            }
+
+            if (!emitted && haveUvc) {
                 int32_t cur = 0, minV = 0, maxV = 0, res = 1;
                 if ([h uvcGetSelector:d->uvc_selector request:0x81 isPU:d->uvc_is_pu out:&cur  size:d->uvc_size] == 0 &&
                     [h uvcGetSelector:d->uvc_selector request:0x82 isPU:d->uvc_is_pu out:&minV size:d->uvc_size] == 0 &&
@@ -973,10 +1018,11 @@ int wc_get_parameters(void *handle, WcParamDesc *out, int capacity) {
                         emitted = YES;
                         break;
                     case CTRL_ENUM_PLF:
+                        // "Auto" (UVC value 3) is rejected by many UVC cameras
+                        // (SET_CUR returns an error), so it is not offered.
                         push_option(p, 0, "Disabled");
                         push_option(p, 1, "50 Hz");
                         push_option(p, 2, "60 Hz");
-                        push_option(p, 3, "Auto");
                         emitted = YES;
                         break;
                     case CTRL_RANGE:
@@ -988,29 +1034,50 @@ int wc_get_parameters(void *handle, WcParamDesc *out, int capacity) {
         if (emitted) count++;
     }
 
-    // Remove range controls that are locked because their linked auto mode is active.
-    // A control is suppressed when guarded_by names an auto control whose current value is 1 (Auto).
-    int out_count = 0;
-    for (int i = 0; i < count; i++) {
-        const ControlDesc *d = NULL;
-        for (int j = 0; j < kControlCount; j++) {
-            if (strcmp(kControls[j].kind, out[i].kind) == 0) { d = &kControls[j]; break; }
-        }
-        BOOL suppress = NO;
-        if (d && d->guarded_by) {
-            for (int j = 0; j < count; j++) {
-                if (strcmp(out[j].kind, d->guarded_by) == 0) {
-                    suppress = (out[j].current == 1);
-                    break;
-                }
+    // PanTilt: one combined UVC Camera Terminal control (selector 0x0D, 8 bytes:
+    // int32 pan + int32 tilt), exposed as two range parameters. Windows and Linux
+    // see two controls only because their OS driver splits this one; on raw UVC we
+    // read the 8-byte control once and split it. An axis is emitted only when it
+    // has a real range (min < max) — many webcams report 0..0 until zoomed in.
+    if ([h uvcHasCT]) {
+        int32_t panCur = 0, tiltCur = 0, panMin = 0, tiltMin = 0;
+        int32_t panMax = 0, tiltMax = 0, panRes = 1, tiltRes = 1;
+        if ([h uvcGetPanTilt:0x81 pan:&panCur tilt:&tiltCur] == 0 &&
+            [h uvcGetPanTilt:0x82 pan:&panMin tilt:&tiltMin] == 0 &&
+            [h uvcGetPanTilt:0x83 pan:&panMax tilt:&tiltMax] == 0) {
+            [h uvcGetPanTilt:0x84 pan:&panRes tilt:&tiltRes];
+
+            if (panMin < panMax && count < capacity) {
+                WcParamDesc *p = &out[count];
+                memset(p, 0, sizeof(*p));
+                strlcpy(p->kind, "pan_absolute", WC_MAX_KIND);
+                p->is_range = 1;
+                p->current  = panCur;
+                p->min      = panMin;
+                p->max      = panMax;
+                p->step     = (panRes > 0) ? panRes : 1;
+                count++;
+            }
+            if (tiltMin < tiltMax && count < capacity) {
+                WcParamDesc *p = &out[count];
+                memset(p, 0, sizeof(*p));
+                strlcpy(p->kind, "tilt_absolute", WC_MAX_KIND);
+                p->is_range = 1;
+                p->current  = tiltCur;
+                p->min      = tiltMin;
+                p->max      = tiltMax;
+                p->step     = (tiltRes > 0) ? tiltRes : 1;
+                count++;
             }
         }
-        if (!suppress) {
-            if (out_count != i) out[out_count] = out[i];
-            out_count++;
-        }
     }
-    return out_count;
+
+    // Value parameters whose linked auto mode is active are NOT removed here:
+    // like the Windows and Linux webcam backends, they stay in the list and the
+    // Rust layer (finalize_disabled) flags them `disabled` so the client greys
+    // them out instead of making them vanish. The `guarded_by` field is kept on
+    // the control table for documentation of those relationships.
+    return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -1064,6 +1131,17 @@ int wc_set_parameter(void *handle, const char *kind, int value) {
     }
 
     if (![h uvcAvailable]) return -1;
+
+    // PanTilt: combined 8-byte UVC control (selector 0x0D). Read the current pair,
+    // replace only the requested axis, and write the pair back so the other axis
+    // is preserved.
+    if (strcmp(kind, "pan_absolute") == 0 || strcmp(kind, "tilt_absolute") == 0) {
+        int32_t pan = 0, tilt = 0;
+        if ([h uvcGetPanTilt:0x81 pan:&pan tilt:&tilt] != 0) return -1;
+        if (strcmp(kind, "pan_absolute") == 0) pan  = (int32_t)value;
+        else                                   tilt = (int32_t)value;
+        return [h uvcSetPanTilt:pan tilt:tilt];
+    }
 
     // Look up descriptor.
     const ControlDesc *d = NULL;

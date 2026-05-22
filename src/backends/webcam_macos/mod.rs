@@ -392,7 +392,7 @@ fn get_parameters_impl(
                     min:      d.min,
                     max:      d.max,
                     step:     if d.step > 0 { d.step } else { 1 },
-                    disabled: false, // updated below by disable_value_params_in_auto_mode
+                    disabled: false, // updated below by finalize_disabled
                 })
             } else {
                 let num_options = d.num_options as usize;
@@ -411,7 +411,7 @@ fn get_parameters_impl(
         })
         .collect();
 
-    Ok(disable_value_params_in_auto_mode(params))
+    Ok(finalize_disabled(params))
 }
 
 fn set_parameter_impl(
@@ -434,9 +434,15 @@ fn set_parameter_impl(
     if ret != 0 { Err(CameraError::NotSupported) } else { Ok(()) }
 }
 
-/// Sets `disabled: true` on value parameters whose corresponding *_auto is currently active.
-fn disable_value_params_in_auto_mode(mut params: Vec<CameraParameter>) -> Vec<CameraParameter> {
-    // (value_type, auto_type): disable value_type when auto_type current == true
+/// Applies the cross-backend "disabled" rules so the macOS backend behaves like
+/// the Linux and Windows webcam backends:
+///  - a value parameter is disabled while its `*_auto` toggle is active;
+///  - gain is disabled while auto-exposure is active;
+///  - pan / tilt / roll are disabled while zoom is at its minimum.
+///
+/// This only ever sets `disabled = true`, never clears it.
+fn finalize_disabled(mut params: Vec<CameraParameter>) -> Vec<CameraParameter> {
+    // (value_type, auto_type): disable value_type when auto_type current == true.
     const PAIRS: &[(ParameterType, ParameterType)] = &[
         (ParameterType::WhiteBalance, ParameterType::WhiteBalanceAuto),
         (ParameterType::Exposure,     ParameterType::ExposureAuto),
@@ -451,35 +457,39 @@ fn disable_value_params_in_auto_mode(mut params: Vec<CameraParameter>) -> Vec<Ca
         (ParameterType::Roll,         ParameterType::RollAuto),
     ];
 
-    // Collect auto types that are currently enabled.
+    // Auto toggles that are currently enabled.
     let active_autos: Vec<ParameterType> = params
         .iter()
-        .filter_map(|p| {
-            if let CameraParameter::Boolean { param_type, current: true, .. } = p {
-                PAIRS
-                    .iter()
-                    .find(|&&(_, auto_type)| auto_type == *param_type)
-                    .map(|&(_, auto_type)| auto_type)
-            } else {
-                None
-            }
+        .filter_map(|p| match p {
+            CameraParameter::Boolean { param_type, current: true, .. } => Some(*param_type),
+            _ => None,
         })
         .collect();
 
-    if active_autos.is_empty() {
-        return params;
-    }
+    let exposure_is_auto = active_autos.contains(&ParameterType::ExposureAuto);
+
+    // Zoom at minimum → no room to pan/tilt/roll (mirrors the Windows/Linux backends).
+    let zoom_is_min = params.iter().any(|p| matches!(
+        p,
+        CameraParameter::Range { param_type: ParameterType::Zoom, current, min, .. } if current <= min
+    ));
 
     for p in &mut params {
-        let should_disable = match p {
+        let pt = match p {
             CameraParameter::Range { param_type, .. }
             | CameraParameter::Select { param_type, .. }
-            | CameraParameter::RangeSelect { param_type, .. } => PAIRS
-                .iter()
-                .any(|&(vt, at)| *param_type == vt && active_autos.contains(&at)),
-            CameraParameter::Boolean { .. } => false,
+            | CameraParameter::RangeSelect { param_type, .. } => *param_type,
+            CameraParameter::Boolean { .. } => continue,
         };
-        if should_disable {
+
+        let disabled_by_auto = PAIRS
+            .iter()
+            .any(|&(vt, at)| pt == vt && active_autos.contains(&at));
+        let disabled_gain = pt == ParameterType::Gain && exposure_is_auto;
+        let disabled_ptz = zoom_is_min
+            && matches!(pt, ParameterType::Pan | ParameterType::Tilt | ParameterType::Roll);
+
+        if disabled_by_auto || disabled_gain || disabled_ptz {
             match p {
                 CameraParameter::Range { disabled, .. }
                 | CameraParameter::Select { disabled, .. }
@@ -491,7 +501,9 @@ fn disable_value_params_in_auto_mode(mut params: Vec<CameraParameter>) -> Vec<Ca
     params
 }
 
-/// Returns true for ParameterTypes that represent a boolean auto/manual toggle.
+/// Returns true for ParameterTypes presented as an on/off boolean: the
+/// auto/manual toggles plus backlight compensation, which is a 0/1 control on UVC
+/// cameras (matching the Windows and Linux backends).
 fn is_boolean_param(pt: ParameterType) -> bool {
     matches!(
         pt,
@@ -506,48 +518,65 @@ fn is_boolean_param(pt: ParameterType) -> bool {
             | ParameterType::PanAuto
             | ParameterType::TiltAuto
             | ParameterType::RollAuto
+            | ParameterType::BacklightCompensation
     )
 }
 
 /// Maps a C bridge kind string (from wc_get_parameters) to a ParameterType.
 /// Returns None for unknown kinds, which causes the parameter to be silently skipped.
+///
+/// The kind strings here MUST match the `kind` field of the `kControls` table in
+/// bridge.m (UVC control names), otherwise the parameter is dropped on the way up.
 fn c_kind_to_param_type(kind: &str) -> Option<ParameterType> {
     match kind {
         "video_format"              => Some(ParameterType::VideoStreamFormat),
         "brightness"                => Some(ParameterType::Brightness),
         "contrast"                  => Some(ParameterType::Contrast),
         "hue"                       => Some(ParameterType::Hue),
+        "hue_auto"                  => Some(ParameterType::HueAuto),
         "saturation"                => Some(ParameterType::Saturation),
         "sharpness"                 => Some(ParameterType::Sharpness),
+        "gamma"                     => Some(ParameterType::Gamma),
         "gain"                      => Some(ParameterType::Gain),
         "backlight_compensation"    => Some(ParameterType::BacklightCompensation),
         "power_line_frequency"      => Some(ParameterType::PowerLineFrequency),
         "zoom_absolute"             => Some(ParameterType::Zoom),
+        "pan_absolute"              => Some(ParameterType::Pan),
+        "tilt_absolute"             => Some(ParameterType::Tilt),
         "white_balance_temperature" => Some(ParameterType::WhiteBalance),
-        "white_balance_auto"        => Some(ParameterType::WhiteBalanceAuto),
+        "white_balance_mode"        => Some(ParameterType::WhiteBalanceAuto),
         "exposure_time_absolute"    => Some(ParameterType::Exposure),
-        "exposure_auto"             => Some(ParameterType::ExposureAuto),
+        "exposure_mode"             => Some(ParameterType::ExposureAuto),
+        "focus_absolute"            => Some(ParameterType::Focus),
+        "focus_mode"                => Some(ParameterType::FocusAuto),
         _ => None,
     }
 }
 
 /// Maps a ParameterType back to the C bridge string expected by wc_set_parameter.
+/// Reverse of `c_kind_to_param_type`.
 fn param_type_to_c_kind(pt: ParameterType) -> Option<&'static str> {
     match pt {
-        ParameterType::VideoStreamFormat          => Some("video_format"),
-        ParameterType::Brightness           => Some("brightness"),
-        ParameterType::Contrast             => Some("contrast"),
-        ParameterType::Hue                  => Some("hue"),
-        ParameterType::Saturation           => Some("saturation"),
-        ParameterType::Sharpness            => Some("sharpness"),
-        ParameterType::Gain                 => Some("gain"),
-        ParameterType::BacklightCompensation=> Some("backlight_compensation"),
-        ParameterType::PowerLineFrequency   => Some("power_line_frequency"),
-        ParameterType::Zoom                 => Some("zoom_absolute"),
-        ParameterType::WhiteBalance         => Some("white_balance_temperature"),
-        ParameterType::WhiteBalanceAuto     => Some("white_balance_auto"),
-        ParameterType::Exposure             => Some("exposure_time_absolute"),
-        ParameterType::ExposureAuto         => Some("exposure_auto"),
+        ParameterType::VideoStreamFormat     => Some("video_format"),
+        ParameterType::Brightness            => Some("brightness"),
+        ParameterType::Contrast              => Some("contrast"),
+        ParameterType::Hue                   => Some("hue"),
+        ParameterType::HueAuto               => Some("hue_auto"),
+        ParameterType::Saturation            => Some("saturation"),
+        ParameterType::Sharpness             => Some("sharpness"),
+        ParameterType::Gamma                 => Some("gamma"),
+        ParameterType::Gain                  => Some("gain"),
+        ParameterType::BacklightCompensation => Some("backlight_compensation"),
+        ParameterType::PowerLineFrequency    => Some("power_line_frequency"),
+        ParameterType::Zoom                  => Some("zoom_absolute"),
+        ParameterType::Pan                   => Some("pan_absolute"),
+        ParameterType::Tilt                  => Some("tilt_absolute"),
+        ParameterType::WhiteBalance          => Some("white_balance_temperature"),
+        ParameterType::WhiteBalanceAuto      => Some("white_balance_mode"),
+        ParameterType::Exposure              => Some("exposure_time_absolute"),
+        ParameterType::ExposureAuto          => Some("exposure_mode"),
+        ParameterType::Focus                 => Some("focus_absolute"),
+        ParameterType::FocusAuto             => Some("focus_mode"),
         _ => None,
     }
 }
