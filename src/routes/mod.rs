@@ -1,4 +1,4 @@
 pub mod cameras;
 
-#[cfg(feature = "backend-remote")]
+#[cfg(feature = "peers")]
 pub mod peers;

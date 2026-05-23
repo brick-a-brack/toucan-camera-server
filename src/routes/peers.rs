@@ -1,8 +1,11 @@
-//! Peer management routes for the remote backend.
+//! Peer management routes shared by the HTTP-proxying backends.
 //!
-//! - `GET    /peers`       — list registered peers (tokens never exposed)
-//! - `POST   /peers`       — register a peer `{ url, name?, token? }`
+//! - `GET    /peers`       — list registered peers (token surfaced for the local UI)
+//! - `POST   /peers`       — register a peer `{ url, token?, kind? }`
 //! - `DELETE /peers/{id}`  — remove a peer
+//!
+//! `kind` selects the protocol (`toucan` — default — or `stopmotion`) and
+//! therefore which backend relays the peer.
 
 use std::time::Duration;
 
@@ -15,7 +18,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::backends::remote::{normalize_url, validate_peer, PeerView};
+use crate::peers::{normalize_url, validate_peer, PeerKind, PeerView};
 use crate::routes::cameras::AppState;
 
 pub async fn list_peers(State(state): State<AppState>) -> Json<Vec<PeerView>> {
@@ -27,6 +30,9 @@ pub struct AddPeerBody {
     /// Base URL of the peer. Scheme defaults to `http://` if omitted.
     pub url: String,
     pub token: Option<String>,
+    /// Protocol the peer speaks; defaults to `toucan` when omitted.
+    #[serde(default)]
+    pub kind: PeerKind,
 }
 
 pub async fn add_peer(State(state): State<AppState>, Json(body): Json<AddPeerBody>) -> Response {
@@ -56,11 +62,11 @@ pub async fn add_peer(State(state): State<AppState>, Json(body): Json<AddPeerBod
         }
     };
 
-    if let Err(e) = validate_peer(&client, &url, &body.token).await {
+    if let Err(e) = validate_peer(&client, &url, &body.token, body.kind).await {
         return (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response();
     }
 
-    let peer = state.peers.add(&url, body.token);
+    let peer = state.peers.add(&url, body.token, body.kind);
     (StatusCode::CREATED, Json(peer)).into_response()
 }
 

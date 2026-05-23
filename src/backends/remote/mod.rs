@@ -38,9 +38,7 @@ use tokio_stream::StreamExt;
 use crate::camera::{
     CameraBackend, CameraError, CameraParameter, DeviceId, DeviceInfo, ParameterType,
 };
-
-mod peers;
-pub use peers::{normalize_url, Peer, PeerRegistry, PeerView};
+use crate::peers::{PeerKind, PeerRegistry};
 
 /// "Not ready yet" code reused from the Canon EVF path. The shared capture loop
 /// treats it as a skippable frame instead of a fatal error.
@@ -127,7 +125,7 @@ impl CameraBackend for RemoteBackend {
     }
 
     fn list_devices(&self) -> Result<Vec<DeviceInfo>, CameraError> {
-        let peers = self.registry.routing_snapshot();
+        let peers = self.registry.routing_snapshot(PeerKind::Toucan);
         let client = self.client.clone();
         let pairs = self.block_on(async move { Ok(fetch_all_devices(client, peers).await) })?;
 
@@ -271,38 +269,6 @@ fn status_error(status: reqwest::StatusCode) -> Option<CameraError> {
         405 => CameraError::NotSupported,
         s => CameraError::Remote(format!("peer returned HTTP {s}")),
     })
-}
-
-/// Verifies a peer is reachable and is actually a toucan-camera-server, using
-/// the credentials it will later be called with. Returns a human-readable
-/// message on failure so a peer is never registered when it can't be reached or
-/// authenticated. Hits `/health`, which is behind the same auth as every route.
-pub async fn validate_peer(
-    client: &reqwest::Client,
-    url: &str,
-    token: &Option<String>,
-) -> Result<(), String> {
-    let resp = auth(client.get(format!("{url}/health")), token)
-        .timeout(TIMEOUT_LIST)
-        .send()
-        .await
-        .map_err(|e| format!("cannot reach peer: {e}"))?;
-
-    if resp.status() == reqwest::StatusCode::FORBIDDEN {
-        return Err("authentication failed — check the peer token".into());
-    }
-    if !resp.status().is_success() {
-        return Err(format!("peer returned HTTP {}", resp.status().as_u16()));
-    }
-
-    let health: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|_| "peer did not return a valid health response".to_string())?;
-    if health.get("service").and_then(|v| v.as_str()) != Some("toucan-camera-server") {
-        return Err("this URL is not a toucan-camera-server instance".into());
-    }
-    Ok(())
 }
 
 async fn proxy_action(

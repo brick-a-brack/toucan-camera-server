@@ -18,3 +18,6 @@ pub mod camera2_android;
 
 #[cfg(feature = "backend-remote")]
 pub mod remote;
+
+#[cfg(feature = "backend-stopmotionstudio")]
+pub mod stopmotionstudio;

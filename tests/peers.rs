@@ -1,7 +1,7 @@
-//! Integration tests for the `/peers` management routes (remote backend).
+//! Integration tests for the `/peers` management routes.
 //!
-//! Run with: `cargo test --features backend-remote`
-#![cfg(feature = "backend-remote")]
+//! Run with: `cargo test --features backend-remote` (or `backend-stopmotionstudio`).
+#![cfg(feature = "peers")]
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -11,8 +11,8 @@ use axum::http::{header, Request, StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt; // for `oneshot`
 
-use toucan_camera::backends::remote::PeerRegistry;
 use toucan_camera::build_router;
+use toucan_camera::peers::PeerRegistry;
 use toucan_camera::routes::cameras::{AppState, BackendState};
 
 const TOKEN: &str = "test-token";
@@ -33,6 +33,24 @@ async fn spawn_peer(health: Value) -> String {
         "/health",
         axum::routing::get(move || {
             let body = health.clone();
+            async move { axum::Json(body) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+/// Spawns a minimal Stop Motion Studio remote camera whose `POST /status`
+/// returns the given JSON. Returns its base URL.
+async fn spawn_sms_peer(status: Value) -> String {
+    let app = axum::Router::new().route(
+        "/status",
+        axum::routing::post(move || {
+            let body = status.clone();
             async move { axum::Json(body) }
         }),
     );
@@ -162,6 +180,37 @@ async fn non_toucan_peer_is_rejected() {
 
     let resp = app.oneshot(authed("GET", "/peers", None)).await.unwrap();
     assert!(json_body(resp).await.as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn stopmotion_peer_validated_via_status_and_stored_with_kind() {
+    let app = app();
+    let peer_url = spawn_sms_peer(json!({ "REMOTE_CAMERA_PROTOCOL_VERSION": 4 })).await;
+
+    // A reachable remote camera (the right protocol) is accepted, tagged stopmotion.
+    let resp = app
+        .clone()
+        .oneshot(authed(
+            "POST",
+            "/peers",
+            Some(&json!({ "url": peer_url, "kind": "stopmotion" }).to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(json_body(resp).await["kind"], "stopmotion");
+
+    // A toucan server (no /status) is rejected when added as a stopmotion peer.
+    let bogus = spawn_peer(toucan_health()).await;
+    let resp = app
+        .oneshot(authed(
+            "POST",
+            "/peers",
+            Some(&json!({ "url": bogus, "kind": "stopmotion" }).to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
 }
 
 #[tokio::test]

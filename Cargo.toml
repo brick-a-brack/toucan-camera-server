@@ -19,8 +19,13 @@ backend-gphoto2 = ["dep:gphoto2"]
 backend-webcam-macos = []
 backend-webcam-windows = ["dep:windows", "dep:windows-core", "dep:image"]
 backend-camera2-android = ["dep:image"]
+# Internal feature: the shared peer registry + /peers routes used by every
+# HTTP-proxying backend. Enabled transitively by the backends below.
+peers = ["dep:reqwest"]
 # Relays cameras exposed by other toucan-camera-server instances over HTTP.
-backend-remote = ["dep:reqwest"]
+backend-remote = ["peers"]
+# Relays cameras exposed by Stop Motion Studio "remote camera" servers over HTTP.
+backend-stopmotionstudio = ["peers"]
 
 [dependencies]
 axum = "0.8"

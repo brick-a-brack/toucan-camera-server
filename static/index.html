@@ -398,6 +398,10 @@
   <section id="peers-section" style="display:none">
     <h2 class="section-title">Remote peers</h2>
     <div class="peer-add">
+      <select id="peer-kind" class="peer-input">
+        <option value="toucan">toucan server</option>
+        <option value="stopmotion">Stop Motion Studio</option>
+      </select>
       <input id="peer-url" class="peer-input" type="text" placeholder="host:port or http://host:port">
       <input id="peer-token" class="peer-input" type="text" placeholder="token (optional)">
       <button id="peer-add-btn" class="btn btn-connect" onclick="addPeer()">Add peer</button>
@@ -466,9 +470,11 @@
         list.innerHTML = '<p class="peers-empty">No peer registered.</p>';
         return;
       }
+      const kindLabel = k => k === 'stopmotion' ? 'Stop Motion Studio' : 'toucan';
       list.innerHTML = peers.map(p => `
         <div class="peer-row">
           <span class="peer-url">${escHtml(p.url)}</span>
+          <span class="peer-token-val">${kindLabel(p.kind)}</span>
           <span class="peer-token-val">${p.token ? escHtml(p.token) : '—'}</span>
           <button class="btn btn-disconnect" onclick="deletePeer('${escHtml(p.id)}')">Remove</button>
         </div>`).join('');
@@ -477,6 +483,7 @@
     async function addPeer() {
       const urlEl = document.getElementById('peer-url');
       const tokenEl = document.getElementById('peer-token');
+      const kindEl = document.getElementById('peer-kind');
       const errEl = document.getElementById('peer-add-err');
       const btn = document.getElementById('peer-add-btn');
 
@@ -484,7 +491,7 @@
       const url = urlEl.value.trim();
       if (!url) { errEl.textContent = 'URL is required.'; return; }
 
-      const body = { url };
+      const body = { url, kind: kindEl.value };
       if (tokenEl.value.trim()) body.token = tokenEl.value.trim();
 
       btn.disabled = true;

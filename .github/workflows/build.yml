@@ -80,7 +80,7 @@ jobs:
         run: |
           cargo build --release \
             --target x86_64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-remote
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-remote,backend-stopmotionstudio
 
       - name: Build arm64
         env:
@@ -88,7 +88,7 @@ jobs:
         run: |
           cargo build --release \
             --target aarch64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-remote
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-remote,backend-stopmotionstudio
 
       - name: Create universal binary with lipo
         run: |
@@ -154,7 +154,7 @@ jobs:
         run: |
           cargo build --release `
             --target x86_64-pc-windows-msvc `
-            --features backend-webcam-windows,backend-canon,backend-remote
+            --features backend-webcam-windows,backend-canon,backend-remote,backend-stopmotionstudio
 
       - name: Package into zip
         shell: pwsh
@@ -225,7 +225,7 @@ jobs:
         run: |
           cargo build --release \
             --target x86_64-unknown-linux-gnu \
-            --features backend-canon,backend-gphoto2,backend-webcam-linux,backend-remote
+            --features backend-canon,backend-gphoto2,backend-webcam-linux,backend-remote,backend-stopmotionstudio
 
       - name: Package
         run: |
@@ -306,7 +306,7 @@ jobs:
           cargo ndk \
             -t arm64-v8a \
             -o android/app/src/main/jniLibs \
-            build --release --features backend-camera2-android,backend-remote
+            build --release --features backend-camera2-android,backend-remote,backend-stopmotionstudio
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

@@ -65,7 +65,13 @@
       "Bash(export ANDROID_NDK_HOME=\"C:/Users/mbaco/AppData/Local/Android/Sdk/ndk/28.0.12674087\")",
       "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\mbaco\\\\Documents\\\\dev\\\\brickabrack\\\\bird-camera-server\\\\android\\\\app\\\\build\" -Recurse | Where-Object { -not $_.PSIsContainer } | Select-Object -First 30 FullName)",
       "PowerShell(Get-Item *)",
-      "PowerShell(adb install *)"
+      "PowerShell(adb install *)",
+      "Read(//Users/mbaco/**)",
+      "Read(//Users/mbaco/Desktop/**)",
+      "Bash(xxd)",
+      "Bash(jq -r '\"\\\\\\(.scheme\\)://\\\\\\(.host\\):\\\\\\(.port\\)\"' *-meta.json)",
+      "Bash(jq -r '\"\\\\\\(.method\\) \\\\\\(.path\\)\"' *-meta.json)",
+      "Bash(jq -r 'select\\(.path==\"/status\" and .status!=\"EXCEPTION\"\\) | \"\\\\\\(.response.status\\)\"' *-meta.json)"
     ]
   }
 }

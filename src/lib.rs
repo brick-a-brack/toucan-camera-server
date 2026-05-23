@@ -1,6 +1,8 @@
 mod auth;
 pub mod backends;
 pub mod camera;
+#[cfg(feature = "peers")]
+pub mod peers;
 pub mod routes;
 
 use std::collections::HashMap;
@@ -37,8 +39,8 @@ async fn health() -> Json<HealthCheck> {
 /// route layer needs to reference directly (currently the remote peer registry).
 pub struct BuiltBackends {
     pub state: BackendState,
-    #[cfg(feature = "backend-remote")]
-    pub peers: Arc<backends::remote::PeerRegistry>,
+    #[cfg(feature = "peers")]
+    pub peers: Arc<peers::PeerRegistry>,
 }
 
 pub fn build_backends() -> BuiltBackends {
@@ -46,10 +48,11 @@ pub fn build_backends() -> BuiltBackends {
     let mut map: HashMap<String, Arc<dyn camera::CameraBackend>> = HashMap::new();
     eprintln!("[main] build_backends() called");
 
-    // The peer registry is shared between the remote backend (which reads it to
-    // route and fan out requests) and the /peers routes (which mutate it).
-    #[cfg(feature = "backend-remote")]
-    let peers = Arc::new(backends::remote::PeerRegistry::new());
+    // The peer registry is shared between the HTTP-proxying backends (which read
+    // it to route and fan out requests, each filtering to its own kind) and the
+    // /peers routes (which mutate it).
+    #[cfg(feature = "peers")]
+    let peers = Arc::new(peers::PeerRegistry::new());
 
     #[cfg(feature = "backend-remote")]
     match backends::remote::RemoteBackend::new(peers.clone()) {
@@ -58,6 +61,15 @@ pub fn build_backends() -> BuiltBackends {
             map.insert(b.backend_id().to_string(), b);
         }
         Err(e) => eprintln!("[error] Remote backend failed to initialize: {e}"),
+    }
+
+    #[cfg(feature = "backend-stopmotionstudio")]
+    match backends::stopmotionstudio::StopMotionStudioBackend::new(peers.clone()) {
+        Ok(b) => {
+            let b: Arc<dyn camera::CameraBackend> = Arc::new(b);
+            map.insert(b.backend_id().to_string(), b);
+        }
+        Err(e) => eprintln!("[error] Stop Motion Studio backend failed to initialize: {e}"),
     }
 
     #[cfg(feature = "backend-canon")]
@@ -118,7 +130,7 @@ pub fn build_backends() -> BuiltBackends {
     eprintln!("[main] registered backends: {:?}", map.keys().collect::<Vec<_>>());
     BuiltBackends {
         state: Arc::new(map),
-        #[cfg(feature = "backend-remote")]
+        #[cfg(feature = "peers")]
         peers,
     }
 }
@@ -227,7 +239,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/cameras/{id}/liveview", get(cameras::live_view))
         .route("/cameras/{id}/capture", axum::routing::post(cameras::capture_photo));
 
-    #[cfg(feature = "backend-remote")]
+    #[cfg(feature = "peers")]
     {
         use routes::peers;
         app = app
@@ -264,7 +276,7 @@ pub async fn run_server() {
     let state = AppState::new(
         built.state,
         token.clone(),
-        #[cfg(feature = "backend-remote")]
+        #[cfg(feature = "peers")]
         built.peers.clone(),
     );
 

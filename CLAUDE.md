@@ -30,13 +30,13 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 
 ### Backend registry & app state
 - `BackendState` is `Arc<HashMap<String, Arc<dyn CameraBackend>>>`, keyed by `backend_id()`.
-- The axum app state is `AppState` (in `src/routes/cameras.rs`), which wraps `BackendState`, `LiveViewSenders`, the auth token (`Arc<RwLock<String>>`), and — when `backend-remote` is enabled — the shared peer registry.
+- The axum app state is `AppState` (in `src/routes/cameras.rs`), which wraps `BackendState`, `LiveViewSenders`, the auth token (`Arc<RwLock<String>>`), and — when the `peers` feature is enabled — the shared peer registry.
 - `FromRef<AppState> for BackendState` is implemented so handlers that only need backends can extract `State<BackendState>` directly.
-- Backends are registered at startup in `build_backends()` in `lib.rs` (returns `BuiltBackends`, which also carries the peer registry when `backend-remote` is on).
+- Backends are registered at startup in `build_backends()` in `lib.rs` (returns `BuiltBackends`, which also carries the peer registry when the `peers` feature is on).
 - If a backend fails to initialize (e.g. SDK DLL not found), it is skipped with an error log — the server starts anyway.
-- Each backend is gated behind a Cargo feature flag: `backend-canon`, `backend-gphoto2`, `backend-webcam-macos`, `backend-webcam-windows`, `backend-camera2-android`, `backend-remote`.
+- Each backend is gated behind a Cargo feature flag: `backend-canon`, `backend-gphoto2`, `backend-webcam-macos`, `backend-webcam-windows`, `backend-camera2-android`, `backend-remote`, `backend-stopmotionstudio`. The internal `peers` feature (enabled transitively by `backend-remote` and `backend-stopmotionstudio`) gates the shared peer registry and the `/peers` routes.
 - Backend code lives in `src/backends/<name>/mod.rs` (`#[cfg(feature = "backend-<name>")]`).
-- Active backends: `backend-canon` (Windows / macOS / Linux), `backend-gphoto2` (macOS / Linux), `backend-webcam-windows` (Windows), `backend-webcam-macos` (macOS), `backend-camera2-android` (Android), `backend-remote` (all platforms).
+- Active backends: `backend-canon` (Windows / macOS / Linux), `backend-gphoto2` (macOS / Linux), `backend-webcam-windows` (Windows), `backend-webcam-macos` (macOS), `backend-camera2-android` (Android), `backend-remote` (all platforms), `backend-stopmotionstudio` (all platforms).
 - `backend-canon` and `backend-gphoto2` can be built together (release builds do, on macOS/Linux): EDSDK owns Canon bodies, gphoto2 hides them and covers other vendors — see the gphoto2 backend section.
 
 ### Remote backend
@@ -46,9 +46,22 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 - **HTTP client**: `reqwest` with `default-features = false` (no TLS). Peers are reached over plain HTTP on the LAN. Per-request timeouts apply to control calls; the live-view stream is intentionally untimed.
 - **Live view**: `get_live_view_frame` starts a per-device relay task that reads the peer's MJPEG stream and keeps the latest JPEG in a shared cell; polls return that frame (or `SdkError(0x0000_A102)` "not ready" while empty). The relay self-terminates ~2 s after polling stops, closing the upstream connection.
 - **Connection state** is tracked locally (a `HashSet` of native IDs) — `connect`/`disconnect` proxy to the peer and update the set; `is_connected` and the `connected` flag in `list_devices` read from it.
-- **Peers** are managed via `/peers` routes and held in an in-memory `PeerRegistry` (`Arc<RwLock<Vec<Peer>>>`) shared between the backend and the routes via `AppState.peers` (no on-disk persistence). Each peer has an id, normalized URL, and optional bearer token sent on every proxied request. The token is returned by the API (the server is local, so the UI can display it).
-- **Add-time validation**: `POST /peers` calls `validate_peer` (hits the peer's `/health` with the given token) before registering. A peer that is unreachable, rejects the token, or is not a toucan-camera-server is refused with 502 and never stored.
-- Code: `src/backends/remote/mod.rs` (backend + MJPEG relay) and `src/backends/remote/peers.rs` (registry).
+- **Peers** are managed via `/peers` routes and held in an in-memory `PeerRegistry` (`Arc<RwLock<Vec<Peer>>>`) in `src/peers.rs`, shared between the backend and the routes via `AppState.peers` (no on-disk persistence). Each peer has an id, normalized URL, optional bearer token sent on every proxied request, and a `kind` (`PeerKind::Toucan` here). The token is returned by the API (the server is local, so the UI can display it). The remote backend reads only `kind == Toucan` peers via `routing_snapshot(PeerKind::Toucan)`, so it never contends with the Stop Motion Studio backend over the same registry.
+- **Add-time validation**: `POST /peers` calls `validate_peer` (for toucan peers, hits the peer's `/health` with the given token) before registering. A peer that is unreachable, rejects the token, or is not a toucan-camera-server is refused with 502 and never stored.
+- Code: `src/backends/remote/mod.rs` (backend + MJPEG relay); the shared registry and `validate_peer` live in `src/peers.rs`.
+
+### Stop Motion Studio backend
+- `backend-stopmotionstudio` relays cameras exposed by **Stop Motion Studio "remote camera" servers** (the app's iOS/Android remote-camera mode running on another device) over HTTP, so they appear in `/cameras` like local devices. The wire protocol is documented in `docs/remote-camera-protocol.md`.
+- `backend_id()` is `"stopmotionstudio"`. One remote camera server exposes one camera, so the **native ID is simply the server's normalized base URL** (e.g. `http://192.168.1.14:2222`); the route layer wraps it as `base64url("stopmotionstudio:<url>")`.
+- **Same registry, different kind**: peers are stored in the shared `PeerRegistry` with `PeerKind::Stopmotion`. The backend reads only `routing_snapshot(PeerKind::Stopmotion)`. `POST /peers` with `"kind": "stopmotion"` validates the camera by hitting `POST /status` and checking the JSON carries `REMOTE_CAMERA_PROTOCOL_VERSION` (502 otherwise).
+- **Sync trait over async HTTP**: same dedicated-runtime + `block_on`-a-channel pattern as the remote backend. Plain HTTP, no TLS (`reqwest` shared via the `peers` feature).
+- **Protocol mapping** (`build_set_query` + `SmsStatus::to_parameters`): every endpoint is a `POST` with parameters in the query string. `/status` (and every setter, which echoes it) is parsed into the standard `CameraParameter` set:
+  - `ExposureAuto`/`WhiteBalanceAuto`/`FocusAuto` are booleans derived from the AVFoundation mode ints; setting them posts to `/exposuremode`, `/whitebalancemode`, `/focusmode` (manual = `0`, auto = `1`/`2`).
+  - `Iso` → `/setISO`, `ShutterSpeed` (in **microseconds**) → `/setExposureDuration`, `ExposureCompensation` → `/changeExposureTargetBiasTo`, `ColorTemperature` (white-balance gains) → `/setWhiteBalanceGains`.
+  - `Focus` (lens position) and `Zoom` are fractional, so they are exposed as integer `Range`s scaled by `FLOAT_SCALE` (×1000) and divided back before posting to `/setLensPosition` / `/setZoomFactor`.
+  - ISO/shutter are `disabled` while exposure is auto; color temperature while white balance is auto; lens position while focus is auto. Ranges with `max <= min` are dropped.
+- **Live view / capture**: there is no MJPEG stream — `POST /preview?Width=&Height=&Format=JPG` returns a single JPEG, so `get_live_view_frame` does one request per frame (the shared capture loop polls it; any transient failure maps to "not ready" `0x0000_A102`). `capture_photo` is a full-resolution preview. Preview size comes from the camera's `CAPTURE_RESOLUTION_*`, cached at `connect`/`get_parameters` (default 1280×720).
+- Code: `src/backends/stopmotionstudio/mod.rs`. Pure-logic unit tests (parameter mapping, scaling, query building) live in its `#[cfg(test)]` module; run with `cargo test --features backend-stopmotionstudio`.
 
 ### Canon SDK thread
 - The EDSDK relies on Windows messages internally and does not work on tokio worker threads.
@@ -112,9 +125,9 @@ PUT  /cameras/{id}/parameters        — set a parameter value (requires connect
 GET  /cameras/{id}/liveview          — MJPEG stream (requires connected, returns 409 if not)
 POST /cameras/{id}/capture           — capture a single JPEG photo, returns raw bytes (requires connected)
 
-# Remote backend only (feature `backend-remote`)
-GET    /peers                        — list registered peers (returns id, url, token — token surfaced for the local UI)
-POST   /peers                        — register a peer { url, token? }; validates the peer's /health first (502 if unreachable, wrong token, or not a toucan instance), so dead peers are never stored. Idempotent per URL, returns 201
+# Proxying backends only (feature `peers`, i.e. backend-remote and/or backend-stopmotionstudio)
+GET    /peers                        — list registered peers (returns id, url, token, kind — token surfaced for the local UI)
+POST   /peers                        — register a peer { url, token?, kind? }; kind is "toucan" (default) or "stopmotion". Validates first (toucan: GET /health is a toucan instance; stopmotion: POST /status carries REMOTE_CAMERA_PROTOCOL_VERSION) → 502 if unreachable, wrong token, or wrong server type, so dead peers are never stored. Idempotent per URL, returns 201
 DELETE /peers/{id}                   — remove a peer (204, or 404 if unknown)
 ```
 
@@ -201,6 +214,8 @@ src/
   main.rs             — binary entry point (macOS CFRunLoop pump; #[tokio::main] elsewhere)
   lib.rs              — run_server, build_backends, build_router, Android JNI entry points
   auth.rs             — bearer-token auth middleware (Authorization header or ?token=)
+  peers.rs            — shared PeerRegistry (kind: toucan|stopmotion) + validate_peer
+                        (feature `peers`)
   camera/
     mod.rs            — CameraBackend trait, DeviceId, DeviceInfo, CameraError,
                         CameraParameter, ParameterOption
@@ -220,11 +235,13 @@ src/
       mod.rs          — Camera2 + Media NDK backend (Android), C bridge in bridge.c
     remote/
       mod.rs          — HTTP-proxying backend + MJPEG live-view relay (RemoteBackend)
-      peers.rs        — in-memory PeerRegistry shared with the /peers routes
+    stopmotionstudio/
+      mod.rs          — Stop Motion Studio remote-camera backend (HTTP client of the
+                        protocol in docs/remote-camera-protocol.md)
   routes/
     mod.rs
     cameras.rs        — AppState, BackendState, LiveViewSenders, route handlers
-    peers.rs          — /peers management handlers (feature backend-remote)
+    peers.rs          — /peers management handlers (feature `peers`)
 static/
   index.html          — web UI source (embedded in binary at compile time)
 build.rs              — SDK linking + DLL copy based on active features and target OS
