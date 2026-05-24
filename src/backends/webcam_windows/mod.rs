@@ -33,7 +33,7 @@ use windows::Win32::Media::MediaFoundation::{
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_MT_FRAME_RATE,
     MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_SUBTYPE, MFImageFormat_JPEG,
-    MFMediaType_Image, MFVideoFormat_MJPG, MFVideoFormat_YUY2,
+    MFMediaType_Image, MFVideoFormat_MJPG, MFVideoFormat_NV12, MFVideoFormat_YUY2,
     MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, MF_SOURCE_READER_FIRST_VIDEO_STREAM,
     CLSID_MFCaptureEngineClassFactory,
 };
@@ -189,9 +189,12 @@ enum Command {
 // Video format descriptors — enumerated once at connect time
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VideoCodec { Mjpeg, Yuy2, Nv12 }
+
 struct VideoFormatInfo {
     media_type: IMFMediaType,
-    is_mjpeg:   bool,
+    codec:      VideoCodec,
     width:      u32,
     height:     u32,
     fps_num:    u32,
@@ -200,7 +203,11 @@ struct VideoFormatInfo {
 
 impl VideoFormatInfo {
     fn label(&self) -> String {
-        let codec = if self.is_mjpeg { "MJPEG" } else { "YUV" };
+        let codec = match self.codec {
+            VideoCodec::Mjpeg => "MJPEG",
+            VideoCodec::Yuy2  => "YUY2",
+            VideoCodec::Nv12  => "NV12",
+        };
         let fps = if self.fps_den > 0 {
             format!(" {:.0}fps", self.fps_num as f64 / self.fps_den as f64)
         } else {
@@ -239,7 +246,7 @@ struct DeviceState {
     ks_prop_set:         Option<IKsPropertySet>,
     formats:             Vec<VideoFormatInfo>,
     current_format_idx:  usize,
-    is_mjpeg:            bool,
+    codec:               VideoCodec,
     width:               u32,
     height:              u32,
     /// Path A: dedicated photo stream available (None → use Path B).
@@ -591,14 +598,15 @@ fn connect_impl(
 
         let formats = enumerate_video_formats(&reader);
         if formats.is_empty() {
-            return Err(CameraError::SdkError(0xA102_0003)); // no usable formats
+            eprintln!("[webcam-windows] connect failed: no supported format (MJPEG/YUY2/NV12) found for {native_id}");
+            return Err(CameraError::SdkError(0xA102_0003));
         }
         let best_idx = select_best_format_index(&formats);
         let mt = &formats[best_idx].media_type;
         reader.SetCurrentMediaType(video_stream(), None, mt).map_err(win_err)?;
-        let is_mjpeg = formats[best_idx].is_mjpeg;
-        let width    = formats[best_idx].width;
-        let height   = formats[best_idx].height;
+        let codec  = formats[best_idx].codec;
+        let width  = formats[best_idx].width;
+        let height = formats[best_idx].height;
 
         let video_proc_amp = source.cast::<IAMVideoProcAmp>().ok();
         let camera_control = source.cast::<IAMCameraControl>().ok();
@@ -621,7 +629,7 @@ fn connect_impl(
                 ks_prop_set,
                 formats,
                 current_format_idx: best_idx,
-                is_mjpeg,
+                codec,
                 width,
                 height,
                 photo_stream,
@@ -784,10 +792,11 @@ fn get_live_view_frame_impl(state: &DeviceState) -> Result<Vec<u8>, CameraError>
             bytes
         };
 
-        if state.is_mjpeg {
-            return Ok(data);
-        }
-        return yuyv_to_jpeg(&data, state.width, state.height);
+        return match state.codec {
+            VideoCodec::Mjpeg => Ok(data),
+            VideoCodec::Yuy2  => yuyv_to_jpeg(&data, state.width, state.height),
+            VideoCodec::Nv12  => nv12_to_jpeg(&data, state.width, state.height),
+        };
     }
 
     Err(CameraError::SdkError(0xA102_0002))
@@ -1105,7 +1114,7 @@ fn set_parameter_impl(
             let _ = state.reader.Flush(video_stream());
         }
         state.current_format_idx = idx;
-        state.is_mjpeg = fmt.is_mjpeg;
+        state.codec = fmt.codec;
         state.width    = fmt.width;
         state.height   = fmt.height;
         return Ok(());
@@ -1250,7 +1259,7 @@ unsafe fn read_string_attr(attrs: &IMFAttributes, key: &GUID) -> Option<String> 
     s
 }
 
-/// Enumerates all MJPEG and YUY2 native types for the first video stream.
+/// Enumerates all MJPEG, YUY2, and NV12 native types for the first video stream.
 /// Deduplicates by (codec, width, height, fps).
 unsafe fn enumerate_video_formats(reader: &IMFSourceReader) -> Vec<VideoFormatInfo> {
     let mut formats: Vec<VideoFormatInfo> = Vec::new();
@@ -1260,36 +1269,55 @@ unsafe fn enumerate_video_formats(reader: &IMFSourceReader) -> Vec<VideoFormatIn
         index += 1;
 
         let subtype = mt.GetGUID(&MF_MT_SUBTYPE).unwrap_or(GUID::zeroed());
-        let is_mjpeg = subtype == MFVideoFormat_MJPG;
-        let is_yuv   = subtype == MFVideoFormat_YUY2;
-        if !is_mjpeg && !is_yuv {
-            continue;
-        }
-
         let (width, height) = frame_size(&mt);
         let fps_packed = mt.GetUINT64(&MF_MT_FRAME_RATE).unwrap_or(0);
         let fps_num    = (fps_packed >> 32) as u32;
         let fps_den    = (fps_packed & 0xFFFF_FFFF) as u32;
+        eprintln!(
+            "[webcam-windows] format[{index}]: subtype={{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}} {}x{} {}/{}fps",
+            subtype.data1, subtype.data2, subtype.data3,
+            subtype.data4[0], subtype.data4[1],
+            subtype.data4[2], subtype.data4[3], subtype.data4[4], subtype.data4[5], subtype.data4[6], subtype.data4[7],
+            width, height, fps_num, fps_den,
+        );
+
+        let codec = if subtype == MFVideoFormat_MJPG {
+            VideoCodec::Mjpeg
+        } else if subtype == MFVideoFormat_YUY2 {
+            VideoCodec::Yuy2
+        } else if subtype == MFVideoFormat_NV12 {
+            VideoCodec::Nv12
+        } else {
+            eprintln!("[webcam-windows] format[{index}]: skipped (unsupported subtype)");
+            continue;
+        };
 
         // Skip exact duplicates (same codec, resolution, fps).
         let is_dup = formats.iter().any(|f| {
-            f.is_mjpeg == is_mjpeg
+            f.codec  == codec
                 && f.width   == width
                 && f.height  == height
                 && f.fps_num == fps_num
                 && f.fps_den == fps_den
         });
         if !is_dup {
-            formats.push(VideoFormatInfo { media_type: mt, is_mjpeg, width, height, fps_num, fps_den });
+            formats.push(VideoFormatInfo { media_type: mt, codec, width, height, fps_num, fps_den });
         }
     }
 
-    // Sort: resolution descending, then MJPEG before YUV, then fps descending.
+    // Codec priority: MJPEG=0, YUY2=1, NV12=2 (lower = preferred).
+    let codec_rank = |c: VideoCodec| match c {
+        VideoCodec::Mjpeg => 0u8,
+        VideoCodec::Yuy2  => 1,
+        VideoCodec::Nv12  => 2,
+    };
+
+    // Sort: resolution descending, then codec priority, then fps descending.
     formats.sort_by(|a, b| {
         let res_a = a.width * a.height;
         let res_b = b.width * b.height;
         res_b.cmp(&res_a)
-            .then_with(|| b.is_mjpeg.cmp(&a.is_mjpeg))
+            .then_with(|| codec_rank(a.codec).cmp(&codec_rank(b.codec)))
             .then_with(|| {
                 let fps_a = if a.fps_den > 0 { a.fps_num / a.fps_den } else { 0 };
                 let fps_b = if b.fps_den > 0 { b.fps_num / b.fps_den } else { 0 };
@@ -1297,7 +1325,7 @@ unsafe fn enumerate_video_formats(reader: &IMFSourceReader) -> Vec<VideoFormatIn
             })
     });
 
-    // Keep only the first format per resolution (after sort, this is MJPEG > YUV, highest fps).
+    // Keep only the first format per resolution (best codec, highest fps).
     let mut seen_resolutions: Vec<(u32, u32)> = Vec::new();
     formats.retain(|f| {
         if seen_resolutions.contains(&(f.width, f.height)) {
@@ -1312,9 +1340,9 @@ unsafe fn enumerate_video_formats(reader: &IMFSourceReader) -> Vec<VideoFormatIn
 }
 
 /// Returns the index of the highest-resolution MJPEG format in an already-sorted
-/// list, falling back to index 0 (highest-res YUV) if no MJPEG is present.
+/// list, falling back to index 0 (highest-res YUY2/NV12) if no MJPEG is present.
 fn select_best_format_index(formats: &[VideoFormatInfo]) -> usize {
-    formats.iter().position(|f| f.is_mjpeg).unwrap_or(0)
+    formats.iter().position(|f| f.codec == VideoCodec::Mjpeg).unwrap_or(0)
 }
 
 /// Extracts (width, height) from an MF_MT_FRAME_SIZE attribute (width<<32 | height).
@@ -1350,6 +1378,42 @@ fn yuyv_to_jpeg(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, CameraE
         let v = chunk[3] as f32 - 128.0;
 
         for y in [y0, y1] {
+            let r = (y + 1.402 * v).clamp(0.0, 255.0) as u8;
+            let g = (y - 0.344_136 * u - 0.714_136 * v).clamp(0.0, 255.0) as u8;
+            let b = (y + 1.772 * u).clamp(0.0, 255.0) as u8;
+            rgb.extend_from_slice(&[r, g, b]);
+        }
+    }
+
+    let img = image::RgbImage::from_raw(width, height, rgb)
+        .ok_or(CameraError::SdkError(0xDEAD_0001))?;
+    let mut jpeg_buf: Vec<u8> = Vec::new();
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut std::io::Cursor::new(&mut jpeg_buf), image::ImageFormat::Jpeg)
+        .map_err(|_| CameraError::SdkError(0xDEAD_0002))?;
+    Ok(jpeg_buf)
+}
+
+/// Converts an NV12 frame to a JPEG buffer.
+///
+/// NV12 layout: Y plane (width×height bytes) followed by interleaved UV plane
+/// (width×height/2 bytes, one U+V pair per 2×2 block).
+fn nv12_to_jpeg(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, CameraError> {
+    let (w, h) = (width as usize, height as usize);
+    let y_size = w * h;
+    if data.len() < y_size + w * h / 2 {
+        return Err(CameraError::SdkError(0xDEAD_0003));
+    }
+    let y_plane  = &data[..y_size];
+    let uv_plane = &data[y_size..];
+
+    let mut rgb: Vec<u8> = Vec::with_capacity(w * h * 3);
+    for row in 0..h {
+        for col in 0..w {
+            let y = y_plane[row * w + col] as f32;
+            let uv_idx = (row / 2) * w + (col & !1);
+            let u = uv_plane[uv_idx] as f32 - 128.0;
+            let v = uv_plane[uv_idx + 1] as f32 - 128.0;
             let r = (y + 1.402 * v).clamp(0.0, 255.0) as u8;
             let g = (y - 0.344_136 * u - 0.714_136 * v).clamp(0.0, 255.0) as u8;
             let b = (y + 1.772 * u).clamp(0.0, 255.0) as u8;
