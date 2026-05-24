@@ -56,8 +56,17 @@ pub async fn add_peer(State(state): State<AppState>, Json(body): Json<AddPeerBod
         }
     };
 
-    if let Err(e) = validate_peer(&client, &url, &body.token).await {
-        return (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response();
+    let peer_instance_id = match validate_peer(&client, &url, &body.token).await {
+        Ok(id) => id,
+        Err(e) => return (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response(),
+    };
+
+    if !peer_instance_id.is_empty() && peer_instance_id == *state.instance_id {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "cannot add this server as its own peer" })),
+        )
+            .into_response();
     }
 
     let peer = state.peers.add(&url, body.token);

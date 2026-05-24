@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, RwLock};
 
-use axum::{routing::{get, put}, Json, Router};
+use axum::{extract::State, routing::{get, put}, Json, Router};
 use axum::response::Html;
 use tower_http::cors::CorsLayer;
 use serde::Serialize;
@@ -19,17 +19,19 @@ struct HealthCheck {
     status: &'static str,
     service: &'static str,
     version: &'static str,
+    instance_id: String,
 }
 
 async fn index() -> Html<&'static str> {
     Html(include_str!("../static/index.html"))
 }
 
-async fn health() -> Json<HealthCheck> {
+async fn health(State(state): State<AppState>) -> Json<HealthCheck> {
     Json(HealthCheck {
         status: "ok",
         service: "toucan-camera-server",
         version: env!("CARGO_PKG_VERSION"),
+        instance_id: (*state.instance_id).clone(),
     })
 }
 
@@ -242,10 +244,13 @@ pub async fn run_server() {
         *ACTIVE_TOKEN.lock().unwrap() = Some(token.clone());
     }
 
+    let instance_id = Arc::new(uuid::Uuid::new_v4().to_string());
+
     let built = build_backends();
     let state = AppState::new(
         built.state,
         token.clone(),
+        instance_id.clone(),
         #[cfg(feature = "backend-remote")]
         built.peers.clone(),
     );

@@ -274,14 +274,13 @@ fn status_error(status: reqwest::StatusCode) -> Option<CameraError> {
 }
 
 /// Verifies a peer is reachable and is actually a toucan-camera-server, using
-/// the credentials it will later be called with. Returns a human-readable
-/// message on failure so a peer is never registered when it can't be reached or
-/// authenticated. Hits `/health`, which is behind the same auth as every route.
+/// the credentials it will later be called with. Returns the peer's instance_id
+/// on success, or a human-readable message on failure.
 pub async fn validate_peer(
     client: &reqwest::Client,
     url: &str,
     token: &Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let resp = auth(client.get(format!("{url}/health")), token)
         .timeout(TIMEOUT_LIST)
         .send()
@@ -302,7 +301,13 @@ pub async fn validate_peer(
     if health.get("service").and_then(|v| v.as_str()) != Some("toucan-camera-server") {
         return Err("this URL is not a toucan-camera-server instance".into());
     }
-    Ok(())
+
+    let instance_id = health
+        .get("instance_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Ok(instance_id)
 }
 
 async fn proxy_action(

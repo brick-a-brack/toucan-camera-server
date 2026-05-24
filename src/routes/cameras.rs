@@ -35,6 +35,9 @@ pub struct AppState {
     pub backends: BackendState,
     pub live_views: LiveViewSenders,
     pub token: Arc<RwLock<String>>,
+    /// Unique ID generated once at startup, exposed in `/health` so peers can
+    /// detect self-registration attempts.
+    pub instance_id: Arc<String>,
     /// Shared peer registry, also held by the remote backend.
     #[cfg(feature = "backend-remote")]
     pub peers: Arc<crate::backends::remote::PeerRegistry>,
@@ -50,12 +53,14 @@ impl AppState {
     pub fn new(
         backends: BackendState,
         token: Arc<RwLock<String>>,
+        instance_id: Arc<String>,
         #[cfg(feature = "backend-remote")] peers: Arc<crate::backends::remote::PeerRegistry>,
     ) -> Self {
         Self {
             backends,
             live_views: Arc::new(Mutex::new(HashMap::new())),
             token,
+            instance_id,
             #[cfg(feature = "backend-remote")]
             peers,
         }
