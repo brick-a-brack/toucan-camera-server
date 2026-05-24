@@ -47,7 +47,7 @@ pub use peers::{normalize_url, Peer, PeerRegistry, PeerView};
 const NOT_READY: CameraError = CameraError::SdkError(0x0000_A102);
 
 /// Per-request timeouts. The live-view stream is intentionally left untimed.
-const TIMEOUT_LIST: Duration = Duration::from_secs(5);
+const TIMEOUT_LIST: Duration = Duration::from_secs(1);
 const TIMEOUT_CONTROL: Duration = Duration::from_secs(10);
 const TIMEOUT_CAPTURE: Duration = Duration::from_secs(30);
 
@@ -84,7 +84,7 @@ impl RemoteBackend {
             .map_err(|e| CameraError::Remote(format!("failed to build runtime: {e}")))?;
 
         let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(3))
+            .connect_timeout(Duration::from_millis(500))
             .build()
             .map_err(|e| CameraError::Remote(format!("failed to build HTTP client: {e}")))?;
 
