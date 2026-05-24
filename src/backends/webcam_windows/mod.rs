@@ -598,7 +598,6 @@ fn connect_impl(
 
         let formats = enumerate_video_formats(&reader);
         if formats.is_empty() {
-            eprintln!("[webcam-windows] connect failed: no supported format (MJPEG/YUY2/NV12) found for {native_id}");
             return Err(CameraError::SdkError(0xA102_0003));
         }
         let best_idx = select_best_format_index(&formats);
@@ -1273,14 +1272,6 @@ unsafe fn enumerate_video_formats(reader: &IMFSourceReader) -> Vec<VideoFormatIn
         let fps_packed = mt.GetUINT64(&MF_MT_FRAME_RATE).unwrap_or(0);
         let fps_num    = (fps_packed >> 32) as u32;
         let fps_den    = (fps_packed & 0xFFFF_FFFF) as u32;
-        eprintln!(
-            "[webcam-windows] format[{index}]: subtype={{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}} {}x{} {}/{}fps",
-            subtype.data1, subtype.data2, subtype.data3,
-            subtype.data4[0], subtype.data4[1],
-            subtype.data4[2], subtype.data4[3], subtype.data4[4], subtype.data4[5], subtype.data4[6], subtype.data4[7],
-            width, height, fps_num, fps_den,
-        );
-
         let codec = if subtype == MFVideoFormat_MJPG {
             VideoCodec::Mjpeg
         } else if subtype == MFVideoFormat_YUY2 {
@@ -1288,7 +1279,6 @@ unsafe fn enumerate_video_formats(reader: &IMFSourceReader) -> Vec<VideoFormatIn
         } else if subtype == MFVideoFormat_NV12 {
             VideoCodec::Nv12
         } else {
-            eprintln!("[webcam-windows] format[{index}]: skipped (unsupported subtype)");
             continue;
         };
 
