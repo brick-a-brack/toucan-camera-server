@@ -29,3 +29,6 @@ android/app/.idea/
 # Gradle caches
 .gradle/
 buildSrc/.gradle/
+
+# Claude files
+.claude/settings.local.json
