@@ -73,8 +73,9 @@ Feel free to make pull-requests or report issues 😉
 
 | Backend                      | Windows | macOS | Linux | Android |
 | ---------------------------- | ------- | ----- | ----- | ------- |
-| Webcams / Cameras            | 🟢¹     | 🟢²   | 🟠³   | 🟢⁴     |
+| Webcams / Cameras            | 🟢¹     | 🟢²   | 🟢³   | 🟢⁴     |
 | Canon EOS (EDSDK)            | 🟢      | 🟢    | 🟢    | 🔴      |
+| Various cameras (libgphoto2) | 🔴      | 🟢⁶   | 🟢⁶   | 🔴      |
 | Remote (other instances)     | 🟢⁵     | 🟢⁵   | 🟢⁵   | 🟢⁵     |
 
 🟢 - Supported  
@@ -86,3 +87,6 @@ Feel free to make pull-requests or report issues 😉
 3. Using V4L2
 4. Using camera2
 5. Relayed over HTTP — see [Remote cameras](#remote-cameras)
+6. Using libgphoto2 — Nikon, Sony, Fuji and many other PTP/USB cameras.
+
+> All native dependencies (Canon EDSDK, libgphoto2 and its camera drivers, …) are packaged inside the release archives — just download, unzip and run, nothing else to install.
