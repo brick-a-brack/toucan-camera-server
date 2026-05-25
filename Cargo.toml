@@ -43,9 +43,12 @@ windows = { version = "0.58", optional = true, features = [
     "implement",
     "Win32_Foundation",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_Media",
     "Win32_Media_MediaFoundation",
     "Win32_Media_DirectShow",
     "Win32_Media_KernelStreaming",
+    "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
 ] }
 
@@ -59,3 +62,9 @@ winresource = "0.1"
 [dev-dependencies]
 # `ServiceExt::oneshot` drives the router in-process for integration tests.
 tower = { version = "0.5", features = ["util"] }
+
+# Compile all dependencies at opt-level 2 even in debug builds.
+# Without this, pure-software codecs (image crate JPEG encoder) run at
+# debug speed (~10–100× slower), making live view unusable in dev mode.
+[profile.dev.package."*"]
+opt-level = 2

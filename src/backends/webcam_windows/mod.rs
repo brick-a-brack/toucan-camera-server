@@ -6,10 +6,14 @@ use std::sync::mpsc;
 // must be resolvable as a top-level crate name.
 extern crate windows_core;
 
-use windows::core::{implement, Interface, GUID, PWSTR};
+use windows::core::{implement, Interface, BSTR, GUID, HRESULT, PCWSTR, PWSTR, VARIANT};
+use windows::Win32::Media::{IReferenceClock};
 use windows::Win32::Media::DirectShow::{
-    CameraControlProperty, IAMCameraControl, IAMVideoProcAmp,
-    IBaseFilter, IEnumPins, IPin,
+    CameraControlProperty, IAMCameraControl, IAMStreamConfig, IAMVideoProcAmp,
+    IBaseFilter, IBaseFilter_Impl, ICreateDevEnum, IEnumMediaTypes, IEnumPins,
+    IEnumPins_Impl, IFilterGraph, IGraphBuilder, IMediaControl, IMediaFilter,
+    IMediaFilter_Impl, IMediaSample, IMemAllocator, IMemInputPin, IMemInputPin_Impl,
+    IPin, IPin_Impl,
     VideoProcAmpProperty,
     CameraControl_Exposure, CameraControl_Flags_Auto, CameraControl_Flags_Manual,
     CameraControl_Focus, CameraControl_Pan, CameraControl_Roll, CameraControl_Tilt,
@@ -17,7 +21,21 @@ use windows::Win32::Media::DirectShow::{
     VideoProcAmp_BacklightCompensation, VideoProcAmp_Brightness, VideoProcAmp_Contrast,
     VideoProcAmp_Flags_Auto, VideoProcAmp_Flags_Manual, VideoProcAmp_Gain, VideoProcAmp_Gamma,
     VideoProcAmp_Hue, VideoProcAmp_Saturation, VideoProcAmp_Sharpness, VideoProcAmp_WhiteBalance,
+    ALLOCATOR_PROPERTIES, FILTER_INFO, FILTER_STATE, PIN_INFO, PIN_DIRECTION,
+    PINDIR_INPUT, PINDIR_OUTPUT,
+    State_Paused, State_Running, State_Stopped,
+    VFW_E_ALREADY_CONNECTED, VFW_E_NOT_CONNECTED, VFW_E_TYPE_NOT_ACCEPTED,
 };
+use windows::Win32::Media::MediaFoundation::{
+    AM_MEDIA_TYPE, CLSID_FilterGraph, CLSID_SystemDeviceEnum, CLSID_VideoInputDeviceCategory,
+    FORMAT_VideoInfo, MEDIATYPE_Video, VIDEOINFOHEADER,
+};
+
+use windows::Win32::Foundation::{BOOL, E_FAIL, E_NOTIMPL, E_UNEXPECTED, S_FALSE, S_OK};
+use windows::Win32::System::Com::{
+    CoTaskMemAlloc, IBindCtx, IEnumMoniker, IMoniker, IPersist, IPersist_Impl,
+};
+use windows::Win32::System::Com::StructuredStorage::IPropertyBag;
 use windows::Win32::Media::MediaFoundation::{
     IMFActivate, IMFAttributes, IMFCaptureSink, IMFCaptureEngine,
     IMFCaptureEngineClassFactory, IMFCaptureEngineOnEventCallback,
@@ -391,6 +409,7 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
 
     // Device state lives exclusively on this thread.
     let mut connected: HashMap<String, DeviceState> = HashMap::new();
+    let mut connected_ds: HashMap<String, DsState> = HashMap::new();
 
     // STA COM requires this thread to pump Windows messages so that inter-apartment
     // calls and driver callbacks can be dispatched. We poll for commands with a short
@@ -407,60 +426,99 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
 
         match rx.recv_timeout(std::time::Duration::from_millis(16)) {
             Ok(Command::ListDevices { reply }) => {
-                let _ = reply.send(list_devices_impl(&connected));
+                let _ = reply.send(list_devices_impl(&connected, &connected_ds));
             }
             Ok(Command::Connect { native_id, reply }) => {
-                let _ = reply.send(connect_impl(&native_id, &mut connected));
+                if native_id.starts_with(DS_PREFIX) {
+                    let _ = reply.send(ds_connect_impl(&native_id, &mut connected_ds));
+                } else {
+                    let _ = reply.send(connect_impl(&native_id, &mut connected));
+                }
             }
             Ok(Command::Disconnect { native_id, reply }) => {
-                let _ = reply.send(disconnect_impl(&native_id, &mut connected));
+                if native_id.starts_with(DS_PREFIX) {
+                    let _ = reply.send(ds_disconnect_impl(&native_id, &mut connected_ds));
+                } else {
+                    let _ = reply.send(disconnect_impl(&native_id, &mut connected));
+                }
             }
             Ok(Command::IsConnected { native_id, reply }) => {
-                let alive = connected
-                    .get(&native_id)
-                    .map(|s| is_source_alive(&s.source))
-                    .unwrap_or(false);
-                if !alive {
-                    force_disconnect(&native_id, &mut connected);
-                }
+                let alive = if native_id.starts_with(DS_PREFIX) {
+                    connected_ds.contains_key(&native_id)
+                } else {
+                    let alive = connected
+                        .get(&native_id)
+                        .map(|s| is_source_alive(&s.source))
+                        .unwrap_or(false);
+                    if !alive {
+                        force_disconnect(&native_id, &mut connected);
+                    }
+                    alive
+                };
                 let _ = reply.send(alive);
             }
             Ok(Command::GetParameters { native_id, reply }) => {
-                let result = connected
-                    .get(&native_id)
-                    .ok_or(CameraError::NotConnected)
-                    .and_then(get_parameters_impl);
+                let result = if native_id.starts_with(DS_PREFIX) {
+                    connected_ds
+                        .get(&native_id)
+                        .ok_or(CameraError::NotConnected)
+                        .and_then(ds_get_parameters_impl)
+                } else {
+                    connected
+                        .get(&native_id)
+                        .ok_or(CameraError::NotConnected)
+                        .and_then(get_parameters_impl)
+                };
                 let _ = reply.send(result);
             }
             Ok(Command::GetLiveViewFrame { native_id, reply }) => {
-                let result = connected
-                    .get(&native_id)
-                    .ok_or(CameraError::NotConnected)
-                    .and_then(get_live_view_frame_impl);
-                if result.is_err() {
-                    // Probe the source only on failure to avoid per-frame overhead.
-                    let dead = connected
+                let result = if native_id.starts_with(DS_PREFIX) {
+                    connected_ds
                         .get(&native_id)
-                        .map(|s| !is_source_alive(&s.source))
-                        .unwrap_or(false);
-                    if dead {
-                        force_disconnect(&native_id, &mut connected);
+                        .ok_or(CameraError::NotConnected)
+                        .and_then(ds_get_live_view_frame)
+                } else {
+                    let r = connected
+                        .get(&native_id)
+                        .ok_or(CameraError::NotConnected)
+                        .and_then(get_live_view_frame_impl);
+                    if r.is_err() {
+                        let dead = connected
+                            .get(&native_id)
+                            .map(|s| !is_source_alive(&s.source))
+                            .unwrap_or(false);
+                        if dead { force_disconnect(&native_id, &mut connected); }
                     }
-                }
+                    r
+                };
                 let _ = reply.send(result);
             }
             Ok(Command::SetParameter { native_id, param_type, value, reply }) => {
-                let result = connected
-                    .get_mut(&native_id)
-                    .ok_or(CameraError::NotConnected)
-                    .and_then(|state| set_parameter_impl(state, param_type, &value));
+                let result = if native_id.starts_with(DS_PREFIX) {
+                    connected_ds
+                        .get_mut(&native_id)
+                        .ok_or(CameraError::NotConnected)
+                        .and_then(|s| ds_set_parameter_impl(s, param_type, &value))
+                } else {
+                    connected
+                        .get_mut(&native_id)
+                        .ok_or(CameraError::NotConnected)
+                        .and_then(|state| set_parameter_impl(state, param_type, &value))
+                };
                 let _ = reply.send(result);
             }
             Ok(Command::CapturePhoto { native_id, reply }) => {
-                let result = connected
-                    .get(&native_id)
-                    .ok_or(CameraError::NotConnected)
-                    .and_then(capture_photo_impl);
+                let result = if native_id.starts_with(DS_PREFIX) {
+                    connected_ds
+                        .get(&native_id)
+                        .ok_or(CameraError::NotConnected)
+                        .and_then(ds_capture_photo)
+                } else {
+                    connected
+                        .get(&native_id)
+                        .ok_or(CameraError::NotConnected)
+                        .and_then(capture_photo_impl)
+                };
                 let _ = reply.send(result);
             }
             Ok(Command::Shutdown) => break,
@@ -471,6 +529,10 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
 
     for (_, state) in connected.drain() {
         unsafe { let _ = state.source.Shutdown(); }
+    }
+    for (_, state) in connected_ds.drain() {
+        unsafe { let _ = state.control.Stop(); }
+        drop(state);
     }
 
     let _ = unsafe { MFShutdown() };
@@ -502,6 +564,7 @@ fn force_disconnect(native_id: &str, connected: &mut HashMap<String, DeviceState
 
 fn list_devices_impl(
     connected: &HashMap<String, DeviceState>,
+    connected_ds: &HashMap<String, DsState>,
 ) -> Result<Vec<DeviceInfo>, CameraError> {
     unsafe {
         let mut attrs: Option<IMFAttributes> = None;
@@ -519,6 +582,7 @@ fn list_devices_impl(
         MFEnumDeviceSources(&attrs, &mut devices_ptr, &mut count).map_err(win_err)?;
 
         let mut result = Vec::with_capacity(count as usize);
+        let mut mf_native_ids: Vec<String> = Vec::with_capacity(count as usize);
 
         for i in 0..count as usize {
             // Take ownership of the activate pointer from the CoTask-allocated array.
@@ -542,10 +606,17 @@ fn list_devices_impl(
             let id = DeviceId::new("webcam-windows", &native_id).encode();
             let is_connected = connected.contains_key(&native_id);
             result.push(DeviceInfo { id, name, connected: is_connected });
+            mf_native_ids.push(native_id);
             // activate dropped here, calls Release
         }
 
         CoTaskMemFree(Some(devices_ptr.cast()));
+
+        // Append DirectShow-only cameras not exposed by Media Foundation.
+        if let Ok(ds_devices) = ds_list_devices(connected_ds, &mf_native_ids) {
+            result.extend(ds_devices);
+        }
+
         Ok(result)
     }
 }
@@ -1359,29 +1430,26 @@ fn extract_raw_buffer(sample: &IMFSample) -> Result<Vec<u8>, CameraError> {
 ///
 /// YUY2 packs two pixels into 4 bytes: Y0 U0 Y1 V0.
 fn yuyv_to_jpeg(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, CameraError> {
-    let mut rgb: Vec<u8> = Vec::with_capacity((width * height * 3) as usize);
+    let pixel_count = (width * height) as usize;
+    let mut rgb = vec![0u8; pixel_count * 3];
+    let mut dst = 0usize;
 
+    // Fixed-point YCbCr→RGB (BT.601 full-range), shift = 14 bits.
+    // Coefficients: 1.402→22970, 0.344136→5638, 0.714136→11700, 1.772→29032
     for chunk in data.chunks_exact(4) {
-        let y0 = chunk[0] as f32;
-        let u = chunk[1] as f32 - 128.0;
-        let y1 = chunk[2] as f32;
-        let v = chunk[3] as f32 - 128.0;
-
+        let y0 = chunk[0] as i32;
+        let cb = chunk[1] as i32 - 128;
+        let y1 = chunk[2] as i32;
+        let cr = chunk[3] as i32 - 128;
         for y in [y0, y1] {
-            let r = (y + 1.402 * v).clamp(0.0, 255.0) as u8;
-            let g = (y - 0.344_136 * u - 0.714_136 * v).clamp(0.0, 255.0) as u8;
-            let b = (y + 1.772 * u).clamp(0.0, 255.0) as u8;
-            rgb.extend_from_slice(&[r, g, b]);
+            rgb[dst]     = (y + ((22970 * cr) >> 14)).clamp(0, 255) as u8;
+            rgb[dst + 1] = (y - ((5638  * cb) >> 14) - ((11700 * cr) >> 14)).clamp(0, 255) as u8;
+            rgb[dst + 2] = (y + ((29032 * cb) >> 14)).clamp(0, 255) as u8;
+            dst += 3;
         }
     }
 
-    let img = image::RgbImage::from_raw(width, height, rgb)
-        .ok_or(CameraError::SdkError(0xDEAD_0001))?;
-    let mut jpeg_buf: Vec<u8> = Vec::new();
-    image::DynamicImage::ImageRgb8(img)
-        .write_to(&mut std::io::Cursor::new(&mut jpeg_buf), image::ImageFormat::Jpeg)
-        .map_err(|_| CameraError::SdkError(0xDEAD_0002))?;
-    Ok(jpeg_buf)
+    encode_rgb_to_jpeg(width, height, rgb)
 }
 
 /// Converts an NV12 frame to a JPEG buffer.
@@ -1397,20 +1465,25 @@ fn nv12_to_jpeg(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, CameraE
     let y_plane  = &data[..y_size];
     let uv_plane = &data[y_size..];
 
-    let mut rgb: Vec<u8> = Vec::with_capacity(w * h * 3);
+    let mut rgb = vec![0u8; w * h * 3];
+    let mut dst = 0usize;
     for row in 0..h {
         for col in 0..w {
-            let y = y_plane[row * w + col] as f32;
-            let uv_idx = (row / 2) * w + (col & !1);
-            let u = uv_plane[uv_idx] as f32 - 128.0;
-            let v = uv_plane[uv_idx + 1] as f32 - 128.0;
-            let r = (y + 1.402 * v).clamp(0.0, 255.0) as u8;
-            let g = (y - 0.344_136 * u - 0.714_136 * v).clamp(0.0, 255.0) as u8;
-            let b = (y + 1.772 * u).clamp(0.0, 255.0) as u8;
-            rgb.extend_from_slice(&[r, g, b]);
+            let y  = y_plane[row * w + col] as i32;
+            let uv = (row / 2) * w + (col & !1);
+            let cb = uv_plane[uv]     as i32 - 128;
+            let cr = uv_plane[uv + 1] as i32 - 128;
+            rgb[dst]     = (y + ((22970 * cr) >> 14)).clamp(0, 255) as u8;
+            rgb[dst + 1] = (y - ((5638  * cb) >> 14) - ((11700 * cr) >> 14)).clamp(0, 255) as u8;
+            rgb[dst + 2] = (y + ((29032 * cb) >> 14)).clamp(0, 255) as u8;
+            dst += 3;
         }
     }
 
+    encode_rgb_to_jpeg(width, height, rgb)
+}
+
+fn encode_rgb_to_jpeg(width: u32, height: u32, rgb: Vec<u8>) -> Result<Vec<u8>, CameraError> {
     let img = image::RgbImage::from_raw(width, height, rgb)
         .ok_or(CameraError::SdkError(0xDEAD_0001))?;
     let mut jpeg_buf: Vec<u8> = Vec::new();
@@ -1445,4 +1518,923 @@ fn cc_prop(pt: ParameterType) -> Option<CameraControlProperty> {
         ParameterType::Focus    => Some(CameraControl_Focus),
         _ => None,
     }
+}
+
+// ============================================================================
+// DirectShow backend for cameras not exposed by Media Foundation
+// ============================================================================
+
+const DS_PREFIX: &str = "ds|";
+
+// Unique CLSID for our custom sink filter (Chromium's sink filter GUID).
+const CLSID_DS_SINK_FILTER: GUID =
+    GUID::from_u128(0x88cdbbdc_a73b_4afa_acbf_15d5e2ce12c3);
+
+// Standard DirectShow user-mode memory allocator (from uuids.h).
+const CLSID_MEMORY_ALLOCATOR: GUID =
+    GUID::from_u128(0x1e651cc0_b199_11d0_8212_00c04fc32c45);
+
+// ---------------------------------------------------------------------------
+// DirectShow format descriptor
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)]
+struct DsFormat {
+    codec:     VideoCodec,
+    width:     u32,
+    height:    u32,
+    fps_num:   u32,
+    fps_den:   u32,
+    cap_index: i32,
+}
+
+impl DsFormat {
+    #[allow(dead_code)]
+    fn label(&self) -> String {
+        let codec = match self.codec {
+            VideoCodec::Mjpeg => "MJPEG",
+            VideoCodec::Yuy2  => "YUY2",
+            VideoCodec::Nv12  => "NV12",
+        };
+        let fps = if self.fps_den > 0 {
+            format!(" {:.0}fps", self.fps_num as f64 / self.fps_den as f64)
+        } else {
+            String::new()
+        };
+        format!("{}×{} {}{}", self.width, self.height, codec, fps)
+    }
+
+    fn rank(&self) -> u64 {
+        let codec_rank: u64 = match self.codec {
+            VideoCodec::Mjpeg => 0,
+            VideoCodec::Yuy2  => 1,
+            VideoCodec::Nv12  => 2,
+        };
+        // Lower rank = preferred. Penalise higher codec index; favour higher resolution.
+        codec_rank * 1_000_000_000_000
+            + (u32::MAX as u64).saturating_sub((self.width * self.height) as u64)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared state between the custom COM filter and its input pin
+// ---------------------------------------------------------------------------
+
+struct DsSinkInner {
+    // Most recent frame, already JPEG-encoded, written by the converter thread.
+    latest_jpeg:   Mutex<Option<Vec<u8>>>,
+    // Channel to the per-device JPEG converter thread.
+    // Set to None on disconnect so the thread exits cleanly.
+    raw_tx:        Mutex<Option<std::sync::mpsc::SyncSender<Vec<u8>>>>,
+    // Written once in ReceiveConnection (during ConnectDirect), before streaming starts.
+    codec:         Mutex<VideoCodec>,
+    width:         Mutex<u32>,
+    height:        Mutex<u32>,
+    filter_state:  Mutex<FILTER_STATE>,
+    clock:         Mutex<Option<IReferenceClock>>,
+    connected_pin: Mutex<Option<IPin>>,
+    // Set in JoinFilterGraph(Some); cleared in JoinFilterGraph(None) to break COM cycles.
+    // Some source filters validate that the sink is in the same graph before connecting.
+    graph:         Mutex<Option<IFilterGraph>>,
+    parent_filter: Mutex<Option<IBaseFilter>>,
+    sink_pin:      Mutex<Option<IPin>>,
+}
+
+// SAFETY: DsSinkInner lives inside Arc; all fields are accessed while holding
+// their respective Mutex. COM interface pointers inside the Mutexes are only
+// touched on the SDK thread.
+unsafe impl Send for DsSinkInner {}
+unsafe impl Sync for DsSinkInner {}
+
+// ---------------------------------------------------------------------------
+// IEnumPins — enumerates our single input pin
+// ---------------------------------------------------------------------------
+
+#[implement(IEnumPins)]
+struct DsSinkEnumPins {
+    pin: IPin,
+    pos: Mutex<u32>,
+}
+
+impl IEnumPins_Impl for DsSinkEnumPins_Impl {
+    fn Next(&self, cpins: u32, pppins: *mut Option<IPin>, pcfetched: *mut u32) -> HRESULT {
+        let mut pos = self.pos.lock().unwrap();
+        let buf = unsafe { std::slice::from_raw_parts_mut(pppins, cpins as usize) };
+        let mut fetched = 0u32;
+        for slot in buf.iter_mut() {
+            if *pos == 0 {
+                *slot = Some(self.pin.clone());
+                *pos += 1;
+                fetched += 1;
+            } else {
+                break;
+            }
+        }
+        if !pcfetched.is_null() {
+            unsafe { *pcfetched = fetched; }
+        }
+        if fetched == cpins { S_OK } else { S_FALSE }
+    }
+
+    fn Skip(&self, cpins: u32) -> windows::core::Result<()> {
+        let mut pos = self.pos.lock().unwrap();
+        let available = 1u32.saturating_sub(*pos);
+        *pos += cpins.min(available);
+        Ok(())
+    }
+
+    fn Reset(&self) -> windows::core::Result<()> {
+        *self.pos.lock().unwrap() = 0;
+        Ok(())
+    }
+
+    fn Clone(&self) -> windows::core::Result<IEnumPins> {
+        let new_enum = DsSinkEnumPins {
+            pin: self.pin.clone(),
+            pos: Mutex::new(*self.pos.lock().unwrap()),
+        };
+        Ok(new_enum.into())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IPin + IMemInputPin — our single input pin
+// ---------------------------------------------------------------------------
+
+#[implement(IPin, IMemInputPin)]
+struct DsSinkPinCom {
+    inner: Arc<DsSinkInner>,
+}
+
+impl IPin_Impl for DsSinkPinCom_Impl {
+    fn Connect(
+        &self,
+        _preceivepin: Option<&IPin>,
+        _pmt: *const AM_MEDIA_TYPE,
+    ) -> windows::core::Result<()> {
+        // Input pins don't initiate connections.
+        Err(windows::core::Error::from(E_UNEXPECTED))
+    }
+
+    fn ReceiveConnection(
+        &self,
+        pconnector: Option<&IPin>,
+        pmt: *const AM_MEDIA_TYPE,
+    ) -> windows::core::Result<()> {
+        let mut guard = self.inner.connected_pin.lock().unwrap();
+        if guard.is_some() {
+            return Err(windows::core::Error::from(VFW_E_ALREADY_CONNECTED));
+        }
+        if pmt.is_null() {
+            return Err(windows::core::Error::from(VFW_E_TYPE_NOT_ACCEPTED));
+        }
+        let mt = unsafe { &*pmt };
+        if mt.majortype != MEDIATYPE_Video {
+            return Err(windows::core::Error::from(VFW_E_TYPE_NOT_ACCEPTED));
+        }
+        // Validate subtype and extract dimensions from the format block.
+        if mt.formattype != FORMAT_VideoInfo || mt.pbFormat.is_null() {
+            return Err(windows::core::Error::from(VFW_E_TYPE_NOT_ACCEPTED));
+        }
+        let codec = if mt.subtype == MFVideoFormat_MJPG       { VideoCodec::Mjpeg }
+                    else if mt.subtype == MFVideoFormat_YUY2   { VideoCodec::Yuy2  }
+                    else if mt.subtype == MFVideoFormat_NV12   { VideoCodec::Nv12  }
+                    else { return Err(windows::core::Error::from(VFW_E_TYPE_NOT_ACCEPTED)); };
+        let vih = unsafe { &*(mt.pbFormat as *const VIDEOINFOHEADER) };
+        let w = vih.bmiHeader.biWidth as u32;
+        let h = vih.bmiHeader.biHeight.unsigned_abs();
+        if w == 0 || h == 0 {
+            return Err(windows::core::Error::from(VFW_E_TYPE_NOT_ACCEPTED));
+        }
+        *self.inner.codec.lock().unwrap()  = codec;
+        *self.inner.width.lock().unwrap()  = w;
+        *self.inner.height.lock().unwrap() = h;
+        *guard = pconnector.map(|p| p.clone());
+        Ok(())
+    }
+
+    fn Disconnect(&self) -> windows::core::Result<()> {
+        let mut guard = self.inner.connected_pin.lock().unwrap();
+        if guard.is_none() {
+            return Err(windows::core::Error::from(VFW_E_NOT_CONNECTED));
+        }
+        *guard = None;
+        Ok(())
+    }
+
+    fn ConnectedTo(&self) -> windows::core::Result<IPin> {
+        self.inner.connected_pin.lock().unwrap()
+            .clone()
+            .ok_or_else(|| windows::core::Error::from(VFW_E_NOT_CONNECTED))
+    }
+
+    fn ConnectionMediaType(&self, _pmt: *mut AM_MEDIA_TYPE) -> windows::core::Result<()> {
+        Err(windows::core::Error::from(E_NOTIMPL))
+    }
+
+    fn QueryPinInfo(&self, pinfo: *mut PIN_INFO) -> windows::core::Result<()> {
+        unsafe {
+            let info = &mut *pinfo;
+            info.dir = PINDIR_INPUT;
+            info.achName = [0u16; 128];
+            let name: Vec<u16> = "In\0".encode_utf16().collect();
+            let len = name.len().min(128);
+            info.achName[..len].copy_from_slice(&name[..len]);
+            info.pFilter = std::mem::ManuallyDrop::new(
+                self.inner.parent_filter.lock().unwrap().clone(),
+            );
+        }
+        Ok(())
+    }
+
+    fn QueryDirection(&self) -> windows::core::Result<PIN_DIRECTION> {
+        Ok(PINDIR_INPUT)
+    }
+
+    fn QueryId(&self) -> windows::core::Result<PWSTR> {
+        let wide: Vec<u16> = "In\0".encode_utf16().collect();
+        let nbytes = wide.len() * 2;
+        unsafe {
+            let ptr = CoTaskMemAlloc(nbytes) as *mut u16;
+            if ptr.is_null() {
+                return Err(windows::core::Error::from(E_FAIL));
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+            Ok(PWSTR(ptr))
+        }
+    }
+
+    fn QueryAccept(&self, pmt: *const AM_MEDIA_TYPE) -> HRESULT {
+        if pmt.is_null() { return E_FAIL; }
+        let mt = unsafe { &*pmt };
+        if mt.majortype != MEDIATYPE_Video { return S_FALSE; }
+        if mt.subtype == MFVideoFormat_MJPG
+            || mt.subtype == MFVideoFormat_YUY2
+            || mt.subtype == MFVideoFormat_NV12
+        {
+            S_OK
+        } else {
+            S_FALSE
+        }
+    }
+
+    fn EnumMediaTypes(&self) -> windows::core::Result<IEnumMediaTypes> {
+        Err(windows::core::Error::from(E_NOTIMPL))
+    }
+
+    fn QueryInternalConnections(
+        &self,
+        _appin: *mut Option<IPin>,
+        _npin: *mut u32,
+    ) -> windows::core::Result<()> {
+        Err(windows::core::Error::from(E_NOTIMPL))
+    }
+
+    fn EndOfStream(&self) -> windows::core::Result<()> { Ok(()) }
+    fn BeginFlush(&self) -> windows::core::Result<()> { Ok(()) }
+    fn EndFlush(&self) -> windows::core::Result<()> { Ok(()) }
+    fn NewSegment(&self, _tstart: i64, _tstop: i64, _drate: f64) -> windows::core::Result<()> { Ok(()) }
+}
+
+impl IMemInputPin_Impl for DsSinkPinCom_Impl {
+    fn GetAllocator(&self) -> windows::core::Result<IMemAllocator> {
+        // KS proxy (WDM camera) drivers require a real allocator here; returning
+        // E_NOTIMPL causes them to fail the connection with a driver-specific error
+        // instead of falling back to their own allocator.
+        unsafe {
+            CoCreateInstance(&CLSID_MEMORY_ALLOCATOR, None, CLSCTX_INPROC_SERVER)
+        }
+    }
+
+    fn NotifyAllocator(
+        &self,
+        _pallocator: Option<&IMemAllocator>,
+        _breadonly: BOOL,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn GetAllocatorRequirements(&self) -> windows::core::Result<ALLOCATOR_PROPERTIES> {
+        Err(windows::core::Error::from(E_NOTIMPL))
+    }
+
+    fn Receive(&self, psample: Option<&IMediaSample>) -> windows::core::Result<()> {
+        let sample = match psample {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        // Keep Receive fast: just copy the raw pixels and hand them off.
+        // JPEG conversion runs on the dedicated ds-jpeg-converter thread so
+        // neither the DS streaming thread nor the SDK actor thread is blocked.
+        unsafe {
+            let ptr = match sample.GetPointer() {
+                Ok(p) if !p.is_null() => p,
+                _ => return Ok(()),
+            };
+            let len = sample.GetActualDataLength();
+            if len <= 0 { return Ok(()); }
+            let data = std::slice::from_raw_parts(ptr, len as usize).to_vec();
+            // try_send: if the converter hasn't finished the previous frame yet,
+            // drop this one rather than block the streaming thread.
+            if let Some(ref tx) = *self.inner.raw_tx.lock().unwrap() {
+                let _ = tx.try_send(data);
+            }
+        }
+        Ok(())
+    }
+
+    fn ReceiveMultiple(
+        &self,
+        psamples: *const Option<IMediaSample>,
+        nsamples: i32,
+    ) -> windows::core::Result<i32> {
+        let slice = unsafe { std::slice::from_raw_parts(psamples, nsamples as usize) };
+        for sample in slice {
+            let _ = self.Receive(sample.as_ref());
+        }
+        Ok(nsamples)
+    }
+
+    fn ReceiveCanBlock(&self) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IBaseFilter + IMediaFilter + IPersist — our custom sink filter
+// ---------------------------------------------------------------------------
+
+#[implement(IBaseFilter, IMediaFilter, IPersist)]
+struct DsSinkFilterCom {
+    inner: Arc<DsSinkInner>,
+    pin:   IPin,
+}
+
+impl IPersist_Impl for DsSinkFilterCom_Impl {
+    fn GetClassID(&self) -> windows::core::Result<GUID> {
+        Ok(CLSID_DS_SINK_FILTER)
+    }
+}
+
+impl IMediaFilter_Impl for DsSinkFilterCom_Impl {
+    fn Stop(&self) -> windows::core::Result<()> {
+        *self.inner.filter_state.lock().unwrap() = State_Stopped;
+        Ok(())
+    }
+
+    fn Pause(&self) -> windows::core::Result<()> {
+        *self.inner.filter_state.lock().unwrap() = State_Paused;
+        Ok(())
+    }
+
+    fn Run(&self, _tstart: i64) -> windows::core::Result<()> {
+        *self.inner.filter_state.lock().unwrap() = State_Running;
+        Ok(())
+    }
+
+    fn GetState(&self, _dwmillisecstimeout: u32) -> windows::core::Result<FILTER_STATE> {
+        Ok(*self.inner.filter_state.lock().unwrap())
+    }
+
+    fn SetSyncSource(&self, pclock: Option<&IReferenceClock>) -> windows::core::Result<()> {
+        *self.inner.clock.lock().unwrap() = pclock.map(|c| c.clone());
+        Ok(())
+    }
+
+    fn GetSyncSource(&self) -> windows::core::Result<IReferenceClock> {
+        self.inner.clock.lock().unwrap()
+            .clone()
+            .ok_or_else(|| windows::core::Error::from(E_FAIL))
+    }
+}
+
+impl IBaseFilter_Impl for DsSinkFilterCom_Impl {
+    fn EnumPins(&self) -> windows::core::Result<IEnumPins> {
+        Ok(DsSinkEnumPins { pin: self.pin.clone(), pos: Mutex::new(0) }.into())
+    }
+
+    fn FindPin(&self, id: &PCWSTR) -> windows::core::Result<IPin> {
+        let id_str = unsafe { id.to_string().unwrap_or_default() };
+        if id_str == "In" {
+            Ok(self.pin.clone())
+        } else {
+            Err(windows::core::Error::from(E_FAIL))
+        }
+    }
+
+    fn QueryFilterInfo(&self, pinfo: *mut FILTER_INFO) -> windows::core::Result<()> {
+        unsafe {
+            let info = &mut *pinfo;
+            info.achName = [0u16; 128];
+            let name: Vec<u16> = "ToucanSink\0".encode_utf16().collect();
+            let len = name.len().min(128);
+            info.achName[..len].copy_from_slice(&name[..len]);
+            // Return the current graph (caller must Release). ManuallyDrop hands off
+            // the AddRef'd clone without running Rust's drop.
+            info.pGraph = std::mem::ManuallyDrop::new(
+                self.inner.graph.lock().unwrap().clone(),
+            );
+        }
+        Ok(())
+    }
+
+    fn JoinFilterGraph(
+        &self,
+        pgraph: Option<&IFilterGraph>,
+        _pname: &PCWSTR,
+    ) -> windows::core::Result<()> {
+        if pgraph.is_none() {
+            // Graph is being torn down — clear all back-references to break COM cycles.
+            *self.inner.graph.lock().unwrap()         = None;
+            *self.inner.parent_filter.lock().unwrap() = None;
+            *self.inner.sink_pin.lock().unwrap()      = None;
+        } else {
+            *self.inner.graph.lock().unwrap() = pgraph.map(|g| g.clone());
+        }
+        Ok(())
+    }
+
+    fn QueryVendorInfo(&self) -> windows::core::Result<PWSTR> {
+        Err(windows::core::Error::from(E_NOTIMPL))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Per-device DirectShow connection state
+// ---------------------------------------------------------------------------
+
+struct DsState {
+    #[allow(dead_code)] // kept alive to maintain graph lifetime
+    graph:          IGraphBuilder,
+    control:        IMediaControl,
+    sink_inner:     Arc<DsSinkInner>,
+    video_proc_amp: Option<IAMVideoProcAmp>,
+    camera_control: Option<IAMCameraControl>,
+}
+
+// DsState lives exclusively on the SDK thread; COM pointers don't need Send here.
+// The sink_inner Arc<DsSinkInner> may be shared with DirectShow's streaming thread
+// but DsSinkInner declares unsafe Send/Sync already.
+
+// ---------------------------------------------------------------------------
+// DirectShow helper functions
+// ---------------------------------------------------------------------------
+
+/// Create a DsSinkFilterCom + DsSinkPinCom pair sharing the given DsSinkInner.
+/// Codec/width/height are populated later by ReceiveConnection during ConnectDirect.
+/// Spawns a dedicated JPEG converter thread that runs until the channel is closed
+/// (i.e. until `DsSinkInner::raw_tx` is set to None in ds_disconnect_impl).
+fn create_ds_sink() -> (IBaseFilter, Arc<DsSinkInner>) {
+    // Bounded at 1: Receive drops a raw frame rather than block the DS streaming
+    // thread when the converter is still busy with the previous frame.
+    let (raw_tx, raw_rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(1);
+
+    let inner = Arc::new(DsSinkInner {
+        latest_jpeg:   Mutex::new(None),
+        raw_tx:        Mutex::new(Some(raw_tx)),
+        codec:         Mutex::new(VideoCodec::Yuy2),
+        width:         Mutex::new(0),
+        height:        Mutex::new(0),
+        filter_state:  Mutex::new(State_Stopped),
+        clock:         Mutex::new(None),
+        connected_pin: Mutex::new(None),
+        graph:         Mutex::new(None),
+        parent_filter: Mutex::new(None),
+        sink_pin:      Mutex::new(None),
+    });
+
+    // Converter thread: receives raw frames, encodes to JPEG, stores result.
+    // Exits automatically when raw_tx is dropped (disconnect).
+    {
+        let inner2 = inner.clone();
+        std::thread::Builder::new()
+            .name("ds-jpeg-converter".into())
+            .spawn(move || {
+                while let Ok(raw) = raw_rx.recv() {
+                    let codec  = *inner2.codec.lock().unwrap();
+                    let width  = *inner2.width.lock().unwrap();
+                    let height = *inner2.height.lock().unwrap();
+                    let jpeg = match codec {
+                        VideoCodec::Mjpeg => raw,
+                        VideoCodec::Yuy2  => match yuyv_to_jpeg(&raw, width, height) {
+                            Ok(j) => j, Err(_) => continue,
+                        },
+                        VideoCodec::Nv12  => match nv12_to_jpeg(&raw, width, height) {
+                            Ok(j) => j, Err(_) => continue,
+                        },
+                    };
+                    *inner2.latest_jpeg.lock().unwrap() = Some(jpeg);
+                }
+            })
+            .ok();
+    }
+    let pin: IPin = DsSinkPinCom { inner: inner.clone() }.into();
+    let filter: IBaseFilter = DsSinkFilterCom { inner: inner.clone(), pin: pin.clone() }.into();
+    // Set back-references (cleared later in JoinFilterGraph(None)).
+    *inner.parent_filter.lock().unwrap() = Some(filter.clone());
+    *inner.sink_pin.lock().unwrap() = Some(pin);
+    (filter, inner)
+}
+
+/// Read a string property from an IMoniker via IPropertyBag.
+fn moniker_read_string(moniker: &IMoniker, prop: PCWSTR) -> Option<String> {
+    let prop_bag: IPropertyBag =
+        unsafe { moniker.BindToStorage(None::<&IBindCtx>, None::<&IMoniker>) }.ok()?;
+    let mut var = VARIANT::default();
+    unsafe { prop_bag.Read(prop, &mut var, None) }.ok()?;
+    BSTR::try_from(&var).map(|b| b.to_string()).ok()
+}
+
+/// Returns the moniker's display name (e.g. `@device:sw:{...}\{...}`).
+/// Used as a fallback device identifier for software virtual cameras that
+/// don't register a DevicePath property (e.g. OBS Virtual Camera).
+fn moniker_display_name(moniker: &IMoniker) -> Option<String> {
+    let ptr = unsafe { moniker.GetDisplayName(None::<&IBindCtx>, None::<&IMoniker>) }.ok()?;
+    let s = unsafe { ptr.to_string() }.ok();
+    unsafe { CoTaskMemFree(Some(ptr.0.cast())) };
+    s
+}
+
+/// Enumerate DirectShow video-input devices that are NOT already exposed by MF.
+/// mf_native_ids: symbolic links of devices already listed by MF (for deduplication).
+fn ds_list_devices(
+    connected_ds: &HashMap<String, DsState>,
+    mf_native_ids: &[String],
+) -> Result<Vec<DeviceInfo>, CameraError> {
+    unsafe {
+        let dev_enum: ICreateDevEnum =
+            CoCreateInstance(&CLSID_SystemDeviceEnum, None, CLSCTX_INPROC_SERVER)
+                .map_err(win_err)?;
+
+        let mut enum_moniker: Option<IEnumMoniker> = None;
+        // S_FALSE means no devices in category — not an error.
+        let _ = dev_enum.CreateClassEnumerator(
+            &CLSID_VideoInputDeviceCategory,
+            &mut enum_moniker,
+            0,
+        );
+        let enum_moniker = match enum_moniker {
+            Some(e) => e,
+            None => return Ok(Vec::new()),
+        };
+
+        let mut result = Vec::new();
+        loop {
+            let mut buf = [None::<IMoniker>; 1];
+            let mut fetched = 0u32;
+            let hr = enum_moniker.Next(&mut buf, Some(&mut fetched));
+            if fetched == 0 { break; }
+            let moniker = match buf[0].take() { Some(m) => m, None => break };
+
+            // Software virtual cameras (e.g. OBS Virtual Camera) often don't
+            // register a DevicePath property. Fall back to the display name
+            // (e.g. `@device:sw:{860BB310-...}\{A3FCE0F5-...}`), which is always
+            // unique and stable for a registered filter.
+            let device_path = match moniker_read_string(&moniker, windows::core::w!("DevicePath"))
+                .filter(|s| !s.is_empty())
+                .or_else(|| moniker_display_name(&moniker).filter(|s| !s.is_empty()))
+            {
+                Some(s) => s,
+                None => {
+                    if hr == S_FALSE { break; }
+                    continue;
+                }
+            };
+
+            // Skip devices already enumerated by MF (same device instance).
+            let ds_prefix = device_instance_prefix(&device_path);
+            if mf_native_ids.iter().any(|id| {
+                device_instance_prefix(id).eq_ignore_ascii_case(&ds_prefix)
+            }) {
+                if hr == S_FALSE { break; }
+                continue;
+            }
+
+            let name = moniker_read_string(&moniker, windows::core::w!("FriendlyName"))
+                .unwrap_or_else(|| "Unknown".to_string());
+
+            let native_id = format!("{}{}", DS_PREFIX, device_path);
+            let id = DeviceId::new("webcam-windows", &native_id).encode();
+            let connected = connected_ds.contains_key(&native_id);
+            result.push(DeviceInfo { id, name, connected });
+
+            if hr == S_FALSE { break; }
+        }
+        Ok(result)
+    }
+}
+
+/// Extract the device-instance portion of a symbolic link / device path —
+/// the part before the last category GUID (`#{...}`).  Used for cross-API
+/// deduplication between MF symbolic links and DS DevicePath values.
+fn device_instance_prefix(path: &str) -> String {
+    let lower = path.to_lowercase();
+    if let Some(pos) = lower.rfind("#{") {
+        path[..pos].to_lowercase()
+    } else {
+        lower
+    }
+}
+
+/// Enumerate supported video formats via IAMStreamConfig.
+fn ds_enumerate_formats(stream_config: &IAMStreamConfig) -> Vec<DsFormat> {
+    let mut formats = Vec::new();
+    unsafe {
+        let mut count = 0i32;
+        let mut caps_size = 0i32;
+        if stream_config.GetNumberOfCapabilities(&mut count, &mut caps_size).is_err() {
+            return formats;
+        }
+        let mut caps_buf: Vec<u8> = vec![0u8; caps_size.max(0) as usize];
+
+        for i in 0..count {
+            let mut pmt: *mut AM_MEDIA_TYPE = std::ptr::null_mut();
+            if stream_config
+                .GetStreamCaps(i, &mut pmt, caps_buf.as_mut_ptr())
+                .is_err()
+            {
+                continue;
+            }
+            if pmt.is_null() { continue; }
+
+            let result = (|| {
+                let mt = &*pmt;
+                if mt.majortype != MEDIATYPE_Video { return None; }
+                let codec = if mt.subtype == MFVideoFormat_MJPG      { VideoCodec::Mjpeg }
+                            else if mt.subtype == MFVideoFormat_YUY2  { VideoCodec::Yuy2  }
+                            else if mt.subtype == MFVideoFormat_NV12  { VideoCodec::Nv12  }
+                            else { return None; };
+                if mt.formattype != FORMAT_VideoInfo || mt.pbFormat.is_null() { return None; }
+                let vih = &*(mt.pbFormat as *const VIDEOINFOHEADER);
+                let w = vih.bmiHeader.biWidth as u32;
+                let h = vih.bmiHeader.biHeight.unsigned_abs();
+                if w == 0 || h == 0 { return None; }
+                let avg_tpf = vih.AvgTimePerFrame as u32;
+                let (fps_num, fps_den) = if avg_tpf > 0 { (10_000_000u32, avg_tpf) } else { (0u32, 1u32) };
+                Some(DsFormat { codec, width: w, height: h, fps_num, fps_den, cap_index: i })
+            })();
+
+            ds_free_media_type(pmt);
+
+            if let Some(f) = result { formats.push(f); }
+        }
+    }
+    formats.sort_by_key(|f| f.rank());
+    formats
+}
+
+/// Free an AM_MEDIA_TYPE returned by IAMStreamConfig::GetStreamCaps.
+unsafe fn ds_free_media_type(pmt: *mut AM_MEDIA_TYPE) {
+    if pmt.is_null() { return; }
+    let mt = &*pmt;
+    if !mt.pbFormat.is_null() {
+        CoTaskMemFree(Some(mt.pbFormat.cast()));
+    }
+    CoTaskMemFree(Some(pmt.cast()));
+}
+
+/// Apply the given format to the capture pin via IAMStreamConfig::SetFormat.
+fn ds_apply_format(
+    stream_config: &IAMStreamConfig,
+    fmt: &DsFormat,
+) -> Result<(), CameraError> {
+    unsafe {
+        let mut count = 0i32;
+        let mut caps_size = 0i32;
+        stream_config.GetNumberOfCapabilities(&mut count, &mut caps_size).map_err(win_err)?;
+        let mut caps_buf: Vec<u8> = vec![0u8; caps_size.max(0) as usize];
+
+        let mut pmt: *mut AM_MEDIA_TYPE = std::ptr::null_mut();
+        stream_config
+            .GetStreamCaps(fmt.cap_index, &mut pmt, caps_buf.as_mut_ptr())
+            .map_err(win_err)?;
+        if pmt.is_null() { return Err(CameraError::SdkError(0xDEAD_0040)); }
+
+        let result = stream_config.SetFormat(pmt as *const _).map_err(win_err);
+        ds_free_media_type(pmt);
+        result
+    }
+}
+
+/// Find the first output pin on a DirectShow filter.
+fn ds_first_output_pin(filter: &IBaseFilter) -> Result<IPin, CameraError> {
+    let pin_enum = unsafe { filter.EnumPins() }.map_err(win_err)?;
+    loop {
+        let mut buf = [None::<IPin>; 1];
+        let mut fetched = 0u32;
+        let hr = unsafe { pin_enum.Next(&mut buf, Some(&mut fetched)) };
+        if fetched == 0 { break; }
+        if let Some(Some(pin)) = buf.first() {
+            if let Ok(dir) = unsafe { pin.QueryDirection() } {
+                if dir == PINDIR_OUTPUT { return Ok(pin.clone()); }
+            }
+        }
+        if hr == S_FALSE { break; }
+    }
+    Err(CameraError::SdkError(0xDEAD_0041))
+}
+
+/// Find a DirectShow moniker for the camera with the given device path.
+fn ds_find_moniker(device_path: &str) -> Result<IMoniker, CameraError> {
+    unsafe {
+        let dev_enum: ICreateDevEnum =
+            CoCreateInstance(&CLSID_SystemDeviceEnum, None, CLSCTX_INPROC_SERVER)
+                .map_err(win_err)?;
+
+        let mut enum_moniker: Option<IEnumMoniker> = None;
+        let _ = dev_enum.CreateClassEnumerator(
+            &CLSID_VideoInputDeviceCategory,
+            &mut enum_moniker,
+            0,
+        );
+        let enum_moniker = enum_moniker.ok_or(CameraError::SdkError(0xFFFF_FFFE))?;
+
+        loop {
+            let mut buf = [None::<IMoniker>; 1];
+            let mut fetched = 0u32;
+            let hr = enum_moniker.Next(&mut buf, Some(&mut fetched));
+            if fetched == 0 { break; }
+            let moniker = match buf[0].take() { Some(m) => m, None => break };
+
+            let candidate = moniker_read_string(&moniker, windows::core::w!("DevicePath"))
+                .filter(|s| !s.is_empty())
+                .or_else(|| moniker_display_name(&moniker).filter(|s| !s.is_empty()));
+            if let Some(path) = candidate {
+                if path.eq_ignore_ascii_case(device_path) {
+                    return Ok(moniker);
+                }
+            }
+            if hr == S_FALSE { break; }
+        }
+        Err(CameraError::SdkError(0xFFFF_FFFD))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DirectShow device operations (run exclusively on the SDK thread)
+// ---------------------------------------------------------------------------
+
+fn ds_connect_impl(
+    native_id: &str,
+    connected_ds: &mut HashMap<String, DsState>,
+) -> Result<(), CameraError> {
+    if connected_ds.contains_key(native_id) { return Ok(()); }
+
+    let device_path = native_id.strip_prefix(DS_PREFIX).unwrap_or(native_id);
+
+    unsafe {
+        let moniker = ds_find_moniker(device_path)?;
+        let capture_filter: IBaseFilter =
+            moniker.BindToObject(None::<&IBindCtx>, None::<&IMoniker>).map_err(win_err)?;
+
+        // Create the graph and add the capture filter FIRST so the driver's
+        // JoinFilterGraph fires before we enumerate pins or call SetFormat.
+        // Some drivers recreate their pins on JoinFilterGraph, which would
+        // invalidate a pin reference obtained before AddFilter.
+        let graph: IGraphBuilder =
+            CoCreateInstance(&CLSID_FilterGraph, None, CLSCTX_INPROC_SERVER).map_err(win_err)?;
+        graph.AddFilter(&capture_filter, windows::core::w!("Capture")).map_err(win_err)?;
+
+        // Now that the filter is in the graph, enumerate its output pin.
+        let output_pin = ds_first_output_pin(&capture_filter)?;
+        let stream_config: IAMStreamConfig = output_pin.cast().map_err(win_err)?;
+
+        let formats = ds_enumerate_formats(&stream_config);
+        if formats.is_empty() {
+            return Err(CameraError::SdkError(0xA102_0003));
+        }
+
+        // Try to pre-select the preferred format. Some drivers reject SetFormat —
+        // that is non-fatal; the actual format is captured in ReceiveConnection.
+        let _ = ds_apply_format(&stream_config, &formats[0]);
+
+        let video_proc_amp = capture_filter.cast::<IAMVideoProcAmp>().ok();
+        let camera_control = capture_filter.cast::<IAMCameraControl>().ok();
+
+        // Codec/width/height are populated by ReceiveConnection during ConnectDirect.
+        let (sink_filter, sink_inner) = create_ds_sink();
+
+        graph.AddFilter(&sink_filter, windows::core::w!("Sink")).map_err(win_err)?;
+
+        let sink_pin = sink_inner.sink_pin.lock().unwrap().clone()
+            .ok_or(CameraError::SdkError(0xDEAD_0042))?;
+
+        graph.ConnectDirect(&output_pin, &sink_pin, None).map_err(win_err)?;
+
+        let control: IMediaControl = graph.cast().map_err(win_err)?;
+        control.Run().map_err(win_err)?;
+
+        connected_ds.insert(native_id.to_string(), DsState {
+            graph, control, sink_inner,
+            video_proc_amp, camera_control,
+        });
+        Ok(())
+    }
+}
+
+fn ds_disconnect_impl(
+    native_id: &str,
+    connected_ds: &mut HashMap<String, DsState>,
+) -> Result<(), CameraError> {
+    let state = connected_ds.remove(native_id).ok_or(CameraError::NotConnected)?;
+    // Close the raw frame channel before stopping the graph so the converter
+    // thread exits cleanly rather than waiting for more frames that will never come.
+    *state.sink_inner.raw_tx.lock().unwrap() = None;
+    unsafe {
+        let _ = state.control.Stop();
+    }
+    drop(state); // releases graph → triggers JoinFilterGraph(None) on our filter
+    Ok(())
+}
+
+fn ds_get_live_view_frame(state: &DsState) -> Result<Vec<u8>, CameraError> {
+    state.sink_inner.latest_jpeg.lock().unwrap()
+        .clone()
+        .ok_or(CameraError::SdkError(0x0000_A102)) // not ready yet
+}
+
+fn ds_capture_photo(state: &DsState) -> Result<Vec<u8>, CameraError> {
+    // Capture the most recent frame from the live stream.
+    ds_get_live_view_frame(state)
+}
+
+fn ds_get_parameters_impl(state: &DsState) -> Result<Vec<CameraParameter>, CameraError> {
+    let mut params = Vec::new();
+    if let Some(ref vpa) = state.video_proc_amp {
+        ds_collect_vpa_params(vpa, &mut params);
+    }
+    if let Some(ref cc) = state.camera_control {
+        ds_collect_cc_params(cc, &mut params);
+    }
+    Ok(params)
+}
+
+fn ds_collect_vpa_params(vpa: &IAMVideoProcAmp, out: &mut Vec<CameraParameter>) {
+    let props = [
+        (ParameterType::Brightness,   VideoProcAmp_Brightness),
+        (ParameterType::Contrast,     VideoProcAmp_Contrast),
+        (ParameterType::Hue,          VideoProcAmp_Hue),
+        (ParameterType::Saturation,   VideoProcAmp_Saturation),
+        (ParameterType::Sharpness,    VideoProcAmp_Sharpness),
+        (ParameterType::Gamma,        VideoProcAmp_Gamma),
+        (ParameterType::WhiteBalance, VideoProcAmp_WhiteBalance),
+        (ParameterType::Gain,         VideoProcAmp_Gain),
+    ];
+    for (pt, prop) in props {
+        unsafe {
+            let mut min = 0i32; let mut max = 0i32; let mut step = 0i32;
+            let mut def = 0i32; let mut caps = 0i32;
+            if vpa.GetRange(prop.0, &mut min, &mut max, &mut step, &mut def, &mut caps).is_err() { continue; }
+            let mut cur = 0i32; let mut flags = 0i32;
+            if vpa.Get(prop.0, &mut cur, &mut flags).is_err() { continue; }
+            let is_auto = caps & VideoProcAmp_Flags_Auto.0 != 0
+                && flags & VideoProcAmp_Flags_Auto.0 != 0;
+            out.push(CameraParameter::Range { param_type: pt, current: cur, min, max, step, disabled: is_auto });
+        }
+    }
+}
+
+fn ds_collect_cc_params(cc: &IAMCameraControl, out: &mut Vec<CameraParameter>) {
+    let props = [
+        (ParameterType::Pan,      CameraControl_Pan),
+        (ParameterType::Tilt,     CameraControl_Tilt),
+        (ParameterType::Roll,     CameraControl_Roll),
+        (ParameterType::Zoom,     CameraControl_Zoom),
+        (ParameterType::Exposure, CameraControl_Exposure),
+        (ParameterType::Focus,    CameraControl_Focus),
+    ];
+    for (pt, prop) in props {
+        unsafe {
+            let mut min = 0i32; let mut max = 0i32; let mut step = 0i32;
+            let mut def = 0i32; let mut caps = 0i32;
+            if cc.GetRange(prop.0, &mut min, &mut max, &mut step, &mut def, &mut caps).is_err() { continue; }
+            let mut cur = 0i32; let mut flags = 0i32;
+            if cc.Get(prop.0, &mut cur, &mut flags).is_err() { continue; }
+            let is_auto = caps & CameraControl_Flags_Auto.0 != 0
+                && flags & CameraControl_Flags_Auto.0 != 0;
+            out.push(CameraParameter::Range { param_type: pt, current: cur, min, max, step, disabled: is_auto });
+        }
+    }
+}
+
+fn ds_set_parameter_impl(
+    state: &mut DsState,
+    param_type: ParameterType,
+    value: &str,
+) -> Result<(), CameraError> {
+    if let Some(ref vpa) = state.video_proc_amp {
+        if let Some(prop) = vpa_prop(param_type) {
+            let v: i32 = value.parse().map_err(|_| CameraError::SdkError(0x8007_0057))?;
+            unsafe { vpa.Set(prop.0, v, VideoProcAmp_Flags_Manual.0).map_err(win_err)?; }
+            return Ok(());
+        }
+    }
+    if let Some(ref cc) = state.camera_control {
+        if let Some(prop) = cc_prop(param_type) {
+            let v: i32 = value.parse().map_err(|_| CameraError::SdkError(0x8007_0057))?;
+            unsafe { cc.Set(prop.0, v, CameraControl_Flags_Manual.0).map_err(win_err)?; }
+            return Ok(());
+        }
+    }
+    Err(CameraError::NotSupported)
 }

@@ -82,7 +82,7 @@ Feel free to make pull-requests or report issues 😉
 🟠 - Planned  
 🔴 - Not compatible / possible
 
-1. Using MediaFoundation
+1. Using MediaFoundation and DirectShow
 2. Using AVFoundation and IOKit
 3. Using V4L2
 4. Using camera2
