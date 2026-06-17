@@ -1,0 +1,5 @@
+{"backend": "webcam", "brand": "Logitech", "model": "C920", "liveview": "1920x1080", "capture": true, "configuration": true}
+{"backend": "webcam", "brand": "Logitech", "model": "C922", "liveview": "1920x1080", "capture": true, "configuration": true}
+{"backend": "webcam", "brand": "Logitech", "model": "C930", "liveview": "1920x1080", "capture": true, "configuration": true}
+{"backend": "webcam", "brand": "Logitech", "model": "BRIO", "liveview": "1920x1080", "capture": true, "configuration": true}
+{"backend": "webcam", "brand": "Logitech", "model": "BRIO 4K", "liveview": "3840x2160", "capture": true, "configuration": true}
