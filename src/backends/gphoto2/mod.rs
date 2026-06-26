@@ -107,13 +107,80 @@ fn map_err(err: gphoto2::Error) -> CameraError {
     CameraError::SdkError(0)
 }
 
-/// When the dedicated Canon EDSDK backend is compiled in, it owns Canon bodies
-/// (native EVF live view, full Canon property set), so the gphoto2 backend hides
-/// them — otherwise the same camera shows up under two backends and the two
-/// drivers fight over the USB device. Without `backend-canon`, gphoto2 handles
-/// Canon too. libgphoto2 reports Canon models as e.g. "Canon EOS 600D".
-fn owned_by_other_backend(model: &str) -> bool {
-    cfg!(feature = "backend-canon") && model.to_lowercase().starts_with("canon")
+/// libgphoto2 reports cameras it has no specific driver for under a generic
+/// PTP/MTP class name (e.g. a new body shows as "USB PTP Class Camera", not its
+/// model). For those we take the model from the USB product string instead, so
+/// the cross-backend dedup key still matches the dedicated SDK backend's.
+fn is_generic_ptp_name(model: &str) -> bool {
+    let m = model.to_lowercase();
+    m.contains("ptp class camera") || m == "ptp camera" || m == "mtp device"
+}
+
+/// Parses a libgphoto2 USB port (`"usb:BUS,DEV"`, zero-padded decimals) into the
+/// `(bus number, device address)` pair libusb/nusb use. `None` for non-USB ports.
+fn parse_usb_port(port: &str) -> Option<(u8, u8)> {
+    let (bus, dev) = port.strip_prefix("usb:")?.split_once(',')?;
+    Some((bus.trim().parse().ok()?, dev.trim().parse().ok()?))
+}
+
+/// The libusb-style bus number for a device, matching how libgphoto2 formats the
+/// port. nusb exposes this per-platform: `location_id >> 24` on macOS (IOKit),
+/// `busnum` on Linux (sysfs) — the same values libusb derives.
+fn device_bus(d: &nusb::DeviceInfo) -> u8 {
+    #[cfg(target_os = "macos")]
+    {
+        (d.location_id() >> 24) as u8
+    }
+    #[cfg(target_os = "linux")]
+    {
+        d.busnum()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = d;
+        0
+    }
+}
+
+/// Maps `(bus number, device address)` → `(USB vendor id, USB product string)`
+/// for every connected USB device via nusb (IOKit on macOS, sysfs on Linux — the
+/// same numbering libgphoto2's libusb uses). The product string is the device's
+/// own model name, reliable even when libgphoto2 only knows the body generically.
+/// Empty on enumeration failure (then no dedup key is emitted).
+fn usb_camera_map() -> HashMap<(u8, u8), (u16, Option<String>)> {
+    use nusb::MaybeFuture;
+    match nusb::list_devices().wait() {
+        Ok(devs) => devs
+            .map(|d| {
+                let key = (device_bus(&d), d.device_address());
+                (key, (d.vendor_id(), d.product_string().map(str::to_owned)))
+            })
+            .collect(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+/// The cross-backend dedup key for a gphoto2 device: its real USB vendor (from
+/// nusb) plus its model. The model is libgphoto2's own name, except when that is
+/// a generic PTP/MTP class name — then the USB product string is used so the key
+/// matches the one a dedicated SDK backend emits for the same body. `None` when
+/// the USB device can't be resolved (non-USB port, enumeration blocked), in which
+/// case the device is simply never deduped.
+///
+/// Note: this backend knows nothing about Canon/Nikon backends — it only
+/// publishes its device's identity. The server decides which backend wins.
+fn gphoto_dedup_key(
+    gphoto_model: &str,
+    port: &str,
+    usb: &HashMap<(u8, u8), (u16, Option<String>)>,
+) -> Option<String> {
+    let (vendor, product) = parse_usb_port(port).and_then(|key| usb.get(&key))?;
+    let model = if is_generic_ptp_name(gphoto_model) {
+        product.as_deref().filter(|s| !s.is_empty()).unwrap_or(gphoto_model)
+    } else {
+        gphoto_model
+    };
+    Some(crate::camera::dedup_key(*vendor, model))
 }
 
 impl CameraBackend for GPhoto2Backend {
@@ -124,13 +191,29 @@ impl CameraBackend for GPhoto2Backend {
     fn list_devices(&self) -> Result<Vec<DeviceInfo>, CameraError> {
         let cameras = self.context.list_cameras().wait().map_err(map_err)?;
         let connected = self.connected.lock().expect("gphoto2 mutex poisoned");
+        let usb = usb_camera_map();
 
+        if crate::camera::dedup_debug_enabled() {
+            eprintln!("[dedup] nusb sees {} USB device(s): {usb:?}", usb.len());
+        }
+
+        // List every camera and tag it with its cross-backend identity. The
+        // server drops duplicates a higher-priority (SDK) backend also serves.
         let devices = cameras
-            .filter(|d| !owned_by_other_backend(&d.model))
-            .map(|d| DeviceInfo {
-                connected: connected.contains_key(&d.port),
-                id: DeviceId::new("gphoto2", &d.port).encode(),
-                name: d.model,
+            .map(|d| {
+                let dedup_key = gphoto_dedup_key(&d.model, &d.port, &usb);
+                if crate::camera::dedup_debug_enabled() {
+                    eprintln!(
+                        "[dedup] gphoto2 model={:?} port={:?} -> key={dedup_key:?}",
+                        d.model, d.port
+                    );
+                }
+                DeviceInfo {
+                    connected: connected.contains_key(&d.port),
+                    dedup_key,
+                    id: DeviceId::new("gphoto2", &d.port).encode(),
+                    name: d.model,
+                }
             })
             .collect();
 
@@ -152,13 +235,6 @@ impl CameraBackend for GPhoto2Backend {
             .map_err(map_err)?
             .find(|d| d.port == native_id)
             .ok_or_else(|| CameraError::DeviceNotFound(native_id.to_string()))?;
-
-        // Defensive: when the EDSDK backend is compiled in it owns Canon bodies,
-        // so refuse to grab one here even if a client crafts the id (it would
-        // contend with EDSDK for the USB device). list_devices already hides them.
-        if owned_by_other_backend(&descriptor.model) {
-            return Err(CameraError::NotSupported);
-        }
 
         let camera = self
             .context
@@ -582,17 +658,57 @@ mod tests {
     }
 
     #[test]
-    fn non_canon_models_are_never_deferred() {
-        assert!(!owned_by_other_backend("Nikon D750"));
-        assert!(!owned_by_other_backend("Sony Alpha 7"));
+    fn usb_enumeration_runs() {
+        // Smoke test: the nusb path (IOKit on macOS, sysfs on Linux) must run
+        // without panicking. Contents depend on what's plugged in / sandboxing.
+        let _ = usb_camera_map();
     }
 
     #[test]
-    fn canon_is_deferred_only_when_edsdk_is_compiled_in() {
-        // Canon bodies are handed to the EDSDK backend only when it is built in.
-        assert_eq!(
-            owned_by_other_backend("Canon EOS 600D"),
-            cfg!(feature = "backend-canon")
-        );
+    fn usb_port_parsing() {
+        assert_eq!(parse_usb_port("usb:020,007"), Some((20, 7))); // zero-padded
+        assert_eq!(parse_usb_port("usb:1,8"), Some((1, 8)));
+        assert_eq!(parse_usb_port("ptpip:192.168.1.1"), None);
+        assert_eq!(parse_usb_port("usb:"), None);
+        assert_eq!(parse_usb_port("disk:/x"), None);
+    }
+
+    #[test]
+    fn generic_ptp_name_detection() {
+        assert!(is_generic_ptp_name("USB PTP Class Camera"));
+        assert!(is_generic_ptp_name("PTP Camera"));
+        assert!(is_generic_ptp_name("MTP Device"));
+        assert!(!is_generic_ptp_name("Nikon Z 6"));
+        assert!(!is_generic_ptp_name("Canon EOS 600D"));
+    }
+
+    #[test]
+    fn dedup_key_uses_product_string_for_generic_names() {
+        // A new Nikon body libgphoto2 only knows generically: the key comes from
+        // the USB product string and must equal the one the Nikon SDK emits.
+        let mut usb = HashMap::new();
+        usb.insert((20u8, 7u8), (0x04B0u16, Some("Nikon Z 5_2".to_string())));
+        let key = gphoto_dedup_key("USB PTP Class Camera", "usb:020,007", &usb);
+        // Nikon SDK lists the same body as "Z5_2" → same key.
+        assert_eq!(key, Some(crate::camera::dedup_key(0x04B0, "Z5_2")));
+    }
+
+    #[test]
+    fn dedup_key_uses_gphoto_name_when_specific() {
+        // A Canon EOS libgphoto2 names specifically: keep that name (its USB
+        // product string is often the generic "Canon Digital Camera"). Matches
+        // the EDSDK device description.
+        let mut usb = HashMap::new();
+        usb.insert((20u8, 7u8), (0x04A9u16, Some("Canon Digital Camera".to_string())));
+        let key = gphoto_dedup_key("Canon EOS R5", "usb:020,007", &usb);
+        assert_eq!(key, Some(crate::camera::dedup_key(0x04A9, "Canon EOS R5")));
+    }
+
+    #[test]
+    fn dedup_key_none_when_usb_unresolved() {
+        // No USB entry for the port → no key → the device is never deduped.
+        let usb = HashMap::new();
+        assert_eq!(gphoto_dedup_key("Nikon Z 5", "usb:020,007", &usb), None);
+        assert_eq!(gphoto_dedup_key("Some Camera", "ptpip:1.2.3.4", &usb), None);
     }
 }

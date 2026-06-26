@@ -1,6 +1,9 @@
 #[cfg(feature = "backend-canon")]
 pub mod canon;
 
+#[cfg(all(feature = "backend-nikon", target_os = "macos"))]
+pub mod nikon;
+
 #[cfg(all(feature = "backend-webcam-linux", target_os = "linux"))]
 pub mod webcam_linux;
 

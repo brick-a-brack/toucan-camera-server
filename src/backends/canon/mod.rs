@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::sync::mpsc;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::camera::{
@@ -16,6 +17,10 @@ use crate::camera::{
 
 const EDS_MAX_NAME: usize = 256;
 const EDS_ERR_OK: u32 = 0x00000000;
+
+/// Canon's USB vendor id — used to build the cross-backend dedup key so gphoto2
+/// yields EOS bodies to this (higher-priority) backend.
+const USB_VENDOR_CANON: u16 = 0x04A9;
 
 type EdsBaseRef = *mut std::ffi::c_void;
 type EdsCameraListRef = EdsBaseRef;
@@ -119,8 +124,100 @@ struct EdsDeviceInfo {
 // EDSDK FFI
 // ---------------------------------------------------------------------------
 
-#[link(name = "EDSDK")]
-extern "C" {
+// EDSDK is loaded dynamically at runtime (never linked) on ALL platforms, via the
+// cross-platform `crate::dynlib` loader. This keeps things uniform and means the
+// binary only loads EDSDK in the process that actually uses Canon — required on
+// macOS, where each backend runs in its own worker process
+// (`crate::backends::subprocess`) because EDSDK and the Nikon SDK cannot coexist
+// (identical Objective-C PTP class names + a shared main run loop).
+//
+// The `EdsXxx` wrappers keep the exact original names/signatures, so every call
+// site and the event-handler callbacks are unchanged. The function list is
+// declared ONCE in the `edsdk_bindings!` invocation below.
+
+/// Path to the EDSDK library staged next to the running executable (the build
+/// copies it there per platform: framework on macOS, DLL on Windows, .so on Linux).
+fn edsdk_lib_path() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    #[cfg(target_os = "macos")]
+    let name = "EDSDK.framework/Versions/A/EDSDK";
+    #[cfg(target_os = "windows")]
+    let name = "EDSDK.dll";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let name = "libEDSDK.so";
+    #[cfg(not(any(windows, unix)))]
+    let name = "EDSDK";
+    let p = dir.join(name);
+    p.exists().then(|| p.to_string_lossy().into_owned())
+}
+
+macro_rules! edsdk_bindings {
+    ($( fn $name:ident ( $($arg:ident : $ty:ty),* $(,)? ) -> $ret:ty; )*) => {
+        #[allow(non_snake_case)]
+        struct Edsdk {
+            $( $name: unsafe extern "C" fn($($ty),*) -> $ret, )*
+        }
+
+        static EDSDK: OnceLock<Edsdk> = OnceLock::new();
+
+        fn eds() -> &'static Edsdk {
+            EDSDK.get().expect("EDSDK accessed before load_edsdk()")
+        }
+
+        /// Resolves every EDSDK symbol from a loaded-library handle. `None` if one
+        /// is missing.
+        unsafe fn resolve_edsdk(handle: *mut std::ffi::c_void) -> Option<Edsdk> {
+            Some(Edsdk {
+                $( $name: {
+                    let p = match crate::dynlib::symbol(handle, stringify!($name)) {
+                        Some(p) => p,
+                        None => {
+                            eprintln!("[canon] EDSDK missing symbol: {}", stringify!($name));
+                            return None;
+                        }
+                    };
+                    std::mem::transmute::<
+                        *mut std::ffi::c_void,
+                        unsafe extern "C" fn($($ty),*) -> $ret,
+                    >(p)
+                }, )*
+            })
+        }
+
+        $(
+            #[allow(non_snake_case)]
+            unsafe fn $name($($arg : $ty),*) -> $ret {
+                (eds().$name)($($arg),*)
+            }
+        )*
+
+        /// Loads the EDSDK library staged next to the executable and resolves symbols.
+        fn load_edsdk() -> Result<(), CameraError> {
+            if EDSDK.get().is_some() {
+                return Ok(());
+            }
+            let path = edsdk_lib_path().ok_or(CameraError::SdkError(0xFFFF_FFF0))?;
+            // SAFETY: loads the Canon EDSDK and resolves its documented symbols.
+            let handle = match unsafe { crate::dynlib::open(&path) } {
+                Some(h) => h,
+                None => {
+                    eprintln!("[canon] failed to load EDSDK at {path}");
+                    return Err(CameraError::SdkError(0xFFFF_FFF2));
+                }
+            };
+            match unsafe { resolve_edsdk(handle) } {
+                Some(fns) => {
+                    let _ = EDSDK.set(fns);
+                    Ok(())
+                }
+                None => Err(CameraError::SdkError(0xFFFF_FFF3)),
+            }
+        }
+    };
+}
+
+edsdk_bindings! {
     fn EdsInitializeSDK() -> u32;
     fn EdsTerminateSDK() -> u32;
     fn EdsGetCameraList(out_camera_list_ref: *mut EdsCameraListRef) -> u32;
@@ -129,58 +226,21 @@ extern "C" {
     fn EdsGetDeviceInfo(in_camera_ref: EdsCameraRef, out_device_info: *mut EdsDeviceInfo) -> u32;
     fn EdsOpenSession(in_camera_ref: EdsCameraRef) -> u32;
     fn EdsCloseSession(in_camera_ref: EdsCameraRef) -> u32;
-    fn EdsSetPropertyData(
-        in_ref: EdsBaseRef,
-        in_property_id: u32,
-        in_param: i32,
-        in_property_size: u32,
-        in_property_data: *const std::ffi::c_void,
-    ) -> u32;
+    fn EdsSetPropertyData(in_ref: EdsBaseRef, in_property_id: u32, in_param: i32, in_property_size: u32, in_property_data: *const std::ffi::c_void) -> u32;
     fn EdsCreateMemoryStream(in_buffer_size: u64, out_stream: *mut EdsStreamRef) -> u32;
     fn EdsCreateEvfImageRef(in_stream: EdsStreamRef, out_evf_image: *mut EdsEvfImageRef) -> u32;
     fn EdsDownloadEvfImage(in_camera_ref: EdsCameraRef, in_evf_image: EdsEvfImageRef) -> u32;
     fn EdsGetPointer(in_stream: EdsStreamRef, out_pointer: *mut *mut std::ffi::c_void) -> u32;
     fn EdsGetLength(in_stream: EdsStreamRef, out_length: *mut u64) -> u32;
-    fn EdsGetPropertyData(
-        in_ref: EdsBaseRef,
-        in_property_id: u32,
-        in_param: i32,
-        in_property_size: u32,
-        out_property_data: *mut std::ffi::c_void,
-    ) -> u32;
-    fn EdsGetPropertyDesc(
-        in_ref: EdsBaseRef,
-        in_property_id: u32,
-        out_property_desc: *mut EdsPropertyDesc,
-    ) -> u32;
-    fn EdsSendCommand(
-        in_camera_ref: EdsCameraRef,
-        in_command: u32,
-        in_param: i32,
-    ) -> u32;
+    fn EdsGetPropertyData(in_ref: EdsBaseRef, in_property_id: u32, in_param: i32, in_property_size: u32, out_property_data: *mut std::ffi::c_void) -> u32;
+    fn EdsGetPropertyDesc(in_ref: EdsBaseRef, in_property_id: u32, out_property_desc: *mut EdsPropertyDesc) -> u32;
+    fn EdsSendCommand(in_camera_ref: EdsCameraRef, in_command: u32, in_param: i32) -> u32;
     fn EdsRelease(in_ref: EdsBaseRef) -> u32;
     fn EdsGetEvent() -> u32;
-    fn EdsSetObjectEventHandler(
-        in_camera_ref: EdsCameraRef,
-        in_event: u32,
-        in_handler: Option<unsafe extern "C" fn(u32, EdsBaseRef, *mut std::ffi::c_void) -> u32>,
-        in_context: *mut std::ffi::c_void,
-    ) -> u32;
-    fn EdsSetCameraStateEventHandler(
-        in_camera_ref: EdsCameraRef,
-        in_event: u32,
-        in_handler: Option<unsafe extern "C" fn(u32, u32, *mut std::ffi::c_void) -> u32>,
-        in_context: *mut std::ffi::c_void,
-    ) -> u32;
-    fn EdsGetDirectoryItemInfo(
-        in_dir_item_ref: EdsDirectoryItemRef,
-        out_dir_item_info: *mut EdsDirectoryItemInfo,
-    ) -> u32;
-    fn EdsDownload(
-        in_dir_item_ref: EdsDirectoryItemRef,
-        in_read_size: u64,
-        out_stream: EdsStreamRef,
-    ) -> u32;
+    fn EdsSetObjectEventHandler(in_camera_ref: EdsCameraRef, in_event: u32, in_handler: Option<unsafe extern "C" fn(u32, EdsBaseRef, *mut std::ffi::c_void) -> u32>, in_context: *mut std::ffi::c_void) -> u32;
+    fn EdsSetCameraStateEventHandler(in_camera_ref: EdsCameraRef, in_event: u32, in_handler: Option<unsafe extern "C" fn(u32, u32, *mut std::ffi::c_void) -> u32>, in_context: *mut std::ffi::c_void) -> u32;
+    fn EdsGetDirectoryItemInfo(in_dir_item_ref: EdsDirectoryItemRef, out_dir_item_info: *mut EdsDirectoryItemInfo) -> u32;
+    fn EdsDownload(in_dir_item_ref: EdsDirectoryItemRef, in_read_size: u64, out_stream: EdsStreamRef) -> u32;
     fn EdsDownloadComplete(in_dir_item_ref: EdsDirectoryItemRef) -> u32;
     fn EdsDownloadCancel(in_dir_item_ref: EdsDirectoryItemRef) -> u32;
     fn EdsSetCapacity(in_camera_ref: EdsCameraRef, in_capacity: EdsCapacity) -> u32;
@@ -333,6 +393,12 @@ impl Drop for CanonBackend {
 impl CameraBackend for CanonBackend {
     fn backend_id(&self) -> &str {
         "canon"
+    }
+
+    /// Above the generic backends: the EDSDK gives native EVF live view and the
+    /// full Canon parameter set, so it wins dedup over gphoto2 for the same body.
+    fn dedup_priority(&self) -> i32 {
+        10
     }
 
     fn is_connected(&self, native_id: &str) -> bool {
@@ -503,6 +569,11 @@ let value: i32 = value.parse().map_err(|_| CameraError::NotSupported)?;
 /// Runs on a dedicated OS thread. Initializes the EDSDK, pumps events every
 /// 16 ms, and processes incoming commands.
 fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), CameraError>>) {
+    // On macOS this dlopens EDSDK; elsewhere it is a no-op (EDSDK is linked).
+    if let Err(e) = load_edsdk() {
+        let _ = init_tx.send(Err(e));
+        return;
+    }
     let err = unsafe { EdsInitializeSDK() };
     if err != EDS_ERR_OK {
         let _ = init_tx.send(Err(CameraError::SdkError(err)));
@@ -637,7 +708,11 @@ fn list_devices_impl(connected: &HashMap<String, EdsCameraRef>) -> Result<Vec<De
             };
             let id = DeviceId::new("canon", &port).encode();
             let is_connected = connected.contains_key(port.as_ref() as &str);
-            devices.push(DeviceInfo { id, name, connected: is_connected });
+            // Dedup key so gphoto2 yields EOS bodies to the EDSDK backend. EDSDK
+            // only lists Canon bodies it supports, so unsupported Canons (no
+            // entry here) stay on gphoto2.
+            let dedup_key = Some(crate::camera::dedup_key(USB_VENDOR_CANON, &name));
+            devices.push(DeviceInfo { id, name, connected: is_connected, dedup_key });
         }
 
         unsafe { EdsRelease(camera_ref) };

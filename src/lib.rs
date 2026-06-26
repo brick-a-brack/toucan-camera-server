@@ -1,6 +1,8 @@
 mod auth;
 pub mod backends;
 pub mod camera;
+/// Cross-platform runtime dynamic-library loader (camera SDKs are dlopen'd, not linked).
+pub mod dynlib;
 pub mod routes;
 
 use std::collections::HashMap;
@@ -62,6 +64,9 @@ pub fn build_backends() -> BuiltBackends {
         Err(e) => eprintln!("[error] Remote backend failed to initialize: {e}"),
     }
 
+    // All hardware backends run in-process. (EDSDK and the Nikon SDK coexist on
+    // macOS thanks to build.rs renaming the Nikon driver's clashing ObjC PTP
+    // classes; EDSDK is dlopen'd via `dynlib`, not linked.)
     #[cfg(feature = "backend-canon")]
     match backends::canon::CanonBackend::new() {
         Ok(b) => {
@@ -69,6 +74,15 @@ pub fn build_backends() -> BuiltBackends {
             map.insert(b.backend_id().to_string(), b);
         }
         Err(e) => eprintln!("[error] Canon backend failed to initialize: {e}"),
+    }
+
+    #[cfg(all(feature = "backend-nikon", target_os = "macos"))]
+    match backends::nikon::NikonBackend::new() {
+        Ok(b) => {
+            let b: Arc<dyn camera::CameraBackend> = Arc::new(b);
+            map.insert(b.backend_id().to_string(), b);
+        }
+        Err(e) => eprintln!("[error] Nikon backend failed to initialize: {e}"),
     }
 
     #[cfg(all(feature = "backend-gphoto2", any(target_os = "linux", target_os = "macos")))]
@@ -118,6 +132,20 @@ pub fn build_backends() -> BuiltBackends {
     }
 
     eprintln!("[main] registered backends: {:?}", map.keys().collect::<Vec<_>>());
+
+    // macOS: pre-warm each backend in the background so the first /cameras is fast
+    // — triggers the Nikon SDK warm-up (when a body is present) up front instead of
+    // on the first user request.
+    #[cfg(target_os = "macos")]
+    {
+        let warm: Vec<Arc<dyn camera::CameraBackend>> = map.values().cloned().collect();
+        std::thread::spawn(move || {
+            for backend in warm {
+                let _ = backend.list_devices();
+            }
+        });
+    }
+
     BuiltBackends {
         state: Arc::new(map),
         #[cfg(feature = "backend-remote")]

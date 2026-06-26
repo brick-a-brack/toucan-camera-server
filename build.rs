@@ -22,9 +22,11 @@ fn main() {
 
     if std::env::var_os("CARGO_FEATURE_BACKEND_CANON").is_some() {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-        link_canon_sdk(&manifest_dir);
-        copy_canon_dlls(&manifest_dir);
-        copy_canon_so(&manifest_dir);
+        // EDSDK is loaded dynamically at runtime (see canon::load_edsdk), not
+        // linked. We only stage the library next to the binary per platform.
+        copy_canon_dlls(&manifest_dir); // Windows: EDSDK.dll, EdsImage.dll
+        copy_canon_so(&manifest_dir); // Linux: libEDSDK.so
+        copy_canon_framework(&manifest_dir); // macOS: EDSDK.framework
     }
 
     // backend-gphoto2 links `libgphoto2` via pkg-config (brew/apt). For a
@@ -36,6 +38,11 @@ fn main() {
     // the binary's own Homebrew-baked absolute load commands).
     if std::env::var_os("CARGO_FEATURE_BACKEND_GPHOTO2").is_some() {
         copy_gphoto2_bundle();
+    }
+
+    if std::env::var_os("CARGO_FEATURE_BACKEND_NIKON").is_some() && target.contains("apple") {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+        copy_nikon_runtime(&manifest_dir);
     }
 
     if std::env::var_os("CARGO_FEATURE_BACKEND_WEBCAM_MACOS").is_some()
@@ -121,33 +128,32 @@ fn main() {
     }
 }
 
-fn link_canon_sdk(manifest_dir: &str) {
+/// macOS: stage EDSDK.framework next to the binary so it can be dlopen'd at
+/// runtime (it is no longer linked). `cp -R` preserves the bundle layout.
+fn copy_canon_framework(manifest_dir: &str) {
     let target = std::env::var("TARGET").unwrap_or_default();
+    if !target.contains("apple") {
+        return;
+    }
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let profile_dir = Path::new(&out_dir)
+        .ancestors()
+        .nth(3)
+        .expect("unexpected OUT_DIR structure")
+        .to_path_buf();
 
-    if target.contains("windows") {
-        println!(
-            "cargo:rustc-link-search=native={}/external/EDSDK/EDSDKv132010W/Windows/EDSDK_64/Library",
-            manifest_dir
-        );
-        println!("cargo:rustc-link-lib=EDSDK");
-    } else if target.contains("apple") {
-        println!(
-            "cargo:rustc-link-search=framework={}/external/EDSDK/EDSDKv132010M",
-            manifest_dir
-        );
-        println!("cargo:rustc-link-lib=framework=EDSDK");
-        println!(
-            "cargo:rustc-link-arg=-Wl,-rpath,{}/external/EDSDK/EDSDKv132010M",
-            manifest_dir
-        );
-    } else if target.contains("linux") {
-        let arch_dir = canon_linux_arch_dir(&target);
-        println!(
-            "cargo:rustc-link-search=native={}/external/EDSDK/EDSDKv132010L/Linux/EDSDK/Library/{}",
-            manifest_dir, arch_dir
-        );
-        println!("cargo:rustc-link-lib=EDSDK");
-        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    let src = Path::new(manifest_dir).join("external/EDSDK/EDSDKv132010M/EDSDK.framework");
+    if !src.exists() {
+        println!("cargo:warning=EDSDK.framework not found at {}, skipping", src.display());
+        return;
+    }
+    let dst = profile_dir.join("EDSDK.framework");
+    let _ = std::fs::remove_dir_all(&dst);
+    match Command::new("cp").arg("-R").arg(&src).arg(&profile_dir).status() {
+        Ok(s) if s.success() => {
+            println!("cargo:warning=Copied EDSDK.framework to {}", profile_dir.display())
+        }
+        _ => println!("cargo:warning=failed to copy EDSDK.framework"),
     }
 }
 
@@ -221,6 +227,226 @@ fn copy_canon_so(manifest_dir: &str) {
         println!("cargo:warning=Copied libEDSDK.so to {}", profile_dir.display());
     } else {
         println!("cargo:warning=libEDSDK.so not found, skipping copy: {}", src.display());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Nikon runtime
+//
+// The Nikon Remote SDK (MAID3 CS Layer) is dlopen'd at runtime, not linked. We
+// copy the unzipped runtime artifacts next to the produced binary so the server
+// finds them via `current_exe()`:
+//   - `TypeCommon Module.bundle`           → loaded via dlopen
+//   - `Frameworks/libNkPTPDriver2.dylib`   → referenced as @executable_path/../Frameworks
+//   - `Frameworks/Royalmile.framework`     → referenced via @rpath
+//   - the 3 `.config` files                → deployed to ~/Library/Preferences/Nikon/NXTether at startup
+//
+// Source layout expected (unzip TestApp.zip into this, see docs/NIKON_BACKEND.md):
+//   external/NIKON/runtime/{TypeCommon Module.bundle, Frameworks/, config/*.config}
+//
+// Best-effort: a missing source only logs a warning so non-Nikon builds and dev
+// machines without the SDK keep working.
+// ---------------------------------------------------------------------------
+
+fn copy_nikon_runtime(manifest_dir: &str) {
+    println!("cargo:rerun-if-changed=external/NIKON/runtime");
+
+    let src_root = Path::new(manifest_dir).join("external/NIKON/runtime");
+    if !src_root.exists() {
+        println!(
+            "cargo:warning=Nikon runtime not found at {} — see docs/NIKON_BACKEND.md (unzip TestApp.zip)",
+            src_root.display()
+        );
+        return;
+    }
+
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let profile_dir = Path::new(&out_dir)
+        .ancestors()
+        .nth(3)
+        .expect("unexpected OUT_DIR structure")
+        .to_path_buf();
+
+    // The CFBundle (copied recursively, preserving its internal structure).
+    copy_tree(
+        &src_root.join("TypeCommon Module.bundle"),
+        &profile_dir.join("TypeCommon Module.bundle"),
+    );
+    // Sibling Frameworks/ (the bundle hardcodes @executable_path/../Frameworks).
+    copy_tree(
+        &src_root.join("Frameworks"),
+        &profile_dir.join("Frameworks"),
+    );
+    // Config files sit flat next to the binary; the backend deploys them to
+    // ~/Library/Preferences/Nikon/NXTether at startup.
+    let cfg_dir = src_root.join("config");
+    for name in ["DC_PTP_Config.config", "MaidLayer.config", "RangeValue.config"] {
+        let src = cfg_dir.join(name);
+        if src.exists() {
+            let _ = std::fs::copy(&src, profile_dir.join(name));
+        } else {
+            println!("cargo:warning=Nikon config missing: {}", src.display());
+        }
+    }
+    fixup_nikon_runtime(&profile_dir);
+
+    println!(
+        "cargo:warning=Nikon runtime staged in {}",
+        profile_dir.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Nikon runtime fixup
+//
+// The shipped bundle/dylib are wired for a `.app` layout and carry a download
+// quarantine, so a plain copy fails to dlopen:
+//   - the bundle binary depends on `@executable_path/../Frameworks/libNkPTPDriver2.dylib`
+//     (a hardcoded path that resolves above the binary's dir, not next to it);
+//   - `libNkPTPDriver2.dylib` references `@rpath/Royalmile.framework` but ships
+//     with NO rpath, so `@rpath` never resolves;
+//   - `com.apple.quarantine` blocks loading.
+//
+// We rewrite both to `@loader_path`-relative paths that hold wherever the binary
+// lives, add the missing rpath, strip quarantine, and ad-hoc re-sign the Mach-Os
+// we touched (modifying a signed Mach-O invalidates its signature; arm64 refuses
+// to load it otherwise). Best-effort: failures only warn.
+// ---------------------------------------------------------------------------
+
+fn fixup_nikon_runtime(profile_dir: &Path) {
+    if !std::env::var("TARGET").unwrap_or_default().contains("apple") {
+        return;
+    }
+
+    let bundle_bin = profile_dir
+        .join("TypeCommon Module.bundle/Contents/MacOS/TypeCommon Module");
+    let ptp_dylib = profile_dir.join("Frameworks/libNkPTPDriver2.dylib");
+
+    // Strip the download quarantine from everything we staged.
+    for target in [
+        profile_dir.join("TypeCommon Module.bundle"),
+        profile_dir.join("Frameworks"),
+    ] {
+        run_quiet("xattr", &["-cr".as_ref(), target.as_os_str()]);
+    }
+
+    // Bundle binary: hardcoded `@executable_path/../Frameworks/...` → a path
+    // relative to the binary itself. From `<bundle>/Contents/MacOS`, three `..`
+    // reach the dir that holds the bundle and our binary, then `Frameworks/`.
+    if bundle_bin.exists() {
+        run_quiet(
+            "install_name_tool",
+            &[
+                "-change".as_ref(),
+                "@executable_path/../Frameworks/libNkPTPDriver2.dylib".as_ref(),
+                "@loader_path/../../../Frameworks/libNkPTPDriver2.dylib".as_ref(),
+                bundle_bin.as_os_str(),
+            ],
+        );
+        run_quiet("codesign", &["--force".as_ref(), "--sign".as_ref(), "-".as_ref(), bundle_bin.as_os_str()]);
+    }
+
+    // PTP driver: give it an rpath so its `@rpath/Royalmile.framework` resolves
+    // to the sibling framework in the same Frameworks dir (`@loader_path`), and
+    // rename its clashing ObjC PTP classes so it can coexist with the Canon EDSDK.
+    if ptp_dylib.exists() {
+        patch_nikon_objc_classes(&ptp_dylib);
+        run_quiet("install_name_tool", &["-add_rpath".as_ref(), "@loader_path".as_ref(), ptp_dylib.as_os_str()]);
+        run_quiet("codesign", &["--force".as_ref(), "--sign".as_ref(), "-".as_ref(), ptp_dylib.as_os_str()]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Nikon / Canon ObjC class clash
+//
+// libNkPTPDriver2.dylib (Nikon) and EDSDK (Canon) both define Objective-C classes
+// with identical names (PTPOperationRequest, PTPEvent, …). The ObjC runtime keeps
+// only one class per name process-wide, so loading both SDKs in one process
+// corrupts one of the drivers. macOS has no per-dylib ObjC namespace (no
+// dlmopen), so to keep a SINGLE process we rename those classes IN the Nikon
+// dylib to unique names. The rename is byte-for-byte same length (`PTP` → `NkP`),
+// matched as full NUL-terminated strings, so file offsets are untouched. Only the
+// runtime registration NAME changes; the dylib's exported `_OBJC_CLASS_$_*`
+// symbols and its internal class-ref pointers are unchanged (macOS two-level
+// namespace binds them per-dylib), so Nikon keeps using its own classes — they
+// just no longer collide with Canon's. The dylib is ad-hoc re-signed afterwards.
+// ---------------------------------------------------------------------------
+
+fn patch_nikon_objc_classes(dylib: &Path) {
+    // PTP* → NkP* (same length). Matched WITH the trailing NUL so a prefix
+    // (e.g. "PTPEvent") doesn't hit a longer name ("PTPEventPrivateData").
+    const RENAMES: &[(&[u8], &[u8])] = &[
+        (b"PTPOperationRequestPrivateData\0", b"NkPOperationRequestPrivateData\0"),
+        (b"PTPOperationRequest\0", b"NkPOperationRequest\0"),
+        (b"PTPOperationResponsePrivateData\0", b"NkPOperationResponsePrivateData\0"),
+        (b"PTPOperationResponse\0", b"NkPOperationResponse\0"),
+        (b"PTPEventPrivateData\0", b"NkPEventPrivateData\0"),
+        (b"PTPEvent\0", b"NkPEvent\0"),
+    ];
+
+    let mut bytes = match std::fs::read(dylib) {
+        Ok(b) => b,
+        Err(e) => {
+            println!("cargo:warning=Nikon ObjC rename: cannot read {}: {e}", dylib.display());
+            return;
+        }
+    };
+
+    let mut total = 0usize;
+    for (from, to) in RENAMES {
+        assert_eq!(from.len(), to.len(), "ObjC rename must be same length");
+        let mut start = 0;
+        while let Some(rel) = bytes[start..].windows(from.len()).position(|w| w == *from) {
+            let at = start + rel;
+            bytes[at..at + to.len()].copy_from_slice(to);
+            start = at + to.len();
+            total += 1;
+        }
+    }
+
+    if total == 0 {
+        println!("cargo:warning=Nikon ObjC rename: no clashing class names found (already patched?)");
+        return;
+    }
+    match std::fs::write(dylib, &bytes) {
+        Ok(()) => println!("cargo:warning=Nikon: renamed {total} clashing ObjC class name(s) in libNkPTPDriver2"),
+        Err(e) => println!("cargo:warning=Nikon ObjC rename: write failed: {e}"),
+    }
+}
+
+/// Runs a tool, logging non-zero exits as a cargo warning (best-effort fixup).
+fn run_quiet(program: &str, args: &[&std::ffi::OsStr]) {
+    match Command::new(program).args(args).output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => println!(
+            "cargo:warning=Nikon fixup: {program} exited {} — {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => println!("cargo:warning=Nikon fixup: failed to run {program}: {e}"),
+    }
+}
+
+/// Recursively copies a directory tree (used for the CFBundle / Frameworks).
+fn copy_tree(src: &Path, dst: &Path) {
+    if !src.exists() {
+        println!("cargo:warning=Nikon runtime source missing: {}", src.display());
+        return;
+    }
+    if src.is_dir() {
+        let _ = std::fs::create_dir_all(dst);
+        if let Ok(entries) = std::fs::read_dir(src) {
+            for entry in entries.flatten() {
+                copy_tree(&entry.path(), &dst.join(entry.file_name()));
+            }
+        }
+    } else {
+        if let Some(parent) = dst.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::copy(src, dst) {
+            println!("cargo:warning=Nikon copy {} failed: {e}", src.display());
+        }
     }
 }
 

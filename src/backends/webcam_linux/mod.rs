@@ -212,6 +212,7 @@ impl CameraBackend for WebcamLinuxBackend {
                 connected: connected.contains_key(&native_id),
                 id: DeviceId::new("webcam_linux", &native_id).encode(),
                 name,
+                dedup_key: None,
             });
         }
 

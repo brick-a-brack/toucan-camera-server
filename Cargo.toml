@@ -14,8 +14,15 @@ path = "src/main.rs"
 [features]
 default = []
 backend-canon = []
+# Nikon Z bodies via the Nikon Remote SDK (MAID3 CS Layer). macOS only; the SDK
+# bundle is dlopen'd at runtime (see docs/NIKON_BACKEND.md). On Linux, Nikon
+# stays on backend-gphoto2. Coexists with the Canon EDSDK because build.rs renames
+# the Nikon driver's clashing ObjC PTP classes.
+backend-nikon = ["dep:nusb"]
 backend-webcam-linux = ["dep:v4l", "dep:image"]
-backend-gphoto2 = ["dep:gphoto2"]
+# nusb resolves the real USB vendor of a libgphoto2 device, so gphoto2 can dedup
+# cameras owned by a dedicated SDK backend (Canon/Nikon) by USB vendor, not name.
+backend-gphoto2 = ["dep:gphoto2", "dep:nusb"]
 backend-webcam-macos = []
 backend-webcam-windows = ["dep:windows", "dep:windows-core", "dep:image"]
 backend-camera2-android = ["dep:image"]
@@ -51,6 +58,7 @@ windows = { version = "0.58", optional = true, features = [
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
 ] }
+nusb = { version = "0.2.4", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 v4l = { version = "0.14", optional = true }

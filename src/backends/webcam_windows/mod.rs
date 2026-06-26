@@ -605,7 +605,7 @@ fn list_devices_impl(
 
             let id = DeviceId::new("webcam-windows", &native_id).encode();
             let is_connected = connected.contains_key(&native_id);
-            result.push(DeviceInfo { id, name, connected: is_connected });
+            result.push(DeviceInfo { id, name, connected: is_connected, dedup_key: None });
             mf_native_ids.push(native_id);
             // activate dropped here, calls Release
         }
@@ -2116,7 +2116,7 @@ fn ds_list_devices(
             let native_id = format!("{}{}", DS_PREFIX, device_path);
             let id = DeviceId::new("webcam-windows", &native_id).encode();
             let connected = connected_ds.contains_key(&native_id);
-            result.push(DeviceInfo { id, name, connected });
+            result.push(DeviceInfo { id, name, connected, dedup_key: None });
 
             if hr == S_FALSE { break; }
         }
