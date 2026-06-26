@@ -876,13 +876,19 @@
       const img = document.getElementById(`lv-img-${id}`);
       if (!panel) return;
 
-      // Replace the img element to force-abort the MJPEG connection.
-      // Setting img.src = '' is not reliable — the browser may keep buffering
-      // the multipart stream. Replacing the node removes the resource fetch entirely.
-      const newImg = document.createElement('img');
-      newImg.id = `lv-img-${id}`;
-      newImg.alt = 'Live view';
-      img.replaceWith(newImg);
+      // Force-abort the MJPEG connection. Simply removing/replacing the node is
+      // not enough — Chrome keeps the multipart/x-mixed-replace stream open in
+      // the background. Changing the src to a terminal value makes the browser
+      // cancel the in-flight request for this element; we also drop the onerror
+      // handler first so the cancellation doesn't surface as a spurious error.
+      if (img) {
+        img.onerror = null;
+        img.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+        const newImg = document.createElement('img');
+        newImg.id = `lv-img-${id}`;
+        newImg.alt = 'Live view';
+        img.replaceWith(newImg);
+      }
 
       panel.classList.remove('open');
       delete liveViews[id];
