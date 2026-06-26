@@ -241,7 +241,7 @@ fn copy_canon_so(manifest_dir: &str) {
 //   - `Frameworks/Royalmile.framework`     → referenced via @rpath
 //   - the 3 `.config` files                → deployed to ~/Library/Preferences/Nikon/NXTether at startup
 //
-// Source layout expected (unzip TestApp.zip into this, see docs/NIKON_BACKEND.md):
+// Source layout expected (unzip TestApp.zip into this, see src/backends/nikon/README.md):
 //   external/NIKON/runtime/{TypeCommon Module.bundle, Frameworks/, config/*.config}
 //
 // Best-effort: a missing source only logs a warning so non-Nikon builds and dev
@@ -254,7 +254,7 @@ fn copy_nikon_runtime(manifest_dir: &str) {
     let src_root = Path::new(manifest_dir).join("external/NIKON/runtime");
     if !src_root.exists() {
         println!(
-            "cargo:warning=Nikon runtime not found at {} — see docs/NIKON_BACKEND.md (unzip TestApp.zip)",
+            "cargo:warning=Nikon runtime not found at {} — see src/backends/nikon/README.md (unzip TestApp.zip)",
             src_root.display()
         );
         return;

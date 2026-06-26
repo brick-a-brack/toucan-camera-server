@@ -11,8 +11,7 @@
 //! this backend controls **one camera at a time** — `connect` refuses a second
 //! device while one is already connected.
 //!
-//! See `docs/NIKON_BACKEND.md` for the integration notes, constants, and the
-//! list of things still to validate against real hardware.
+//! See `README.md` in this directory for the integration notes and constants.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
@@ -41,7 +40,7 @@ extern "C" {
 const RTLD_NOW: c_int = 0x2;
 
 // ---------------------------------------------------------------------------
-// MAID constants (see docs/NIKON_BACKEND.md and Maid3d1.h)
+// MAID constants (see README.md and Maid3d1.h)
 // ---------------------------------------------------------------------------
 
 /// Nikon's USB vendor id — used to build the cross-backend dedup key so gphoto2
@@ -92,7 +91,7 @@ const SHOOTING_TYPE_SINGLE: i32 = 1;
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
-// FFI structs (mirror NkTypes.h / Maid3.h — see docs/NIKON_BACKEND.md)
+// FFI structs (mirror NkTypes.h / Maid3.h — see README.md)
 // ---------------------------------------------------------------------------
 
 #[repr(C)]
@@ -138,8 +137,8 @@ struct NkMaidRange {
 
 /// Live view payload. The header is opaque (`[u8; 884]`, size derived from
 /// `NkTypes.h`); only `ul_lv_image_size` and `p_image_data` are read. The
-/// trailing pointer reproduces the same padding as the C struct (pImageData at
-/// offset 896). **Validate the 884 figure before trusting live view.**
+/// trailing pointer reproduces the same padding as the C struct (`p_image_data`
+/// at offset 896, asserted by the `live_view_data_layout` unit test).
 #[repr(C)]
 struct NkMaidLiveViewData {
     ul_lv_image_size: u32,
@@ -271,9 +270,6 @@ unsafe extern "C" fn data_proc(
     RESULT_NO_ERROR
 }
 
-/// Set once we have logged the first live view frame's diagnostics.
-static LV_DIAG_LOGGED: AtomicBool = AtomicBool::new(false);
-
 /// Receives MAID events. We record the saved file path on `ImageSaved`
 /// (mac: `data` is a `char*` to the path).
 unsafe extern "C" fn event_proc(_ref_client: *mut c_void, ul_event: u32, data: u64) {
@@ -292,10 +288,9 @@ unsafe extern "C" fn event_proc(_ref_client: *mut c_void, ul_event: u32, data: u
 /// Receives a live view JPEG. Owns the data: copy it out, then free as the SDK
 /// sample does (`free(pImageData)` + `free(struct)`).
 ///
-/// We only accept payloads that start with the JPEG SOI marker (`FF D8 FF`).
-/// This doubles as a runtime check of the `NkMaidLiveViewData` layout: if the
-/// `[u8; 884]` header size were wrong, `p_image_data` would point at garbage and
-/// the marker check would fail (logged once via `LV_DIAG_LOGGED`).
+/// We only accept payloads starting with the JPEG SOI marker (`FF D8 FF`), which
+/// also guards against a wrong `NkMaidLiveViewData` header size (`p_image_data`
+/// would then point at garbage that fails the marker check).
 unsafe extern "C" fn live_view_data_proc(_ref: *mut c_void, data: *mut NkMaidLiveViewData) -> i32 {
     if data.is_null() {
         return RESULT_NO_ERROR;
@@ -307,23 +302,6 @@ unsafe extern "C" fn live_view_data_proc(_ref: *mut c_void, data: *mut NkMaidLiv
             lv.ul_lv_image_size as usize,
         );
         let is_jpeg = bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF;
-
-        if !LV_DIAG_LOGGED.swap(true, Ordering::Relaxed) {
-            let head: Vec<String> = bytes.iter().take(4).map(|b| format!("{b:02X}")).collect();
-            eprintln!(
-                "[nikon] first live view frame: {} bytes, head=[{}], jpeg={}",
-                lv.ul_lv_image_size,
-                head.join(" "),
-                is_jpeg
-            );
-            if !is_jpeg {
-                eprintln!(
-                    "[nikon] WARNING: live view payload is not a JPEG — verify the \
-                     NkMaidLiveViewData header size (see docs/NIKON_BACKEND.md)"
-                );
-            }
-        }
-
         if is_jpeg {
             if let Ok(mut g) = LATEST_LV_FRAME.lock() {
                 *g = Some(bytes.to_vec());
@@ -406,19 +384,10 @@ impl NikonBackend {
             .spawn(move || sdk_thread(cmd_rx, ready_thread))
             .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
 
-        let warming = Arc::new(AtomicBool::new(false));
-        // Debug aid: NIKON_EAGER_INIT=1 forces InitializeSDK now, even with no
-        // camera attached (bypasses the lazy nusb gate) — to observe the SDK's
-        // baseline init. Pair with NIKON_SDK_DEBUG=1 for verbose logs.
-        if std::env::var_os("NIKON_EAGER_INIT").is_some() {
-            warming.store(true, Ordering::Relaxed);
-            let _ = cmd_tx.send(Command::Warmup);
-        }
-
         Ok(Self {
             tx: cmd_tx,
             ready,
-            warming,
+            warming: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -1064,7 +1033,6 @@ fn capture_photo_impl(
     shoot.shooting_type = SHOOTING_TYPE_SINGLE;
     let err =
         unsafe { (sdk.start_shooting)(&mut shoot, std::ptr::null_mut(), std::ptr::null_mut()) };
-    eprintln!("[nikon] capture: StartShooting(Single) -> {err}");
     if err != RESULT_NO_ERROR && err != RESULT_WAITING_2ND_RELEASE {
         return Err(CameraError::SdkError(err as u32));
     }
@@ -1076,8 +1044,6 @@ fn capture_photo_impl(
     loop {
         let from_event = LAST_SAVED_PATH.lock().unwrap().clone();
         if let Some(file) = resolve_capture_file(from_event.as_deref(), &tmp_dir) {
-            let via = if from_event.is_some() { "ImageSaved event" } else { "temp-dir fallback" };
-            eprintln!("[nikon] capture: image at {} (via {via})", file.display());
             let bytes = std::fs::read(&file).map_err(|_| CameraError::SdkError(0x0000_0002))?;
             let _ = std::fs::remove_file(&file);
 
@@ -1169,12 +1135,6 @@ fn raw_label(v: i64) -> String {
     v.to_string()
 }
 
-/// Whether to log raw enum codes (set `NIKON_DUMP_PARAMS=1` to build/verify the
-/// label decode tables against real hardware).
-fn params_dump_enabled() -> bool {
-    std::env::var_os("NIKON_DUMP_PARAMS").is_some()
-}
-
 /// `eNkMAIDExposureMode` (Maid3d1.h). Unknown codes fall back to the raw value.
 fn decode_exposure_mode(v: i64) -> String {
     match v {
@@ -1199,10 +1159,11 @@ fn decode_exposure_mode(v: i64) -> String {
     .to_string()
 }
 
-// The decoders below use Nikon's common numeric conventions but are HEURISTIC:
-// the CS-Layer enum codes are not documented and may differ per body. Each one
-// falls back to the raw code outside a plausible range, and `NIKON_DUMP_PARAMS=1`
-// logs the real codes so the tables can be confirmed/corrected against hardware.
+// The decoders below are a numeric fallback only: on the validated Z bodies the
+// SDK returns these capabilities as PackedString (human labels used directly).
+// They use Nikon's common numeric conventions and are HEURISTIC — the CS-Layer
+// enum codes are undocumented and may differ per body, so each falls back to the
+// raw code outside a plausible range.
 
 /// Aperture (f-number). Nikon's PTP convention encodes the f-number ×100
 /// (e.g. 560 → f/5.6, 1400 → f/14).
@@ -1333,17 +1294,14 @@ fn read_enum_param(sdk: &Sdk, spec: &EnumSpec, disabled: bool) -> Option<CameraP
 
     let param = unsafe {
         let en = &*(data as *const NkMaidEnum);
-        let (labels, dump_repr): (Vec<String>, String) = if en.ul_type == ARRAY_TYPE_PACKED_STRING {
-            let strings = parse_packed_strings(en.p_data, en.ul_elements as usize);
-            let repr = format!("{strings:?}");
-            (strings, repr)
+        let labels: Vec<String> = if en.ul_type == ARRAY_TYPE_PACKED_STRING {
+            parse_packed_strings(en.p_data, en.ul_elements as usize)
         } else {
             let elem_bytes = en.w_physical_bytes.max(1) as usize;
-            let codes: Vec<i64> = (0..en.ul_elements as usize)
+            (0..en.ul_elements as usize)
                 .map(|i| read_enum_element(en.p_data, i, elem_bytes))
-                .collect();
-            let repr = format!("{codes:?}");
-            (codes.into_iter().map(spec.decode).collect(), repr)
+                .map(spec.decode)
+                .collect()
         };
 
         let options: Vec<ParameterOption> = labels
@@ -1353,12 +1311,6 @@ fn read_enum_param(sdk: &Sdk, spec: &EnumSpec, disabled: bool) -> Option<CameraP
             .collect();
         let current = en.ul_value.to_string(); // current index into the array
 
-        if params_dump_enabled() {
-            eprintln!(
-                "[nikon] cap 0x{:04X} ({:?}): type={}, current_idx={}, values={dump_repr}",
-                spec.cap_id, spec.param_type, en.ul_type, en.ul_value
-            );
-        }
         // Free the SDK-allocated value array and the enum struct.
         if !en.p_data.is_null() {
             free(en.p_data);
@@ -1618,8 +1570,8 @@ fn jpeg_label_rank(label: &str) -> Option<(u8, bool)> {
     Some((quality, l.ends_with('*')))
 }
 
-/// Reads an image-quality enum cap's options (logging them) and returns the
-/// index of the best JPEG-only option, if any.
+/// Reads an image-quality enum cap's options and returns the index of the best
+/// JPEG-only option, if any.
 fn find_jpeg_index(sdk: &Sdk, cap_id: u32) -> Option<u32> {
     let mut data: *mut c_void = std::ptr::null_mut();
     let mut data_type: i32 = 0;
@@ -1640,10 +1592,6 @@ fn find_jpeg_index(sdk: &Sdk, cap_id: u32) -> Option<u32> {
         } else {
             Vec::new() // image quality is a PackedString on Z bodies
         };
-        eprintln!(
-            "[nikon] capture: image-quality cap 0x{cap_id:04X} type={} current_idx={} options={labels:?}",
-            en.ul_type, en.ul_value
-        );
         if !en.p_data.is_null() {
             free(en.p_data);
         }
@@ -1676,9 +1624,7 @@ fn ensure_jpeg_quality(sdk: &Sdk) {
     }
     for cap in [CAP_COMPRESSION_LEVEL, CAP_FILE_TYPE] {
         if let Some(idx) = find_jpeg_index(sdk, cap) {
-            let r = set_enum_index(sdk, cap, idx);
-            eprintln!("[nikon] capture: set image quality (cap 0x{cap:04X}) to JPEG index {idx} -> {r:?}");
-            if r.is_ok() {
+            if set_enum_index(sdk, cap, idx).is_ok() {
                 return;
             }
         }

@@ -4,27 +4,30 @@ Working notes for `backend-nikon` (Nikon "Remote SDK v2.0.0", MAID3-based,
 package `S-SDKZ-200BF-ALLIN`). Kept separate from `CLAUDE.md` because the SDK is
 git-ignored (`external/NIKON/`) and these details aren't derivable from the repo.
 
-Status: **work in progress.** Compiles (cfg-gated to macOS + feature) and unit
-tests pass; `external/NIKON/runtime/` is populated and `build.rs` stages it next
-to the binary. Not yet validated against a real camera. Sections flagged
-**[VALIDATE]** need a hardware/runtime check.
+**Status: working, validated on a Z5II** (detection, connect, parameters, live
+view, capture). macOS + the `backend-nikon` feature only. Builds with the
+`backend-gphoto2` / `backend-canon` features alongside it (the three coexist —
+see §2 and §6). Body-specific items still relying on heuristics are noted inline.
 
-Done so far: dlopen loader + actor thread, single-camera session,
-list/connect/disconnect/live-view/capture wiring, parameter reader with
+What it does: dlopen CS-Layer loader + `nikon-sdk` actor thread, single-camera
+session, list/connect/disconnect/live-view/capture, and a curated parameter set —
 `ExposureMode` decoded to labels, `ExposureComp` as a RangeSelect over its steps,
-and `IsoControl` auto-ISO split (ISO disabled while auto).
+`IsoControl` auto-ISO split (ISO disabled while auto), and a JPEG-only
+`ImageQuality` (RAW / RAW+JPEG options hidden).
 
-Robustness/instrumentation added for the hardware test (items 1 & 2):
-- **Capture** filters on `kNkMAIDEvent_ImageSaved` (=8) for the saved path, and
-  falls back to the newest file in a freshly-emptied temp dir if no event fires.
-- **Live view** accepts only payloads starting with the JPEG SOI marker
-  (`FF D8 FF`) and logs the first frame's size + head bytes once — a failed
-  marker means the `NkMaidLiveViewData` header size (884) is wrong.
-- **Parameter labels**: `Aperture` (f-number ×100), `ISO` (direct), `ShutterSpeed`
-  (packed num/den) now decode with plausibility guards + raw fallback. These are
-  HEURISTIC — set `NIKON_DUMP_PARAMS=1` to log the real codes and confirm/correct.
-
-See the hardware test checklist at the bottom.
+Key runtime facts confirmed on hardware:
+- **Enum capabilities come back as `PackedString`** (`NkMAIDEnum.ul_type == 7`):
+  `p_data` is NUL-separated label strings, so the SDK hands us human labels for
+  free (e.g. `"JPEG Fine"`, `"1/250"`, `"F5.6"`, `"ISO 100"`). The numeric
+  `decode_*` functions are a fallback for bodies that report raw codes instead.
+- **Live view** payloads start with the JPEG SOI marker (`FF D8 FF`); the
+  `NkMaidLiveViewData` header size (884) is correct — `p_image_data` lands at
+  offset 896 (asserted by the `live_view_data_layout` unit test).
+- **Capture** routes the image to SDRAM and reads it back from a temp dir. The
+  `ImageSaved` event reports a *bare* filename (e.g. `"SImage.001.jpg"`), so the
+  path is resolved against the save dir, with a newest-file fallback. Capture is
+  JPEG-only: a RAW body is forced to a JPEG image quality first, and a non-JPEG
+  result is refused.
 
 ---
 
@@ -32,7 +35,7 @@ See the hardware test checklist at the bottom.
 
 Supported bodies: Z9, Z8, Z6III, Z7II, Z6II, Z7, Z6, Z5II, Z5, Zf, Z50II, Z50,
 Z30, Zfc, ZR. Platforms: **Windows + macOS only (no Linux)** — on Linux, Nikon
-stays on the gphoto2 (ptp2) backend.
+stays on the gphoto2 (ptp2) backend. This backend is macOS-only for now.
 
 Two API layers exist; we use the **CS Layer (Simplified API)**, a flat set of C
 functions, not the low-level MAID3 entry point.
@@ -59,43 +62,37 @@ external/NIKON/runtime/
   config/MaidLayer.config
   config/RangeValue.config
 ```
-This directory is now populated (unzipped from `TestApp.zip` and rearranged; the
-zip nests the files under `TestApp/TestApp/` and `TestApp/Frameworks/`).
-`build.rs::copy_nikon_runtime()` copies it next to the binary on every build.
+Populated by unzipping `TestApp.zip` and rearranging it (the zip nests files
+under `TestApp/TestApp/` and `TestApp/Frameworks/`).
+`build.rs::copy_nikon_runtime()` copies it next to the binary on every build, then
+`fixup_nikon_runtime()` rewrites the install names / rpaths and re-signs (see §6).
 
 The 3 `.config` files must end up in `~/Library/Preferences/Nikon/NXTether/`
-(hardcoded path inside the SDK). The backend deploys them at startup from the
-files placed next to the binary.
+(hardcoded path inside the SDK). `deploy_config_files()` copies them there at
+startup from the files staged next to the binary.
 
 ---
 
 ## 2. Hard constraints
 
-- **Single camera only** (ReadMe + the CS-Layer session is global: no device
-  handle on `ConnectDevice`/`StartLiveView`/`StartShooting`). The backend keeps
-  one `connected: Option<(native_id, device_id_u32)>` and refuses a 2nd connect.
+- **Single camera only** (the CS-Layer session is global: no device handle on
+  `ConnectDevice`/`StartLiveView`/`StartShooting`). The backend keeps one
+  `Session { native_id, live_view_running }` and refuses a 2nd connect.
 - **Event loop**: callbacks (events, live view, shoot completion) are delivered
-  while the SDK is pumped. We run everything on a dedicated `nikon-sdk` OS thread
-  (actor pattern, like the Canon backend) and pump in the recv loop.
-- **Coexistence (server-level dedup, not in any backend)**: the dedup is a server
-  policy in `routes/cameras.rs::dedup_devices`, not gphoto2-specific logic.
-  - Each `DeviceInfo` carries an optional `dedup_key` = `camera::dedup_key(usb_vendor,
-    model)` (`"04b0:z5ii"`), built by any backend that can identify the body.
-  - `CameraBackend::dedup_priority()` ranks backends; SDK backends return 10,
-    generic ones 0.
-  - `list_cameras` gathers every backend's devices and `dedup_devices` keeps, per
-    `dedup_key`, only the highest-priority one. Keyless devices are never deduped.
-  - The Nikon SDK / Canon EDSDK set the key from their model name + known vendor.
-    gphoto2 sets it from the real USB vendor (nusb) + its model (or the USB product
-    string when libgphoto2 only knows the body generically, so a Z5II shown as
-    "USB PTP Class Camera" still keys to "04b0:z5ii").
-  - **Key property**: SDK backends only enumerate models they support, so a key
-    only ever collides for an SDK-driven body. Older Nikon/Canon (no SDK entry)
-    have no collision and **stay on gphoto2 automatically** — no model lists, and
-    **gphoto2 knows nothing about the Canon/Nikon backends**. Adding a vendor SDK =
-    new backend sets its `dedup_key` + `dedup_priority`; nothing else changes.
-  Build with BOTH features: `--features backend-nikon,backend-gphoto2`. Conflicts
-  with NX Tether / Camera Control Pro / Nikon Transfer.
+  while the SDK is pumped. Everything runs on a dedicated `nikon-sdk` OS thread
+  (actor pattern over `std::sync::mpsc`, like the Canon backend).
+- **Lazy, nusb-gated init**: `InitializeSDK` (and especially `EnumDevices`) probe
+  the USB/PTP bus and can take ~10–18 s when a non-Nikon PTP body is also
+  attached. So `new()` returns immediately and the SDK is initialized only once a
+  Nikon-vendor (`0x04B0`) USB device is actually present (`nikon_usb_present()`
+  via `nusb`); `list_devices` fires a one-shot background warm-up and reports
+  empty until ready. Enumeration is cached (refreshed only when idle and stale,
+  never while a session is live — re-probing mid-session breaks the running Nikon
+  live view).
+- **Coexistence** with the Canon EDSDK and gphoto2 backends — see §6 (ObjC class
+  clash) and §3 (server-level dedup). Build with the features together, e.g.
+  `--features backend-nikon,backend-gphoto2`. Conflicts with NX Tether / Camera
+  Control Pro / Nikon Transfer (quit them first).
 
 ---
 
@@ -104,26 +101,31 @@ files placed next to the binary.
 | trait method | CS Layer |
 |---|---|
 | `backend_id` | `"nikon"` |
-| `list_devices` | `EnumDevices` → `NkMAIDEnumDevices.pDeviceData[]` (`ID:u32`, `Name`, `Availability`) |
+| `dedup_priority` | `10` (SDK backend wins dedup over gphoto2 for the same body) |
+| `list_devices` | `EnumDevices` → `NkMAIDEnumDevices.pDeviceData[]` (`ID:u32`, `Name`) |
 | `connect` | `ConnectDevice(id_u32)` (+ single-camera guard) |
-| `disconnect` | `DisconnectDevice()` |
-| `get_parameters` | `GetCapability(id, kNkSDKGetSettingSupportedValueArray)` → the supported-codes array; `ulValue` = current **index** |
+| `disconnect` | `StopLiveView` then `DisconnectDevice()` |
+| `get_parameters` | `GetCapability(id, SupportedValueArray)` → options; `ulValue` = current **index** |
 | `set_parameter` | read enum (mode 0) for a valid struct, set `ulValue = index`, `pData = NULL`, `SetCapability(id, &enum, EnumPtr)` |
+| `get_live_view_frame` | `StartLiveView` once; JPEG arrives via `LiveViewDataProc`; kept in a global latest-frame cell |
+| `capture_photo` | SaveMedia=SDRAM + `SetImageVideoSavePath(tmp)` + `StartShooting(Single)`; read the file from the `ImageSaved` event (newest-file fallback) |
 
 **Enum semantics (important):** `NkMAIDEnum.ulValue` is an **index** into the
 supported-values array, NOT a raw code (confirmed in Nikon's sample: the menu
-lists `index - label` and set assigns the chosen index to `ulValue`). Options
-must be read with mode 1 (`SupportedValueArray`) — mode 0 (`Value`) does not fill
-the array, which produced duplicate/garbage options. So `option.value = index`,
-`label = decode(rawCode[index])`, `current = ulValue`.
-| `get_live_view_frame` | `StartLiveView` once; JPEG arrives via `LiveViewDataProc`; kept in a global latest-frame cell |
-| `capture_photo` | SaveMedia=SDRAM + `SetImageVideoSavePath(tmp)` + `StartShooting(Single)`; read the file from the `ImageSaved` event |
+lists `index - label` and set assigns the chosen index to `ulValue`). Options must
+be read with mode 1 (`SupportedValueArray`) — mode 0 (`Value`) does not fill the
+array, which produced duplicate/garbage options. So `option.value = index`,
+`label = decode(rawCode[index])` (or the PackedString label), `current = ulValue`.
+
+Parameters are curated like the Canon/gphoto2 backends: ISO is split into an
+`IsoAuto` boolean + an `Iso` selector (disabled while auto is on); `ExposureComp`
+is a RangePtr exposed as a RangeSelect over its discrete steps; `ImageQuality`
+hides RAW / RAW+JPEG options (capture is JPEG-only).
 
 ### Native ID
 `EnumDevices` returns a numeric `ID:u32` + a `Name`. We use
 `native_id = "<ID>|<Name>"` so the opaque ID survives re-enumeration by name and
-we can still recover the numeric `ID` for `ConnectDevice`. **[VALIDATE]** whether
-`ID` is stable across reconnects; if not, match by `Name`.
+we can still recover the numeric `ID` for `ConnectDevice`.
 
 ---
 
@@ -143,58 +145,64 @@ we can still recover the numeric `ID` for `ConnectDevice`. **[VALIDATE]** whethe
 | Sensitivity (ISO) | 0x8117 |
 | WBMode | 0x8118 |
 | IsoControl | 0x816c |
-| LiveViewStatus | 0x823e |
-| GetLiveViewImage | 0x8247 |
-| LiveViewProhibit | 0x825e |
 | SaveMedia | 0x8305 |
-| LiveViewSelector | 0x8334 |
 
 `eNkMAIDSaveMedia`: Card=0, SDRAM=1, Card_SDRAM=2.
 `eNkSDKGetSettingRequestType`: Value=0, SupportedValueArray=1, DefaultValue=2, CapabilityInfo=3.
-`eNkMAIDDataType`: UnsignedPtr=6, RangePtr=14, ArrayPtr=15, **EnumPtr=16**.
-`eNkMAIDResult`: NoError=0, Pending=+1, Waiting_2ndRelease=168.
+`eNkMAIDArrayType`: PackedString=7 (the form the Z bodies use for enum caps).
+`eNkMAIDDataType`: BooleanPtr=4, UnsignedPtr=6, RangePtr=14, ArrayPtr=15, **EnumPtr=16**.
+`eNkMAIDResult`: NoError=0, Pending=+1, Waiting_2ndRelease=168, StartLiveViewFailed=-109, LiveViewAlreadyStarted=-112.
 `eNkSDKShootingType`: Single=1, Continuous=2, Interval=3, SelfTimer=4, BULB=5, …
-`eNkMAIDEvent`: ImageSaved index = `CapChangeValueOnly(6) + 1 + 1`… use the value
-from `Maid3.h` enum order (AddChild=0 … ImageSaved). **[VALIDATE]** numeric value.
+`eNkMAIDEvent`: `ImageSaved = 8` (mac: event `data` is a `char*` to the saved path).
 
 ### Live view data layout
 `NkMAIDLiveViewData { u32 ulLvImageSize; u16 wPhysicalBytes; u16 wLogicalBits;
 NKMAIDLiveViewHeader header; void* pImageData; }`. The header is modelled as
 `[u8; 884]` (size derived field-by-field from `NkTypes.h`; AFAREASIZE=96 → four
-96×2-byte arrays = 768 of it). With the trailing pointer this gives the same
-padding as C (pImageData at offset 896). **[VALIDATE]** the 884 figure on the
-real struct (e.g. `sizeof` check in a tiny C probe) before trusting live view —
-a wrong size means reading `pImageData` from garbage.
+96×2-byte arrays = 768 of it). With the trailing pointer this puts `pImageData` at
+offset 896 — matching the C struct, and asserted by the `live_view_data_layout`
+unit test plus the runtime JPEG-SOI check on every frame.
 
 The `LiveViewDataProc` callback **owns** the data: copy the JPEG out, then `free`
-`pImageData` and the struct (matches the sample). Our `AllocateMemory`/`FreeMemory`
-passed to `InitializeSDK` are `malloc`/`free`.
+`pImageData` and the struct (matches the sample). Our `AllocateMemory` /
+`FreeMemory` passed to `InitializeSDK` are `malloc` / `free`.
 
 `InitializeSDK` requires **all five** `NkMAIDCSCallback` procs to be non-null
 (UIRequest, Event, Progress, Data, LiveView) — leaving any null returns
 `-93 = kNkMAIDAPIResult_InvalidArguments`. We supply no-op stubs for the three we
 don't otherwise need (UIRequest auto-answers with the request's default button).
 
----
-
-## 5. Open questions / TODO
-
-- **[VALIDATE] capture file delivery**: confirm SaveMedia=SDRAM makes the SDK
-  write the JPEG to `SetImageVideoSavePath` and fire `ImageSaved` (event 8) with
-  the full path (mac: `data` is `char*`). Now filtered on event 8 with a
-  newest-file-in-temp-dir fallback, so it should work either way — but verify the
-  event actually carries the path (vs. the fallback doing all the work).
-- **[VALIDATE] decode heuristics**: `Aperture`=code/100, `ISO`=code, `ShutterSpeed`
-  =packed num/den. Run with `NIKON_DUMP_PARAMS=1`, compare the logged codes to the
-  camera's displayed values, and correct the decoders / add the `WBMode` table.
-- **`libMCARecLib3.dylib`** mentioned in docs but absent from the zip — check at
-  runtime whether the bundle needs it.
-- **`Sensitivity` vs `ISOControlSensitivity`**: confirm 0x8117 is the right ISO
-  capability for stills (there are several ISO-related caps).
+`SetLoggingLevel(2)` (Error) is used by default; `NIKON_SDK_DEBUG=1` raises it to
+Debug (3) to trace the (chatty) SDK — useful when diagnosing a slow init.
 
 ---
 
-## 6b. Canon EDSDK + Nikon SDK coexistence (ObjC class clash)
+## 5. Server-level dedup (Nikon ↔ gphoto2 ↔ Canon)
+
+The dedup is a server policy in `routes/cameras.rs::dedup_devices`, not
+backend-specific logic.
+- Each `DeviceInfo` carries an optional `dedup_key` = `camera::dedup_key(usb_vendor,
+  model)` (`"04b0:z5ii"`), built by any backend that can identify the body.
+- `CameraBackend::dedup_priority()` ranks backends; SDK backends return 10, generic
+  ones 0. `list_cameras` gathers every backend's devices and keeps, per
+  `dedup_key`, only the highest-priority one. Keyless devices are never deduped.
+- The Nikon SDK / Canon EDSDK set the key from their model name + known vendor.
+  gphoto2 sets it from the real USB vendor (nusb) + its model (or the USB product
+  string when libgphoto2 only knows the body generically, so a Z5II shown as
+  "USB PTP Class Camera" still keys to "04b0:z5ii").
+- **Key property**: SDK backends only enumerate models they support, so a key only
+  ever collides for an SDK-driven body. Older Nikon/Canon (no SDK entry) have no
+  collision and **stay on gphoto2 automatically** — no model lists, and gphoto2
+  knows nothing about the Canon/Nikon backends. Adding a vendor SDK = a new backend
+  that sets its `dedup_key` + `dedup_priority`; nothing else changes.
+
+(Nikon's USB product string carries a "DSC" prefix the SDK name lacks — SDK name
+"Z5_2" → "04b0:z5ii" but USB product "DSC Z5_2" → "04b0:dscz5ii" — so
+`normalize_model` strips "dsc" alongside "nikon" to align them.)
+
+---
+
+## 6. Canon EDSDK + Nikon SDK coexistence (ObjC class clash)
 
 Both `libNkPTPDriver2.dylib` (Nikon) and EDSDK (Canon) define Objective-C classes
 with identical names (`PTPOperationRequest`, `PTPOperationResponse`, `PTPEvent`, +
@@ -210,50 +218,44 @@ those classes in the staged `libNkPTPDriver2.dylib`:
   per-dylib), so Nikon keeps using its own classes, now non-colliding;
 - the dylib is ad-hoc re-signed afterwards (verified: still dlopens, signature OK).
 
-Verified structurally (rename applied in both arch slices, dylib loads + signs).
-**[VALIDATE]** on hardware that a Canon (EDSDK) and a Nikon work simultaneously
-with no `objc[..]: Class … implemented in both …` warnings and no Canon deadlock.
-If new clashing class names appear in the warning, add them to the `RENAMES` list.
-Small residual risk: if libNkPTPDriver2 ever looks these classes up by name
-(`objc_getClass`), the rename would break that lookup — not observed.
+14 occurrences are renamed across both arch slices. Residual risk: if
+libNkPTPDriver2 ever looks these classes up by name (`objc_getClass`), the rename
+would break that lookup (not observed); if Nikon ships new clashing class names,
+add them to the `RENAMES` list. gphoto2 is C (no ObjC), so it never clashed.
 
-The Nikon SDK is loaded eagerly at startup (the class rename removed the reason to
-defer it); it no longer needs `nusb`.
+### dlopen + install_name fixup
+We `dlopen` the bundle's inner binary. The shipped bundle is wired for a `.app`
+layout (`@executable_path/../Frameworks`), `libNkPTPDriver2.dylib` references
+`@rpath/Royalmile.framework` with no rpath, and a download-quarantine xattr is set
+— a plain copy fails to load. `build.rs::fixup_nikon_runtime()` rewrites both to
+`@loader_path`-relative paths, adds the rpath, strips quarantine (`xattr -cr`), and
+ad-hoc re-signs the modified Mach-Os. Verified: dlopen succeeds.
 
-## 7. Hardware test checklist (real Z body)
-
-1. `external/NIKON/runtime/` is populated; `cargo build --features backend-nikon`
-   stages the bundle/Frameworks/configs next to the binary. Quit NX Tether /
-   Camera Control Pro / Nikon Transfer first.
-2. Run with the dump on, e.g.
-   `NIKON_DUMP_PARAMS=1 BIND_ADDR=127.0.0.1:8040 ./toucan-camera-server`
-   (token via the usual mechanism). `GET /cameras` → the Z should appear under
-   backend `nikon`.
-3. `PUT /cameras/{id}/connect`, then `GET /cameras/{id}/parameters`. Check stderr
-   for `[nikon] cap 0x…: codes=[…]` lines; compare to the body's UI and fix the
-   `decode_*` tables (especially ShutterSpeed and add WBMode).
-4. `GET /cameras/{id}/liveview`. Expect one `[nikon] first live view frame: …
-   jpeg=true` log. If `jpeg=false`, the `NkMaidLiveViewData` header size is wrong.
-5. `POST /cameras/{id}/capture` → should return a JPEG. Note in the log whether
-   the path came from the ImageSaved event or the temp-dir fallback.
-6. Report back the dumped codes + any errors so the tables/flows can be finalised.
-- **dlopen + install_name fixup (done)**: we `dlopen` the bundle's inner binary.
-  The shipped bundle is wired for a `.app` layout (`@executable_path/../Frameworks`)
-  and `libNkPTPDriver2.dylib` references `@rpath/Royalmile.framework` with no rpath,
-  plus a download quarantine — a plain copy fails to load. `build.rs::fixup_nikon_runtime()`
-  now rewrites both to `@loader_path`-relative paths, adds the rpath, strips
-  quarantine, and ad-hoc re-signs the modified Mach-Os. Verified: dlopen succeeds.
-- **macOS CI packaging**: the build.rs fixup needs `install_name_tool`, `codesign`,
-  `xattr` (standard on macOS runners). Also lipo/relink the Nikon dylibs like the
-  gphoto2 closure, and ship the config files. For a real signed/notarised build,
-  re-sign with a real identity instead of ad-hoc.
+**macOS CI packaging**: the fixup needs `install_name_tool`, `codesign`, `xattr`
+(standard on macOS runners). lipo/relink the Nikon dylibs like the gphoto2 closure
+and ship the config files. For a real signed/notarised build, re-sign with a real
+identity instead of ad-hoc.
 
 ---
 
-## 6. Files touched
-- `Cargo.toml` — `backend-nikon` feature.
+## 7. Remaining heuristics / per-body unknowns
+
+- **Numeric `decode_*` fallback**: on the validated bodies enum caps are
+  PackedString (labels for free), so `decode_aperture` (code/100), `decode_iso`
+  (direct), `decode_shutter_speed` (packed num/den) and `decode_exposure_mode`
+  only run on bodies that report raw numeric codes. They guard on plausible ranges
+  and fall back to the raw value. `WBMode` has no numeric decoder (raw fallback).
+- **`Sensitivity` (0x8117) vs other ISO caps**: confirmed adequate for stills on
+  the Z5II; other bodies may expose ISO differently.
+
+---
+
+## 8. Files
+- `Cargo.toml` — `backend-nikon` feature (pulls `nusb`).
 - `src/backends/mod.rs` — module decl (cfg macos + feature).
-- `src/backends/nikon/mod.rs` — backend (this work).
-- `build.rs` — `copy_nikon_runtime()`.
+- `src/backends/nikon/mod.rs` — the backend.
+- `build.rs` — `copy_nikon_runtime()` / `fixup_nikon_runtime()` / `patch_nikon_objc_classes()`.
 - `src/lib.rs` — registration in `build_backends()`.
-- `src/backends/gphoto2/mod.rs` — `owned_by_other_backend()` now also defers Nikon.
+- `src/routes/cameras.rs` — server-level `dedup_devices()`.
+</content>
+</invoke>
