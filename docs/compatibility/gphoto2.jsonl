@@ -17,18 +17,18 @@
 {"backend": "gphoto2", "brand": "Amazing", "model": "Amazing Spiderman", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "American Idol", "model": "American Idol Keychain Camera", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Apple", "model": "Apple QuickTake 1x0", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Apple", "model": "iPad (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Apple", "model": "iPad", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Apple", "model": "iPad Air", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Apple", "model": "iPhone (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Apple", "model": "iPhone 3G (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Apple", "model": "iPhone 3GS (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Apple", "model": "iPhone 4 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Apple", "model": "iPhone 4S (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Apple", "model": "iPhone 5 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Apple", "model": "iPod Touch (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Apple", "model": "iPod Touch 2G (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Apple", "model": "iPod Touch 3rd Gen (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Apple", "model": "QuickTake 200 (Sierra Mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Apple", "model": "iPhone", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Apple", "model": "iPhone 3G", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Apple", "model": "iPhone 3GS", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Apple", "model": "iPhone 4", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Apple", "model": "iPhone 4S", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Apple", "model": "iPhone 5", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Apple", "model": "iPod Touch", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Apple", "model": "iPod Touch 2G", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Apple", "model": "iPod Touch 3rd Gen", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Apple", "model": "QuickTake 200", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Argus", "model": "Argus Bean Sprout", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Argus", "model": "Argus DC-1510", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Argus", "model": "Argus DC1512e", "liveview": false, "capture": false, "configuration": false}
@@ -42,9 +42,9 @@
 {"backend": "gphoto2", "brand": "Argus", "model": "DC-2200", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Aries", "model": "Aries ATC-0017", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Aries", "model": "Aries Digital Keychain Camera, ITEM 128986", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Barbie Camera", "model": "Barbie Camera (Digital Blue)", "liveview": false, "capture": false, "configuration": false}
+{"backend": "gphoto2", "brand": "Barbie Camera", "model": "Barbie Camera", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Benq", "model": "DC1300", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "Canon EOS (WLAN)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Canon EOS", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 100 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 110 IS", "liveview": false, "capture": false, "configuration": true}
@@ -54,95 +54,78 @@
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 180", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 185", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 255HS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 30 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 30 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 30", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 300", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 300 HS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 330", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 40 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 400", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 400 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 430 (normal mode)", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 430 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 50 (normal mode)", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 50 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 500 (normal mode)", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 500 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 55 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 60 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 65 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 70 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 700 (normal mode)", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 700 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 75 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 750 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 40", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 400", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 430", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 50", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 500", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 55", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 60", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 65", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 70", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 700", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 75", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 750", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 80 IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 800 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 800", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 85 IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 850 IS (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 850 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 860 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 90 IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 900Ti (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 900Ti", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 95 IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 950 IS (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 960 IS (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 950 IS", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 960 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 970 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 980 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS 990 IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS i (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS i (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS i5 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS II (normal mode)", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS II (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS IIs", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS IIs (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS iZ (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS i", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS i5", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS II", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS IIs", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS iZ", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS v", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS v2", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS v3 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS v3 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS Wireless (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS v3", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital IXUS Wireless", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital PowerShot SX730HS", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Digital Rebel XT (normal mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Digital Rebel XT", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Digital unknown 3", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Elura 50 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Elura 50 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Elura 65 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Elura 50", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Elura 65", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 1000D", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 100D", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 10D", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 10D (PTP mode)", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 1100D", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 1200D", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 1300D", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 1500D", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 1D C", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 1D Mark II (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 1D Mark III (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS 1D Mark II", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS 1D Mark III", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 1D Mark IV", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 1D X", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 1D X MarkII", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 1D X MarkIII", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 2000D", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 200D", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 20D (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 20D (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS 20D", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 250D", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 300D (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 300D (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 30D (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 350D", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 350D (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 350D (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS 300D", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS 30D", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS 350D", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 4000D", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 400D (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 40D (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 450D (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS 400D", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS 40D", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS 450D", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 500D", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 50D", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 550D", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 5D (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS 5D (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS 5D", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 5D Mark II", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 5D Mark III", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 5D Mark IV", "liveview": true, "capture": true, "configuration": true}
@@ -167,14 +150,12 @@
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS 90D", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS D30", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS D60", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS Digital Rebel (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS Digital Rebel (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS Digital Rebel XTi (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS Kiss Digital (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS Kiss Digital (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS Kiss Digital N (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS Kiss Digital X (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS Kiss X2 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS Digital Rebel", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS Digital Rebel XTi", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS Kiss Digital", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS Kiss Digital N", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS Kiss Digital X", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS Kiss X2", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS Kiss X3", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS M", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS M10", "liveview": true, "capture": true, "configuration": true}
@@ -205,9 +186,9 @@
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS Rebel T6", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS Rebel T7i", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS Rebel T8i", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "EOS Rebel XSi (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "EOS Rebel XSi", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "EOS RP", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "FV M1 (normal mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "FV M1", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "IXUS 125HS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "IXUS 160", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "IXUS 165", "liveview": false, "capture": false, "configuration": true}
@@ -216,32 +197,31 @@
 {"backend": "gphoto2", "brand": "Canon", "model": "IXY 3000 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "IXY DIGITAL", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "IXY DIGITAL 300", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital 40 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital 430 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital 500 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital 55 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital 600 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital L2 (normal mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital 40", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital 430", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital 500", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital 55", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital 600", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "IXY Digital L2", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "IXY DV M", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "IXY DV M2 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "MV630i (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "MV650i (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "MV750i (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "MVX 10i (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "MVX 3i (normal mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "IXY DV M2", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "MV630i", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "MV650i", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "MV750i", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "MVX 10i", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "MVX 3i", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "MVX100i", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "MVX150i (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "MVX25i (normal mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "MVX150i", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "MVX25i", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "MVX2i", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "MVX3i (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "MVX3i", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Optura 10", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Optura 20", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Optura 20 (normal mode)", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Optura 200 MC", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Optura 300 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Optura 40 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Optura 600 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Optura Xi (normal mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Optura 300", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Optura 40", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Optura 600", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Optura Xi", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A10", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A100", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A1000 IS", "liveview": false, "capture": false, "configuration": true}
@@ -258,61 +238,50 @@
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A2500", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A2600", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A30", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A300", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A300 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A300", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A3000 IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A310", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A310 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A310", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A3100 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A3500IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A40", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A400", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A400 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A400", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A4000IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A410 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A420 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A430 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A450 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A460 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A410", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A420", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A430", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A450", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A460", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A470", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A480", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Powershot A495", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A5", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A5 Zoom", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A50", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A510 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A510 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A520 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A530 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A540 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A550 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A560 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A570 IS (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A510", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A520", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A530", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A540", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A550", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A560", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A570 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A580", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A590 IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A60", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A60 (PTP)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A610 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A610 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A620 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A630 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A640 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A650IS (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A70", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A70 (PTP)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A700 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A710 IS (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A720 IS (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A75", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A75 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A80 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A80 (PTP)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A60", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A610", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A620", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A630", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A640", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A650IS", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A70", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A700", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A710 IS", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A720 IS", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A75", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A80", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A800", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A810", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A85 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A85 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A95 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A95 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A85", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot A95", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot D10", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot ELPH 350 HS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot Elph135", "liveview": false, "capture": false, "configuration": true}
@@ -325,92 +294,79 @@
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G15", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G16", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G2", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G3 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G3 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G3", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G3 X", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G5 (normal mode)", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G5 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G5", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G5X", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G6 (normal mode)", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "Powershot G6 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G7 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G6", "liveview": false, "capture": false, "configuration": false}
+{"backend": "gphoto2", "brand": "Canon", "model": "Powershot G6", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G7", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G7 X", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G7 X Mark II", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G7 X Mark III", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G9 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G9", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot G9 X Mark II", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot IXY Digital L (normal mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot IXY Digital L", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot Pro70", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot Pro90 IS", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S1 IS (normal mode)", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S1 IS (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S1 IS", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S10", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S100", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S100 (2000)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S110 (2001)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S110 (PTP Mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S100", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S110", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S120", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S2 IS (normal mode)", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S2 IS (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S2 IS", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S20", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S200", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S230 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S230 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S3 IS (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S230", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S3 IS", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S30", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S300", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S330", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S40", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S400", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S400 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S410 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S410 Digital ELPH (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S45 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S45 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S5 IS (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S50 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S50 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S500 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S500 Digital ELPH (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S60 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Powershot S60 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S70 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Powershot S70 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S80 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S400", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S410", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S410 Digital ELPH", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S45", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S5 IS", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S50", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S500", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S500 Digital ELPH", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S60", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Powershot S60", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S70", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Powershot S70", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S80", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot S95", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD10 Digital ELPH (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD100 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD100 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD1000 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD110 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD10 Digital ELPH", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD100", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD1000", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD110", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD110 Digital ELPH", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Canon", "model": "Powershot SD1100 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Powershot SD1200 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD1300 IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD20 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD200 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD200 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD40 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD400 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD430 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD450 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD500 (normal mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD500 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD600 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD630 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD700 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD750 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD20", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD200", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD40", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD400", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD430", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD450", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD500", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD600", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD630", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD700", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD750", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD770 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD780 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "Powershot SD790 IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD850 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD850", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD880 IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD900 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD900", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD940 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD970 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SD990", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SX10 IS", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "Powershot SX100 IS (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "Powershot SX100 IS", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SX110 IS", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SX120 IS", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "PowerShot SX130 IS", "liveview": false, "capture": false, "configuration": true}
@@ -443,7 +399,7 @@
 {"backend": "gphoto2", "brand": "Canon", "model": "Rebel T4i", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "SX 620HS", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Canon", "model": "SX 720HS", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Canon", "model": "ZR70MC (normal mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Canon", "model": "ZR70MC", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Casio", "model": "EX-S770", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Casio", "model": "EX-Z120", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Casio", "model": "EX-Z65", "liveview": false, "capture": false, "configuration": true}
@@ -473,7 +429,7 @@
 {"backend": "gphoto2", "brand": "DC-N130ta", "model": "DC-N130ta", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "DigiPix", "model": "AXIS N705", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Digital", "model": "Digital camera, CD302N", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Digital", "model": "DIGITAL MID#0020509 (no-name camera)", "liveview": false, "capture": false, "configuration": false}
+{"backend": "gphoto2", "brand": "Digital", "model": "DIGITAL MID#0020509", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "DigitalDream", "model": "DIGITAL 2000", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "DigitalDream", "model": "Enigma1.3", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "DigitalDream", "model": "la ronde", "liveview": false, "capture": false, "configuration": false}
@@ -498,7 +454,7 @@
 {"backend": "gphoto2", "brand": "Epson", "model": "PhotoPC 700", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Epson", "model": "PhotoPC 800", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Epson", "model": "PhotoPC 850z", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Fuji", "model": "Fuji X (WLAN)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Fuji", "model": "Fuji X", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Fuji", "model": "DS-7", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Fuji", "model": "DX-10", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Fuji", "model": "DX-5", "liveview": false, "capture": true, "configuration": true}
@@ -552,7 +508,6 @@
 {"backend": "gphoto2", "brand": "Fuji", "model": "FinePix Z700EXR", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Fuji", "model": "Fujifilm A220", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Fuji", "model": "Fujifilm GFX 100S", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Fuji", "model": "Fujifilm GFX 100S (2nd)", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Fuji", "model": "Fujifilm GFX100", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Fuji", "model": "Fujifilm GFX100 II", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Fuji", "model": "Fujifilm X100F", "liveview": false, "capture": false, "configuration": true}
@@ -599,7 +554,7 @@
 {"backend": "gphoto2", "brand": "Genius", "model": "Genius Smart 300, version 2", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Global Point", "model": "Global Point 3 in 1 Digital Fun Graffiti 00044", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Global Point", "model": "Global Point Clipster", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Global Point", "model": "Global Point Splash Mini (underwater camera)", "liveview": false, "capture": false, "configuration": false}
+{"backend": "gphoto2", "brand": "Global Point", "model": "Global Point Splash Mini", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "GoPro", "model": "HERO +", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "GoPro", "model": "HERO 3+", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "GoPro", "model": "HERO 4", "liveview": false, "capture": false, "configuration": true}
@@ -624,55 +579,54 @@
 {"backend": "gphoto2", "brand": "HP", "model": "HP PhotoSmart C200", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "HP", "model": "HP PhotoSmart C30", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart ...", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 120 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 120", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 215", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 217 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 317 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 318 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 320 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 407 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 417 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 43x (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 507 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 517 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 607 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 612 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 217", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 317", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 318", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 320", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 407", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 417", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 43x", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 507", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 517", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 607", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 612", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 618", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 620 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 635 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 707 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 715 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 717 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 720 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 733 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 735 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 812 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 817 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 818 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 850 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 620", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 635", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 707", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 715", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 717", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 720", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 733", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 735", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 812", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 817", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 818", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 850", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 912", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 935 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 945 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 935", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart 945", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart C500", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart C500 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart C500 2", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart E327 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart E331 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart E427 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M22 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M23 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M307 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M415 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M425 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M525 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M527 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M547 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M725 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M727 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M737 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart R742 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart R927 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart R967 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart E327", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart E331", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart E427", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M22", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M23", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M307", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M415", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M425", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M525", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M527", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M547", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M725", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M727", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart M737", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart R742", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart R927", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "HP", "model": "PhotoSmart R967", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "iClick", "model": "iClick 5X", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "INNOVAGE", "model": "INNOVAGE Mini Digital, CD302N", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Intel", "model": "Intel Pocket PC Camera", "liveview": false, "capture": false, "configuration": false}
@@ -725,7 +679,7 @@
 {"backend": "gphoto2", "brand": "Kodak", "model": "CX7525", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Kodak", "model": "CX7530", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Kodak", "model": "DC220", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Kodak", "model": "DC240 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Kodak", "model": "DC240", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Kodak", "model": "DC260", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Kodak", "model": "DC265", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Kodak", "model": "DC290", "liveview": false, "capture": true, "configuration": true}
@@ -785,13 +739,13 @@
 {"backend": "gphoto2", "brand": "Konica", "model": "Konica Q-M100V", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Konica", "model": "Konica Q-M200", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Konica", "model": "e-mini", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE A2 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE A200 (PictBridge mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE X21 (PictBridge mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE Z2 (PictBridge mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE Z3 (PictBridge mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE Z5 (PictBridge mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE Z6 (PictBridge mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE A2", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE A200", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE X21", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE Z2", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE Z3", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE Z5", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Konica Minolta", "model": "DiMAGE Z6", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Largan", "model": "Chameleon", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Largan", "model": "Chameleon Mega", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Largan", "model": "Easy 800", "liveview": false, "capture": false, "configuration": false}
@@ -801,8 +755,7 @@
 {"backend": "gphoto2", "brand": "Leica", "model": "M11 Monochrom", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Leica", "model": "M9", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Leica", "model": "Q3", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Leica", "model": "SL", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Leica", "model": "SL (Typ 601)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Leica", "model": "SL", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Leica", "model": "SL3", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "LG", "model": "LG T5100", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Logitech", "model": "Logitech Clicksmart 310", "liveview": false, "capture": false, "configuration": false}
@@ -822,186 +775,186 @@
 {"backend": "gphoto2", "brand": "Mustek", "model": "gSmart mini 3", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Mustek", "model": "MDC 800", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Nexxtech", "model": "Nexxtech Mini Digital Camera", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Nikon 1 (WLAN)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Nikon DSLR (WLAN)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Nikon 1", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Nikon DSLR", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 100", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 2000 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 2100 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 2100 (Sierra Mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 2200 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 2200v1.1 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 2500 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 2500 (Sierra Mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 2000", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 2100", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 2100", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 2200", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 2200v1.1", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 2500", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 2500", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 300", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 3100 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 3200 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 3500 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 3500 (Sierra Mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 3700 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4100 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 4100 (Sierra Mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4200 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4300 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 4300 (Sierra Mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4500 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4600 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4600a (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4800 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5000 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5200 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5400 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5600 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5700 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5900 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 3100", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 3200", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 3500", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 3500", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 3700", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4100", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 4100", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4200", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4300", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 4300", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4500", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4600", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4600a", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 4800", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5000", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5200", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5400", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5600", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5700", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 5900", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 700", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 7600 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 7900 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 7600", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 7900", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 800", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 8700 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 8700", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 880", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 8800 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 885 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 8800", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 885", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 900", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 900S", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 910", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 9400  (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix 9400 ", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 950", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 950S", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 990", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "CoolPix 995", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix A (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix A900 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix AW100 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix AW110 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix AW130 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix A", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix A900", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix AW100", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix AW110", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix AW130", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix B500", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix B700 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L1 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L10 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L100 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L11 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L110 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L12 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L120 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L16 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L19 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L20 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L23 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix B700", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L1", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L10", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L100", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L11", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L110", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L12", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L120", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L16", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L19", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L20", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L23", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L27", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L340", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L4 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L810  (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L820  (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L4", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L810 ", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L820 ", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix L840", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P1 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P100 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P1000 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P1100 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P2 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P300 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P330 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P4 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P50 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P500 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P5000 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P510 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P5100 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P520 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P60 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P6000 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P7000 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P7100 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P7700 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P7800 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P80 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P80 v1.1 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P90 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P900 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P1", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P100", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P1000", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P1100", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P2", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P300", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P330", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P4", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P50", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P500", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P5000", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P510", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P5100", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P520", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P60", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P6000", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P7000", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P7100", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P7700", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P7800", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P80", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P80 v1.1", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P90", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix P900", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S01", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S02", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S2 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S200 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S220 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S225 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S2500 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S2600 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S2", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S200", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S220", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S225", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S2500", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S2600", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S2700", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S2900", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S3000 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S3100 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S3000", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S3100", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S3200", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S3300 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S3300", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S3500", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S3600", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S3700", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S4 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S4300 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S500 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S5100 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S6 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S60 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S6000 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S620 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S6300 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S4", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S4300", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S500", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S5100", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S6", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S60", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S6000", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S620", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S6300", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S6800", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S7c (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S8000 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S7c", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S8000", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S8200", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S9100 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S9500 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S9100", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S9500", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix S9700", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix SQ (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "D100 (Sierra Mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "D2H SLR (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "D2Hs (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "D2X SLR (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "D3 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "D50 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D100 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D200 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D2Xs (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D300 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3000 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D300s (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3100 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "Coolpix SQ", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "D100", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "D2H SLR", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "D2Hs", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "D2X SLR", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "D3", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "D50", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D100", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D200", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D2Xs", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D300", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3000", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D300s", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3100", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3200", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3300", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3400", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3500", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3s (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3x (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3s", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D3x", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D4", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D40 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D40x (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D40", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D40x", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D4s", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D5", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D500", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D5000 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D5100 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D5000", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D5100", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D5200", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D5300", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D5500", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D5600", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D6", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D60 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D60", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D600", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D610", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D70 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D700 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D7000 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D70s (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D70", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D700", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D7000", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D70s", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D7100", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D7200", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D750", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D7500", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D780", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D80 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D80", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D800", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D800E", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D810", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D810A", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC D850", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D90 (PTP mode)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "DSC D90", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "DSC Df", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "J1", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "J2", "liveview": false, "capture": true, "configuration": true}
@@ -1009,7 +962,7 @@
 {"backend": "gphoto2", "brand": "Nikon", "model": "J4", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "J5", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "KeyMission 170", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Nikon", "model": "KeyMission 360 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Nikon", "model": "KeyMission 360", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "P950", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "S1", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Nikon", "model": "S2", "liveview": false, "capture": true, "configuration": true}
@@ -1089,8 +1042,8 @@
 {"backend": "gphoto2", "brand": "Olympus", "model": "D-600L", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Olympus", "model": "D-600XL", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Olympus", "model": "D-620L", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Olympus", "model": "E series (Control)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Olympus", "model": "E-410 (UMS 2 mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Olympus", "model": "E series", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Olympus", "model": "E-410", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Olympus", "model": "E-520", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Olympus", "model": "E-M1", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Olympus", "model": "E-M1 Mark II", "liveview": true, "capture": true, "configuration": true}
@@ -1120,7 +1073,6 @@
 {"backend": "gphoto2", "brand": "Panasonic", "model": "DC-GH5", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Panasonic", "model": "DMC-FS62", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Panasonic", "model": "DMC-FZ20", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Panasonic", "model": "DMC-FZ20 (alternate id)", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Panasonic", "model": "DMC-FZ38", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Panasonic", "model": "DMC-FZ45", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Panasonic", "model": "DMC-FZ50", "liveview": false, "capture": false, "configuration": true}
@@ -1140,7 +1092,6 @@
 {"backend": "gphoto2", "brand": "Pencam", "model": "TEVION MD 9456", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K01", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K1", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Pentax", "model": "K1 (PTP Mode)", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K100D", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K100DS", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K10D", "liveview": false, "capture": true, "configuration": true}
@@ -1148,8 +1099,7 @@
 {"backend": "gphoto2", "brand": "Pentax", "model": "K200D", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K20D", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K3", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Pentax", "model": "K3 (PTP Mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Pentax", "model": "K3 II (PTP Mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Pentax", "model": "K3 II", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K30", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K3II", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K3III", "liveview": false, "capture": true, "configuration": true}
@@ -1158,14 +1108,11 @@
 {"backend": "gphoto2", "brand": "Pentax", "model": "K5II", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K5IIs", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "K70", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Pentax", "model": "K70 (PTP Mode)", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "KP", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Pentax", "model": "KP (PTP Mode)", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "Optio 33WR", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "Optio 43WR", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Pentax", "model": "Optio 450", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Pentax", "model": "Optio W90", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Pentax", "model": "Optio W90 (Sierra Mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Pentax", "model": "Optio W90", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Philips", "model": "Philips P44417B keychain camera", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Phoebe", "model": "Smartcam", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Pioneer", "model": "DVR-LX60D", "liveview": false, "capture": false, "configuration": true}
@@ -1187,23 +1134,23 @@
 {"backend": "gphoto2", "brand": "QuickPix", "model": "QP1", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "RCA", "model": "CDS1005", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Request", "model": "Request Ultra Slim", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Ricoh Theta (WLAN)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio GX (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio GX 8 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio R1v (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio R3 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio R5 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio RR750 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "GR III (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "GR IIIx (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "GR IV (PTP mode)", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Theta m15 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Theta S (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Theta SC (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Theta V (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "Theta Z1 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Ricoh", "model": "WG-M2 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Rollei", "model": "dr5 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Ricoh Theta", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio GX", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio GX 8", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio R1v", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio R3", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio R5", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Caplio RR750", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "GR III", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "GR IIIx", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "GR IV", "liveview": false, "capture": false, "configuration": false}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Theta m15", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Theta S", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Theta SC", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Theta V", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "Theta Z1", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Ricoh", "model": "WG-M2", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Rollei", "model": "dr5", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sakar", "model": "Sakar 23070  Crayola Digital Camera", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Sakar", "model": "Sakar 28290 and 28292  Digital Concepts Styleshot", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Sakar", "model": "Sakar 92045  Spiderman", "liveview": false, "capture": false, "configuration": false}
@@ -1232,8 +1179,8 @@
 {"backend": "gphoto2", "brand": "Samsung", "model": "S5620", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sanyo", "model": "DSC-X300", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Sanyo", "model": "DSC-X350", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sanyo", "model": "VPC-C5 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sanyo", "model": "VPC-FH1 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sanyo", "model": "VPC-C5", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sanyo", "model": "VPC-FH1", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sanyo", "model": "VPC-G200", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Sanyo", "model": "VPC-G200EX", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Sanyo", "model": "VPC-G210", "liveview": false, "capture": true, "configuration": true}
@@ -1243,8 +1190,8 @@
 {"backend": "gphoto2", "brand": "ScanHex", "model": "ScanHex SX-35c", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "ScanHex", "model": "ScanHex SX-35d", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Scott", "model": "APX 30", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Sea & Sea", "model": "2G (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sea & Sea", "model": "5000G (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sea & Sea", "model": "2G", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sea & Sea", "model": "5000G", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Shark", "model": "Shark 2-in-1 Mini", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Shark", "model": "Shark SDC-513", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Shark", "model": "Shark SDC-519", "liveview": false, "capture": false, "configuration": false}
@@ -1260,163 +1207,146 @@
 {"backend": "gphoto2", "brand": "SiPix", "model": "Snap", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "SiPix", "model": "Web2", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "So.", "model": "Show 301", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Sony", "model": "A6700 (PC Control)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "A6700", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A3000", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A5000 (Control)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A5100 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A5100 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6000 (Control)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6000 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6100 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6100 (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6300 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6300 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6500", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6500 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6600 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6600 (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A68 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A68 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7 (Control)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7 III (MTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7 III (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7 IV (MTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7 IV (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A77 M2 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7III (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7r (Control)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7r II (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7R III (MTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7r III (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7S (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7S (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7S II (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A9 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A99 M2 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-RX10M4 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-RX1R II (Control)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A5000", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A5100", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6000", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6100", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6300", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6500", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A6600", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A68", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7 III", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7 IV", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A77 M2", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7III", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7r", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7r II", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7R III", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7r III", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7S", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A7S II", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A9", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-A99 M2", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-RX10M4", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "Alpha-RX1R II", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "DCR-PC100", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC RX0 II (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-A100 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-A7r IV (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-A7S III (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-A7S III (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-A900 (PTP mode)", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC RX0 II", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-A100", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-A7r IV", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-A7S III", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-A900", "liveview": false, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "DSC-F1", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Sony", "model": "DSC-F55", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-F707V (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-F717 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-F828 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-H1 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-H2 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-H5 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX100V (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX200V (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX20V (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX300 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX400V (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX5V (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX60V (MTP)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-F707V", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-F717", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-F828", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-H1", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-H2", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-H5", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX100V", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX200V", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX20V", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX300", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX400V", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX5V", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX60V", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX80", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX90V (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-N2 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P10 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P100 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P120 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P200 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P30 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P31 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P32 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P41 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P43 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P5 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P50 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P51 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P52 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P71 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P72 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P73 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P92 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P93 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-HX90V", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-N2", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P10", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P100", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P120", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P200", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P30", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P31", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P32", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P41", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P43", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P5", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P50", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P51", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P52", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P71", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P72", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P73", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P92", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-P93", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "DSC-QX30U", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-R1 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX0 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX0 (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX1 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-R1", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX0", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX1", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M2", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M4", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M5 (Control)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M5A (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M5A (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M6 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M6 (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M7 (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100V (Control)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX10M3 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S40 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S60 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S730 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S75 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S780 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S85 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-T1 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-T10 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-T3 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-U10 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-U20 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-V1 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W1 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W12 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W130 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W200 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W35 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W510 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W55 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-WX220 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "DSC-WX350 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "HDR-PJ260VE (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "HDR-PJ710V (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-1 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-1M2 (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-6400 (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7C (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7M2 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7R M2 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7RM3A (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7RM4A (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7RM5 (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-9M3 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILME-FX3 (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ILX-LR1 (PC Control)", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M5", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M5A", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M6", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100M7", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX100V", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-RX10M3", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S40", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S60", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S730", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S75", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S780", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-S85", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-T1", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-T10", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-T3", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-U10", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-U20", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-V1", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W1", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W12", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W130", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W200", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W35", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W510", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-W55", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-WX220", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "DSC-WX350", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "HDR-PJ260VE", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "HDR-PJ710V", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-1", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-1M2", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-6400", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7C", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7M2", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7R M2", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7RM3A", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7RM4A", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-7RM5", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILCE-9M3", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILME-FX3", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ILX-LR1", "liveview": true, "capture": true, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "MSAC-SR1", "liveview": false, "capture": false, "configuration": false}
-{"backend": "gphoto2", "brand": "Sony", "model": "MVC-CD300 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "MVC-CD500 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "NEX-3N (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "NEX5 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "NEX-5N (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "MVC-CD300", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "MVC-CD500", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "NEX-3N", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "NEX5", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "NEX-5N", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "NEX-5R", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "NEX-6", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "NEX-7 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "NEX-7", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "PTP", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "RX100M3 (MTP)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A35 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A350 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "RX100M3", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A35", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A350", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "SLT-A37", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A55 (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A55", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "SLT-A57", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A58", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A58 (Control)", "liveview": false, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A65V (PTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A77V (PTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A58", "liveview": false, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A65V", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "SLT-A77V", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "SLT-A99v", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Sony", "model": "TRV-20E", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "Sony", "model": "UMC-R10C", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ZV-1", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ZV-1 (PC Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ZV-E10 (Control)", "liveview": true, "capture": true, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ZV-E10 (MTP mode)", "liveview": false, "capture": false, "configuration": true}
-{"backend": "gphoto2", "brand": "Sony", "model": "ZV-E10M2 (MTP mode)", "liveview": false, "capture": false, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ZV-1", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ZV-E10", "liveview": true, "capture": true, "configuration": true}
+{"backend": "gphoto2", "brand": "Sony", "model": "ZV-E10M2", "liveview": false, "capture": false, "configuration": true}
 {"backend": "gphoto2", "brand": "Soundstar", "model": "Soundstar TDC-35", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "SpyPen", "model": "Axys", "liveview": false, "capture": false, "configuration": false}
 {"backend": "gphoto2", "brand": "SpyPen", "model": "Cleo", "liveview": false, "capture": false, "configuration": false}
