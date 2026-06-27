@@ -1,8 +1,6 @@
 mod auth;
 pub mod backends;
 pub mod camera;
-/// Cross-platform runtime dynamic-library loader (camera SDKs are dlopen'd, not linked).
-pub mod dynlib;
 pub mod routes;
 
 use std::collections::HashMap;
@@ -66,7 +64,7 @@ pub fn build_backends() -> BuiltBackends {
 
     // All hardware backends run in-process. (EDSDK and the Nikon SDK coexist on
     // macOS thanks to build.rs renaming the Nikon driver's clashing ObjC PTP
-    // classes; EDSDK is dlopen'd via `dynlib`, not linked.)
+    // classes.)
     #[cfg(feature = "backend-canon")]
     match backends::canon::CanonBackend::new() {
         Ok(b) => {

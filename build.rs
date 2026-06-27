@@ -22,11 +22,9 @@ fn main() {
 
     if std::env::var_os("CARGO_FEATURE_BACKEND_CANON").is_some() {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-        // EDSDK is loaded dynamically at runtime (see canon::load_edsdk), not
-        // linked. We only stage the library next to the binary per platform.
-        copy_canon_dlls(&manifest_dir); // Windows: EDSDK.dll, EdsImage.dll
-        copy_canon_so(&manifest_dir); // Linux: libEDSDK.so
-        copy_canon_framework(&manifest_dir); // macOS: EDSDK.framework
+        link_canon_sdk(&manifest_dir);
+        copy_canon_dlls(&manifest_dir);
+        copy_canon_so(&manifest_dir);
     }
 
     // backend-gphoto2 links `libgphoto2` via pkg-config (brew/apt). For a
@@ -128,32 +126,33 @@ fn main() {
     }
 }
 
-/// macOS: stage EDSDK.framework next to the binary so it can be dlopen'd at
-/// runtime (it is no longer linked). `cp -R` preserves the bundle layout.
-fn copy_canon_framework(manifest_dir: &str) {
+fn link_canon_sdk(manifest_dir: &str) {
     let target = std::env::var("TARGET").unwrap_or_default();
-    if !target.contains("apple") {
-        return;
-    }
-    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
-    let profile_dir = Path::new(&out_dir)
-        .ancestors()
-        .nth(3)
-        .expect("unexpected OUT_DIR structure")
-        .to_path_buf();
 
-    let src = Path::new(manifest_dir).join("external/EDSDK/EDSDKv132010M/EDSDK.framework");
-    if !src.exists() {
-        println!("cargo:warning=EDSDK.framework not found at {}, skipping", src.display());
-        return;
-    }
-    let dst = profile_dir.join("EDSDK.framework");
-    let _ = std::fs::remove_dir_all(&dst);
-    match Command::new("cp").arg("-R").arg(&src).arg(&profile_dir).status() {
-        Ok(s) if s.success() => {
-            println!("cargo:warning=Copied EDSDK.framework to {}", profile_dir.display())
-        }
-        _ => println!("cargo:warning=failed to copy EDSDK.framework"),
+    if target.contains("windows") {
+        println!(
+            "cargo:rustc-link-search=native={}/external/EDSDK/EDSDKv132010W/Windows/EDSDK_64/Library",
+            manifest_dir
+        );
+        println!("cargo:rustc-link-lib=EDSDK");
+    } else if target.contains("apple") {
+        println!(
+            "cargo:rustc-link-search=framework={}/external/EDSDK/EDSDKv132010M",
+            manifest_dir
+        );
+        println!("cargo:rustc-link-lib=framework=EDSDK");
+        println!(
+            "cargo:rustc-link-arg=-Wl,-rpath,{}/external/EDSDK/EDSDKv132010M",
+            manifest_dir
+        );
+    } else if target.contains("linux") {
+        let arch_dir = canon_linux_arch_dir(&target);
+        println!(
+            "cargo:rustc-link-search=native={}/external/EDSDK/EDSDKv132010L/Linux/EDSDK/Library/{}",
+            manifest_dir, arch_dir
+        );
+        println!("cargo:rustc-link-lib=EDSDK");
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
     }
 }
 
