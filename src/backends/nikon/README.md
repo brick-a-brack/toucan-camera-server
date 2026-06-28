@@ -5,9 +5,11 @@ package `S-SDKZ-200BF-ALLIN`). Kept separate from `CLAUDE.md` because the SDK is
 git-ignored (`external/NIKON/`) and these details aren't derivable from the repo.
 
 **Status: working, validated on a Z5II** (detection, connect, parameters, live
-view, capture). macOS + the `backend-nikon` feature only. Builds with the
-`backend-gphoto2` / `backend-canon` features alongside it (the three coexist —
-see §2 and §6). Body-specific items still relying on heuristics are noted inline.
+view, capture) on macOS. **Windows builds and links** (same `backend-nikon`
+feature) but is not yet hardware-validated — see §9 for the Windows specifics.
+On macOS it builds with the `backend-gphoto2` / `backend-canon` features
+alongside it (the three coexist — see §2 and §6). Body-specific items still
+relying on heuristics are noted inline.
 
 What it does: dlopen CS-Layer loader + `nikon-sdk` actor thread, single-camera
 session, list/connect/disconnect/live-view/capture, and a curated parameter set —
@@ -35,7 +37,8 @@ Key runtime facts confirmed on hardware:
 
 Supported bodies: Z9, Z8, Z6III, Z7II, Z6II, Z7, Z6, Z5II, Z5, Zf, Z50II, Z50,
 Z30, Zfc, ZR. Platforms: **Windows + macOS only (no Linux)** — on Linux, Nikon
-stays on the gphoto2 (ptp2) backend. This backend is macOS-only for now.
+stays on the gphoto2 (ptp2) backend. Both Windows and macOS are wired up; see §9
+for the Windows port details.
 
 Two API layers exist; we use the **CS Layer (Simplified API)**, a flat set of C
 functions, not the low-level MAID3 entry point.
@@ -120,7 +123,43 @@ array, which produced duplicate/garbage options. So `option.value = index`,
 Parameters are curated like the Canon/gphoto2 backends: ISO is split into an
 `IsoAuto` boolean + an `Iso` selector (disabled while auto is on); `ExposureComp`
 is a RangePtr exposed as a RangeSelect over its discrete steps; `ImageQuality`
-hides RAW / RAW+JPEG options (capture is JPEG-only).
+hides RAW / RAW+JPEG options (capture is JPEG-only); the ShutterSpeed list drops
+the non-deterministic Bulb / Time entries (`is_bulb_or_time`).
+
+Focus mirrors the same split (Nikon has no AF/MF boolean — MF is one of the
+focus-mode values). The settable focus-mode capability differs by body, so
+`resolve_focus_cap` tries `FOCUS_MODE_CAPS` in order — `AFModeAtLiveView` (0x8310,
+the mirrorless live-view cap, the one Z bodies expose), `AFMode` (0x81c3), then the
+legacy `FocusMode` (0x8120, settable on DSLRs) — and uses the first the body
+reports **settable**.
+
+Settability is **not** read per-cap: `GetCapability(CapabilityInfo)` returns
+nothing usable on the Z bodies (settable came back `None`). Instead `connect`
+captures the **`ConnectDevice` capability table** (`NkMAIDEnumCapInfo`, which we
+previously discarded) into `Session.cap_ops` (`cap_id -> ul_operations`), and
+`cap_is_settable` reads the `CAP_OPERATION_SET` bit from it — exactly the source
+the SDK sample's `CheckCapability` uses before writing.
+
+The chosen cap becomes a `FocusAuto` boolean (false = a manual mode) + a
+`FocusMode` select of the AF sub-modes only (manual removed, original SDK indices
+kept as option values), disabled while in MF; if no cap is settable they render
+read-only. The decomposition is the pure, unit-tested `build_focus_params`;
+`is_manual_focus` covers all caps' labels (incl. "MF (fixed)" / "M_FIX"). Set
+`NIKON_SDK_DEBUG=1` to have `dump_focus_caps` log the cap-table size plus the
+ops/settable/labels of FocusMode / AFMode / AFModeAtLiveView on the connected body.
+
+**No manual-focus drive.** There is intentionally no `Focus` (MF jog) control. The
+`MFDrive` cap (0x8249) is inert on the validated Z5II: its `ConnectDevice` ops
+bitmask is `0x0` (no Get/Set/Start), `GetSettingValue` returns `OperationNotSupported`
+(-106), and `StartOperation` returns `UnexpectedError` (-117) — so the MAID
+CS-Layer does not expose remote manual focus there. (The webcam backend still
+exposes `Focus` as an absolute UVC range, and gphoto2 via `manualfocusdrive`; only
+the Nikon SDK path is dropped.)
+
+**Observed on a Z5II** (`NIKON_SDK_DEBUG`): `AFMode` (0x81c3) is absent;
+`FocusMode` (0x8120) reads `MF/AF-S/AF-C/AF-A` but is **not settable** (ops `0xa` =
+Get+GetArray); `AFModeAtLiveView` (0x8310) is settable (ops `0xe` = Get+Set+GetArray)
+and reads the live AF mode — so 0x8310 is the cap to drive on mirrorless.
 
 ### Native ID
 `EnumDevices` returns a numeric `ID:u32` + a `Name`. We use
@@ -144,6 +183,10 @@ we can still recover the numeric `ID` for `ConnectDevice`.
 | MeteringMode | 0x8116 |
 | Sensitivity (ISO) | 0x8117 |
 | WBMode | 0x8118 |
+| FocusMode | 0x8120 |
+| AFMode | 0x81c3 |
+| MFDrive (inert on Z5II — not used) | 0x8249 |
+| AFModeAtLiveView | 0x8310 |
 | IsoControl | 0x816c |
 | SaveMedia | 0x8305 |
 
@@ -247,15 +290,74 @@ identity instead of ad-hoc.
   and fall back to the raw value. `WBMode` has no numeric decoder (raw fallback).
 - **`Sensitivity` (0x8117) vs other ISO caps**: confirmed adequate for stills on
   the Z5II; other bodies may expose ISO differently.
+- **`MFDrive` (0x8249) — unsupported, dropped**: remote manual-focus drive is not
+  exposed by the MAID CS-Layer on the validated Z5II. The cap is present but inert
+  (ops `0x0`: no Get/Set/Start); `GetSettingValue` → `OperationNotSupported` (-106),
+  and `StartOperation(MFDrive)` → `UnexpectedError` (-117), in live view or not. No
+  `Focus` control is emitted for the Nikon backend (the AF/MF toggle + AF sub-mode
+  select via `AFModeAtLiveView` are the working focus controls). If a future body
+  reports `MFDrive` with real ops, revisit — `StartOperation` is the likely trigger
+  but the direction-passing mechanism (it takes no data arg) was never resolved.
 
 ---
 
 ## 8. Files
 - `Cargo.toml` — `backend-nikon` feature (pulls `nusb`).
-- `src/backends/mod.rs` — module decl (cfg macos + feature).
-- `src/backends/nikon/mod.rs` — the backend.
-- `build.rs` — `copy_nikon_runtime()` / `fixup_nikon_runtime()` / `patch_nikon_objc_classes()`.
+- `src/backends/mod.rs` — module decl (cfg `macos`/`windows` + feature).
+- `src/backends/nikon/mod.rs` — the backend (the `dynload` module abstracts the
+  platform dynamic loader; structs are `repr(C, packed(2))` on Windows).
+- `build.rs` — macOS: `copy_nikon_runtime()` / `fixup_nikon_runtime()` /
+  `patch_nikon_objc_classes()`. Windows: `copy_nikon_runtime_windows()`.
 - `src/lib.rs` — registration in `build_backends()`.
 - `src/routes/cameras.rs` — server-level `dedup_devices()`.
+
+---
+
+## 9. Windows build
+
+The same `backend-nikon` feature targets `x86_64-pc-windows-msvc`. Windows is
+**simpler** than macOS — no `.app` layout, no codesigning, no Objective-C class
+clash (the PTP driver is a plain DLL, `NkdPTP.dll`), so none of the §6 fixups
+apply. The CS-Layer API is identical; only the ABI/packaging differs.
+
+### Runtime layout (loose files, no zip)
+The Windows SDK ships ready-to-use binaries in
+`external/NIKON/Module/Win/BinaryFile/`. `build.rs::copy_nikon_runtime_windows()`
+copies these next to the produced binary:
+- `ControlServiceLayer.dll` — the CS-Layer module (same C exports as the macOS
+  bundle: `InitializeSDK`, `EnumDevices`, …), `LoadLibrary`'d at runtime.
+- `NkdPTP.dll`, `NkRoyalmile.dll`, `dnssd.dll` — dependent DLLs. Windows resolves
+  them from the binary's directory (the default search path), so no rpath work.
+- `DC_PTP_Config.config`, `MaidLayer.config`, `RangeValue.config` — deployed by
+  the backend to `%APPDATA%\Nikon\NXTether\` at startup (the Windows analogue of
+  macOS's `~/Library/Preferences/Nikon/NXTether/`).
+
+### Three ABI differences vs macOS (all handled in `mod.rs`)
+1. **Dynamic loader**: the `dynload` module is `dlopen`/`dlsym` on Unix and
+   `LoadLibraryExW`(`LOAD_WITH_ALTERED_SEARCH_PATH`)/`GetProcAddress` on Windows.
+   `module_path()` resolves `ControlServiceLayer.dll` next to `current_exe()`.
+2. **Struct packing**: `Maid3.h` wraps every struct in `#pragma pack(push,2)` on
+   Windows. The FFI structs are therefore `#[cfg_attr(windows, repr(C,
+   packed(2)))]`. This shifts pointer fields — e.g. `NkMaidEnum.p_data` (24 → 18),
+   `NkMaidLiveViewData.p_image_data` (896 → **892**, asserted by the
+   `live_view_data_layout` test) — and the `NkMaidDeviceInfo` stride. All field
+   accesses read by value or borrow only align-1 array fields, which is sound on a
+   packed struct.
+3. **Path strings**: `MAIDShootingStructure.ImageSavePath` is `wchar_t[1024]` and
+   `SetImageVideoSavePath` takes `const wchar_t*`. `PathChar` is `u16` on Windows
+   (`c_char` elsewhere); capture builds a UTF-16 save path. The `ImageSaved` event
+   payload encoding is left untouched on Windows — capture relies on the
+   newest-file-in-temp-dir fallback (the temp dir is freshly emptied each shot).
+
+On x86_64 the SDK's `WINAPI` (`__stdcall`) calling convention equals the C ABI,
+so the `extern "C"` function-pointer and callback types are correct unchanged.
+
+### Remaining
+- **Not yet hardware-validated** on Windows (built/linked + unit tests only). The
+  config-file destination (`%APPDATA%\Nikon\NXTether`) and the `ImageSaved`
+  payload behaviour are the two items most likely to need a tweak once tested on a
+  body; the configs are also staged next to the binary as a fallback.
+- **CI packaging**: ship the 4 DLLs + 3 `.config` files next to the `.exe` (the
+  build already stages them into the target dir).
 </content>
 </invoke>

@@ -343,6 +343,26 @@ impl CameraBackend for GPhoto2Backend {
             return Ok(());
         }
 
+        // FocusAuto is a synthetic toggle backed by the camera's "focusmode" radio
+        // widget (Nikon has no separate AF/MF boolean — MF is one focusmode value),
+        // mirroring the IsoAuto handling above. true → first AF choice; false →
+        // the manual choice, both queried live from the camera.
+        if param_type == ParameterType::FocusAuto {
+            let key = config_key_for(ParameterType::FocusMode).ok_or(CameraError::NotSupported)?;
+            let widget = camera.config_key::<RadioWidget>(key).wait().map_err(map_err)?;
+            let on = matches!(value, "1" | "true" | "True");
+            let choices: Vec<String> = widget.choices_iter().map(|c| c.to_string()).collect();
+            let target = if on {
+                choices.iter().find(|c| !is_manual_focus_choice(c))
+            } else {
+                choices.iter().find(|c| is_manual_focus_choice(c))
+            }
+            .ok_or(CameraError::NotSupported)?;
+            widget.set_choice(target.as_str()).map_err(map_err)?;
+            camera.set_config(&widget).wait().map_err(map_err)?;
+            return Ok(());
+        }
+
         let key = config_key_for(param_type).ok_or(CameraError::NotSupported)?;
 
         // Try the most likely widget type first; fall back through alternatives.
@@ -443,6 +463,40 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
                         disabled: false,
                     });
                 }
+                // Focus mode: split into a FocusAuto toggle + an AF-only FocusMode
+                // select, mirroring the ISO split (and the Nikon backend). The
+                // manual choice ("Manual"/"MF"…) maps to FocusAuto=false; the AF
+                // sub-modes (AF-S/AF-C/…) stay in the select, disabled in MF. The
+                // manual jog itself is a separate "manualfocusdrive" widget (→
+                // Focus, handled by the Range arm below).
+                ParameterType::FocusMode => {
+                    let focus_auto = !is_manual_focus_choice(&current);
+                    let options: Vec<ParameterOption> = choices
+                        .iter()
+                        .filter(|c| !is_manual_focus_choice(c))
+                        .map(|c| ParameterOption { label: c.clone(), value: c.clone() })
+                        .collect();
+                    out.push(CameraParameter::Boolean {
+                        param_type: ParameterType::FocusAuto,
+                        current: focus_auto,
+                        disabled: false,
+                    });
+                    if !options.is_empty() {
+                        // In MF the current isn't an AF mode; show the first as a
+                        // disabled-time placeholder.
+                        let mode_current = if focus_auto {
+                            current
+                        } else {
+                            options[0].value.clone()
+                        };
+                        out.push(CameraParameter::Select {
+                            param_type: ParameterType::FocusMode,
+                            current: mode_current,
+                            options,
+                            disabled: !focus_auto,
+                        });
+                    }
+                }
                 // Image quality: the server only ever returns JPEG (capture is
                 // hardcoded to image/jpeg), so hide RAW / RAW+JPEG formats —
                 // selecting one would break capture.
@@ -536,6 +590,10 @@ fn param_type_for(name: &str) -> Option<ParameterType> {
         "colortemperature" | "color_temperature" => Some(ParameterType::ColorTemperature),
         "exposurecompensation" | "exposure_compensation" => Some(ParameterType::ExposureCompensation),
         "imageformat" | "image_format" | "imagequality" | "image_quality" => Some(ParameterType::ImageQuality),
+        // Focus mode (AF-S/AF-C/Manual…) → split into FocusAuto + FocusMode (see
+        // walk_widget). "manualfocusdrive" is the relative manual-focus jog → Focus.
+        "focusmode" | "focusmode2" | "focus_mode" => Some(ParameterType::FocusMode),
+        "manualfocusdrive" | "manual_focus_drive" => Some(ParameterType::Focus),
         _ => None,
     }
 }
@@ -549,8 +607,19 @@ fn config_key_for(param_type: ParameterType) -> Option<&'static str> {
         ParameterType::ColorTemperature     => Some("colortemperature"),
         ParameterType::ExposureCompensation => Some("exposurecompensation"),
         ParameterType::ImageQuality         => Some("imageformat"),
+        ParameterType::FocusMode            => Some("focusmode"),
+        ParameterType::Focus                => Some("manualfocusdrive"),
         _ => None,
     }
+}
+
+/// True when a gphoto2 `focusmode` choice denotes manual focus — the one mode
+/// that is NOT autofocus. The label is localized by libgphoto2 (LC_ALL=C is set
+/// in `new()`, but be defensive), so match "manual"/"mf" case-insensitively.
+/// Mirrors the Nikon backend's `is_manual_focus`.
+fn is_manual_focus_choice(choice: &str) -> bool {
+    let c = choice.trim().to_ascii_lowercase();
+    c == "mf" || c.contains("manual")
 }
 
 // ---------------------------------------------------------------------------
@@ -601,7 +670,8 @@ mod tests {
         assert_eq!(param_type_for("shutterspeed"), Some(ParameterType::ShutterSpeed));
         assert_eq!(param_type_for("aperture"), Some(ParameterType::Aperture));
         assert_eq!(param_type_for("imageformat"), Some(ParameterType::ImageQuality));
-        assert_eq!(param_type_for("focusmode"), None); // intentionally not exposed
+        assert_eq!(param_type_for("focusmode"), Some(ParameterType::FocusMode));
+        assert_eq!(param_type_for("manualfocusdrive"), Some(ParameterType::Focus));
         assert_eq!(param_type_for("somethingelse"), None);
     }
 
@@ -615,10 +685,22 @@ mod tests {
             ParameterType::ColorTemperature,
             ParameterType::ExposureCompensation,
             ParameterType::ImageQuality,
+            ParameterType::FocusMode,
+            ParameterType::Focus,
         ] {
             let key = config_key_for(pt).expect("each mapped type has a config key");
             assert_eq!(param_type_for(key), Some(pt), "key {key:?} should round-trip");
         }
+    }
+
+    #[test]
+    fn manual_focus_choice_detection() {
+        assert!(is_manual_focus_choice("Manual"));
+        assert!(is_manual_focus_choice("MF"));
+        assert!(is_manual_focus_choice("Manual focus"));
+        assert!(!is_manual_focus_choice("AF-S"));
+        assert!(!is_manual_focus_choice("AF-C"));
+        assert!(!is_manual_focus_choice("AI Servo"));
     }
 
     #[test]

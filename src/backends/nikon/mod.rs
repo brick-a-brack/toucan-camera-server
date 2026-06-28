@@ -1,9 +1,17 @@
 //! Nikon backend (Remote SDK v2.0.0, MAID3 "CS Layer").
 //!
-//! The Nikon SDK is delivered as a macOS CFBundle (`TypeCommon Module.bundle`)
-//! whose CS-Layer functions are exported in plain C linkage. We `dlopen` the
-//! bundle's binary at runtime and resolve the function pointers by name — there
-//! is no build-time link step.
+//! The Nikon SDK's CS-Layer functions are exported in plain C linkage from a
+//! runtime-loaded module — there is no build-time link step:
+//! - **macOS**: a CFBundle (`TypeCommon Module.bundle`), `dlopen`'d.
+//! - **Windows**: `ControlServiceLayer.dll`, `LoadLibrary`'d.
+//!
+//! The two platforms differ in three ABI-relevant ways, all handled below:
+//! the dynamic loader (`dlopen`/`dlsym` vs `LoadLibrary`/`GetProcAddress`), the
+//! struct layout (`Maid3.h` wraps every struct in `#pragma pack(push,2)` on
+//! Windows, so the FFI structs are `repr(C, packed(2))` there), and path strings
+//! (`wchar_t` / UTF-16 on Windows, `char` / UTF-8 on macOS). On x86_64 Windows
+//! the SDK's `WINAPI` (`__stdcall`) calling convention is identical to the C ABI,
+//! so the `extern "C"` function-pointer types are correct as-is.
 //!
 //! Like the Canon EDSDK backend, every SDK call runs on a single dedicated OS
 //! thread (`nikon-sdk`) using the actor pattern over `std::sync::mpsc`. The SDK
@@ -13,8 +21,13 @@
 //!
 //! See `README.md` in this directory for the integration notes and constants.
 
-use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int, c_void};
+use std::ffi::CStr;
+// Only the non-Windows capture path builds a UTF-8 C string for the save dir;
+// Windows uses a UTF-16 buffer instead (see `capture_photo_impl`).
+#[cfg(not(windows))]
+use std::ffi::CString;
+use std::collections::HashMap;
+use std::os::raw::{c_char, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -27,17 +40,87 @@ use crate::camera::{
 };
 
 // ---------------------------------------------------------------------------
-// libdl / libc (always available in libSystem on macOS — no extra crate)
+// libc heap (resolved from libSystem on macOS / the UCRT on Windows). The
+// allocator pair we hand `InitializeSDK` is `malloc`/`free`, so every buffer the
+// CS Layer hands back to us (device lists, capability data, …) is freed with the
+// same `free` — see `alloc_memory` / `free_memory`.
 // ---------------------------------------------------------------------------
 
 extern "C" {
-    fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
-    fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);
 }
 
-const RTLD_NOW: c_int = 0x2;
+// ---------------------------------------------------------------------------
+// Dynamic loader shim: dlopen/dlsym on Unix, LoadLibrary/GetProcAddress on
+// Windows. Resolves the CS-Layer module by absolute path next to the binary.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod dynload {
+    use std::ffi::CString;
+    use std::os::raw::{c_char, c_int, c_void};
+    use std::path::Path;
+
+    extern "C" {
+        fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+
+    const RTLD_NOW: c_int = 0x2;
+
+    /// Loads a shared object by absolute path. Returns null on failure.
+    pub unsafe fn load(path: &Path) -> *mut c_void {
+        match CString::new(path.to_string_lossy().as_bytes()) {
+            Ok(c) => dlopen(c.as_ptr(), RTLD_NOW),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+
+    /// Resolves a C symbol by name. Returns null if absent.
+    pub unsafe fn symbol(handle: *mut c_void, name: &str) -> *mut c_void {
+        match CString::new(name) {
+            Ok(c) => dlsym(handle, c.as_ptr()),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+}
+
+#[cfg(windows)]
+mod dynload {
+    use std::ffi::CString;
+    use std::os::raw::{c_char, c_void};
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    extern "system" {
+        fn LoadLibraryExW(name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
+        fn GetProcAddress(module: *mut c_void, name: *const c_char) -> *mut c_void;
+    }
+
+    // Search the loaded DLL's own directory (and the standard paths) for its
+    // dependent DLLs. Combined with staging every DLL next to the binary, this
+    // resolves `NkdPTP.dll` / `NkRoyalmile.dll` / `dnssd.dll`.
+    const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
+
+    /// Loads a DLL by absolute path. Returns null on failure.
+    pub unsafe fn load(path: &Path) -> *mut c_void {
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH)
+    }
+
+    /// Resolves an exported symbol by name. Returns null if absent.
+    pub unsafe fn symbol(handle: *mut c_void, name: &str) -> *mut c_void {
+        match CString::new(name) {
+            Ok(c) => GetProcAddress(handle, c.as_ptr()),
+            Err(_) => std::ptr::null_mut(),
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // MAID constants (see README.md and Maid3d1.h)
@@ -55,12 +138,33 @@ const CAP_APERTURE: u32 = 0x8113;
 const CAP_EXPOSURE_COMP: u32 = 0x8115; // RangePtr (computed value), not an enum
 const CAP_SENSITIVITY: u32 = 0x8117; // ISO
 const CAP_WB_MODE: u32 = 0x8118;
+const CAP_FOCUS_MODE: u32 = 0x8120; // eNkMAIDFocusMode (MF / AF-S / AF-C / …) — legacy DSLR cap
+const CAP_AF_MODE: u32 = 0x81c3; // eNkMAIDAFMode (AF-S/AF-C/MF-fixed/MF-selected)
+const CAP_AF_MODE_AT_LV: u32 = 0x8310; // eNkMAIDAFModeAtLiveView — the mirrorless (live-view) cap
+
+/// Focus-mode capabilities tried in order by `resolve_focus_cap`: the mirrorless
+/// live-view cap `AFModeAtLiveView` first (the one Z bodies expose), then `AFMode`,
+/// then the legacy `FocusMode` (settable on DSLRs). Each enumerates AF + MF modes;
+/// the first one the body reports *settable* — read from the `ConnectDevice`
+/// capability table's `CAP_OPERATION_SET` bit, exactly like the SDK sample's
+/// `CheckCapability` — is used for both reading and writing.
+///
+/// Note: there is intentionally no manual-focus *drive* control. The `MFDrive`
+/// capability (0x8249) is inert on the validated Z5II — its `ConnectDevice` ops
+/// bitmask is `0x0` (no Get/Set/Start) and `StartOperation` returns
+/// `UnexpectedError` — so the SDK does not expose remote MF drive there.
+const FOCUS_MODE_CAPS: &[u32] = &[CAP_AF_MODE_AT_LV, CAP_AF_MODE, CAP_FOCUS_MODE];
 const CAP_ISO_CONTROL: u32 = 0x816c; // boolean: auto-ISO on/off
 const CAP_SAVE_MEDIA: u32 = 0x8305;
 
 // eNkSDKGetSettingRequestType
 const GET_SETTING_VALUE: i32 = 0;
 const GET_SETTING_SUPPORTED_VALUE_ARRAY: i32 = 1;
+
+// eNkMAIDCapOperations bit: the capability accepts SetCapability writes. Caps
+// without it are read-only on the connected body. Read from the ConnectDevice
+// capability table (see `parse_cap_operations` / `cap_is_settable`).
+const CAP_OPERATION_SET: u32 = 0x0004;
 
 // eNkMAIDArrayType (NkMAIDEnum.ul_type): how the supported-values array is encoded.
 const ARRAY_TYPE_PACKED_STRING: u32 = 7;
@@ -78,7 +182,9 @@ const RESULT_WAITING_2ND_RELEASE: i32 = 168;
 const RESULT_LIVE_VIEW_ALREADY_STARTED: i32 = -112;
 
 // eNkMAIDEvent (Maid3.h enum order): the camera finished saving a transferred
-// image; on macOS the event `data` is a `char*` to the saved file path.
+// image; on macOS the event `data` is a `char*` to the saved file path. Only
+// consumed on macOS (Windows capture uses the newest-file fallback).
+#[cfg_attr(windows, allow(dead_code))]
 const EVENT_IMAGE_SAVED: u32 = 8;
 
 // eNkMAIDSaveMedia
@@ -92,9 +198,24 @@ const CAPTURE_TIMEOUT: Duration = Duration::from_secs(30);
 
 // ---------------------------------------------------------------------------
 // FFI structs (mirror NkTypes.h / Maid3.h — see README.md)
+//
+// On Windows `Maid3.h` declares every struct inside `#pragma pack(push,2)`, so
+// each is `repr(C, packed(2))` there and natural `repr(C)` on macOS. The packing
+// shifts pointer fields (e.g. `NkMaidEnum.p_data`, `NkMaidLiveViewData
+// .p_image_data`) and the device-info stride, so it must match the SDK exactly.
+// All field reads here are by value (copies) or borrow only align-1 array fields,
+// which is sound on a packed struct.
 // ---------------------------------------------------------------------------
 
-#[repr(C)]
+/// One UTF-16 (`wchar_t`) code unit on Windows, one `char` byte elsewhere — the
+/// element type of the SDK's image-save-path fields.
+#[cfg(windows)]
+type PathChar = u16;
+#[cfg(not(windows))]
+type PathChar = c_char;
+
+#[cfg_attr(windows, repr(C, packed(2)))]
+#[cfg_attr(not(windows), repr(C))]
 struct NkMaidDeviceInfo {
     id: u32,
     name: [c_char; 64],
@@ -103,14 +224,16 @@ struct NkMaidDeviceInfo {
     version: [c_char; 64],
 }
 
-#[repr(C)]
+#[cfg_attr(windows, repr(C, packed(2)))]
+#[cfg_attr(not(windows), repr(C))]
 struct NkMaidEnumDevices {
     ul_elements: u32,
     ul_value: u32,
     p_device_data: *mut NkMaidDeviceInfo,
 }
 
-#[repr(C)]
+#[cfg_attr(windows, repr(C, packed(2)))]
+#[cfg_attr(not(windows), repr(C))]
 #[derive(Clone, Copy)]
 struct NkMaidEnum {
     ul_type: u32,         // one of eNkMAIDArrayType
@@ -121,10 +244,41 @@ struct NkMaidEnum {
     p_data: *mut c_void,  // array of `ul_elements` values, each `w_physical_bytes` wide
 }
 
+/// Mirrors `NkMAIDCapInfo` (returned by `GetCapability` with `GET_CAPABILITY_INFO`).
+/// Only `ul_operations` is read — its `CAP_OPERATION_SET` bit tells us whether the
+/// capability is writable on the connected body. Read by value (a `u32` copy), so
+/// sound on the packed Windows layout.
+#[cfg_attr(windows, repr(C, packed(2)))]
+#[cfg_attr(not(windows), repr(C))]
+#[allow(dead_code)] // only `ul_id` / `ul_operations` are read; the rest pin the layout
+struct NkMaidCapInfo {
+    ul_id: u32,
+    ul_type: u32,
+    ul_visibility: u32,
+    ul_operations: u32,
+    sz_description: [c_char; 256],
+}
+
+/// Mirrors `NkMAIDEnumCapInfo` — the capability table `ConnectDevice` hands back
+/// (`pCapArray` of `ul_cap_count` `NkMAIDCapInfo`). We copy each entry's
+/// `ul_operations` into the session at connect, then free it; `cap_is_settable`
+/// reads that snapshot (the SDK's per-cap `GetCapability(CapabilityInfo)` returns
+/// nothing useful on the Z bodies — this table is the real source, as in the SDK
+/// sample's `CheckCapability`).
+#[cfg_attr(windows, repr(C, packed(2)))]
+#[cfg_attr(not(windows), repr(C))]
+#[allow(dead_code)] // `ul_allocation_size` only pins the layout
+struct NkMaidEnumCapInfo {
+    p_cap_array: *mut NkMaidCapInfo,
+    ul_cap_count: u32,
+    ul_allocation_size: u32,
+}
+
 /// Mirrors `NkMAIDRange` (used by ExposureComp). `lfValue`/`lfLower`/`lfUpper`
 /// are the value and its bounds; when `ul_steps >= 2` the value is the discrete
 /// step `ul_value_index` (value = lfLower + idx*(lfUpper-lfLower)/(ulSteps-1)).
-#[repr(C)]
+#[cfg_attr(windows, repr(C, packed(2)))]
+#[cfg_attr(not(windows), repr(C))]
 struct NkMaidRange {
     lf_value: f64,
     lf_default: f64,
@@ -137,9 +291,11 @@ struct NkMaidRange {
 
 /// Live view payload. The header is opaque (`[u8; 884]`, size derived from
 /// `NkTypes.h`); only `ul_lv_image_size` and `p_image_data` are read. The
-/// trailing pointer reproduces the same padding as the C struct (`p_image_data`
-/// at offset 896, asserted by the `live_view_data_layout` unit test).
-#[repr(C)]
+/// trailing pointer lands at offset **896 on macOS** (natural 8-byte alignment)
+/// but **892 on Windows** (`pack(2)` lets it follow the 884-byte header with no
+/// padding) — asserted per-platform by the `live_view_data_layout` unit test.
+#[cfg_attr(windows, repr(C, packed(2)))]
+#[cfg_attr(not(windows), repr(C))]
 struct NkMaidLiveViewData {
     ul_lv_image_size: u32,
     w_physical_bytes: u16,
@@ -148,7 +304,8 @@ struct NkMaidLiveViewData {
     p_image_data: *mut c_void,
 }
 
-#[repr(C)]
+#[cfg_attr(windows, repr(C, packed(2)))]
+#[cfg_attr(not(windows), repr(C))]
 struct NkMaidCsCallback {
     p_ui_req_proc: *mut c_void,
     pfn_event_proc: *mut c_void,
@@ -158,8 +315,12 @@ struct NkMaidCsCallback {
     ref_proc: *mut c_void,
 }
 
-/// Mirrors `MAIDShootingStructure` (non-Windows variant: `char ImageSavePath[1024]`).
-#[repr(C)]
+/// Mirrors `MAIDShootingStructure`. `image_save_path` is `wchar_t[1024]` on
+/// Windows and `char[1024]` elsewhere (`PathChar`). We always zero it and route
+/// the destination via `SetImageVideoSavePath` instead, so only its size (which
+/// differs between the two element types) has to be right.
+#[cfg_attr(windows, repr(C, packed(2)))]
+#[cfg_attr(not(windows), repr(C))]
 struct MaidShootingStructure {
     shooting_type: i32,
     ul_continuous_interval_num_shots: u32,
@@ -167,7 +328,7 @@ struct MaidShootingStructure {
     ul_shooting_start_time_from_now: u32,
     ul_interval_time: u32,
     b_auto_focus: u8, // C++ bool
-    image_save_path: [c_char; 1024],
+    image_save_path: [PathChar; 1024],
     p_output_reference: *mut c_void,
 }
 
@@ -203,7 +364,8 @@ type StartShootingFn =
     unsafe extern "C" fn(*mut MaidShootingStructure, *mut c_void, *mut c_void) -> i32;
 type GetCapabilityFn = unsafe extern "C" fn(u32, i32, *mut *mut c_void, *mut i32) -> i32;
 type SetCapabilityFn = unsafe extern "C" fn(u32, *mut c_void, i32) -> i32;
-type SetImageVideoSavePathFn = unsafe extern "C" fn(*const c_char, *const c_char) -> i32;
+// On Windows the paths are `const wchar_t*` (UTF-16); elsewhere `const char*`.
+type SetImageVideoSavePathFn = unsafe extern "C" fn(*const PathChar, *const PathChar) -> i32;
 type SetLoggingLevelFn = unsafe extern "C" fn(i32) -> i32;
 
 /// Resolved CS-Layer entry points. Lives only on the `nikon-sdk` thread.
@@ -270,11 +432,15 @@ unsafe extern "C" fn data_proc(
     RESULT_NO_ERROR
 }
 
-/// Receives MAID events. We record the saved file path on `ImageSaved`
-/// (mac: `data` is a `char*` to the path).
-unsafe extern "C" fn event_proc(_ref_client: *mut c_void, ul_event: u32, data: u64) {
-    if ul_event == EVENT_IMAGE_SAVED && data != 0 {
-        let ptr = data as *const c_char;
+/// Receives MAID events. On macOS the `ImageSaved` event's `data` is a `char*`
+/// to the saved file path, which we record to resolve the capture precisely. On
+/// Windows the payload encoding differs (and is undocumented here), so we ignore
+/// it and let `capture_photo_impl` fall back to the newest file in its fresh,
+/// empty temp dir — which is unambiguous anyway.
+unsafe extern "C" fn event_proc(_ref_client: *mut c_void, _ul_event: u32, _data: u64) {
+    #[cfg(not(windows))]
+    if _ul_event == EVENT_IMAGE_SAVED && _data != 0 {
+        let ptr = _data as *const c_char;
         if let Ok(s) = CStr::from_ptr(ptr).to_str() {
             if !s.is_empty() {
                 if let Ok(mut g) = LAST_SAVED_PATH.lock() {
@@ -545,6 +711,34 @@ fn parse_device_id(native_id: &str) -> Option<u32> {
 struct Session {
     native_id: String,
     live_view_running: bool,
+    /// Per-capability operation bits (`eNkMAIDCapOperations`) captured from the
+    /// `ConnectDevice` table. Used by `cap_is_settable` to know what is writable.
+    cap_ops: HashMap<u32, u32>,
+}
+
+/// Parses the `ConnectDevice` capability table into a `cap_id -> ul_operations`
+/// map. The pointer is the `LPNkMAIDEnumCapInfo` out-param from `ConnectDevice`;
+/// this only reads it (the caller still frees it).
+fn parse_cap_operations(enum_cap_info: *mut c_void) -> HashMap<u32, u32> {
+    let mut map = HashMap::new();
+    if enum_cap_info.is_null() {
+        return map;
+    }
+    unsafe {
+        let eci = &*(enum_cap_info as *const NkMaidEnumCapInfo);
+        // Bound the count defensively: a misread layout could yield a huge value
+        // and walk off into garbage. Real bodies expose a few hundred caps.
+        let count = (eci.ul_cap_count as usize).min(8192);
+        let arr = eci.p_cap_array;
+        if !arr.is_null() {
+            for i in 0..count {
+                let info = &*arr.add(i);
+                // Field reads are by-value copies (sound on the packed layout).
+                map.insert(info.ul_id, info.ul_operations);
+            }
+        }
+    }
+    map
 }
 
 // ---------------------------------------------------------------------------
@@ -685,26 +879,23 @@ fn ensure_sdk(slot: &mut Option<Sdk>) -> Option<&Sdk> {
 // Loading & init
 // ---------------------------------------------------------------------------
 
-/// Resolves the bundle binary next to the running executable, dlopens it, wires
+/// Resolves the CS-Layer module next to the running executable, loads it, wires
 /// the symbols, deploys the `.config` files, and calls `InitializeSDK`.
 fn load_and_init_sdk() -> Result<Sdk, CameraError> {
     deploy_config_files();
 
-    let bundle_bin = bundle_binary_path().ok_or(CameraError::SdkError(0xFFFF_FFF0))?;
-    let c_path = CString::new(bundle_bin.to_string_lossy().as_bytes())
-        .map_err(|_| CameraError::SdkError(0xFFFF_FFF1))?;
+    let module = module_path().ok_or(CameraError::SdkError(0xFFFF_FFF0))?;
 
-    let handle = unsafe { dlopen(c_path.as_ptr(), RTLD_NOW) };
+    let handle = unsafe { dynload::load(&module) };
     if handle.is_null() {
-        eprintln!("[nikon] dlopen failed for {}", bundle_bin.display());
+        eprintln!("[nikon] failed to load {}", module.display());
         return Err(CameraError::SdkError(0xFFFF_FFF2));
     }
 
     // Resolve a symbol or bail. Symbols are plain C names (no `MAID` prefix).
     macro_rules! sym {
         ($name:literal, $ty:ty) => {{
-            let cname = CString::new($name).unwrap();
-            let p = unsafe { dlsym(handle, cname.as_ptr()) };
+            let p = unsafe { dynload::symbol(handle, $name) };
             if p.is_null() {
                 eprintln!("[nikon] missing symbol: {}", $name);
                 return Err(CameraError::SdkError(0xFFFF_FFF3));
@@ -765,25 +956,44 @@ fn load_and_init_sdk() -> Result<Sdk, CameraError> {
     Ok(sdk)
 }
 
-/// Path to the CFBundle's executable next to the running binary:
-/// `<exe_dir>/TypeCommon Module.bundle/Contents/MacOS/TypeCommon Module`.
-fn bundle_binary_path() -> Option<std::path::PathBuf> {
+/// Path to the CS-Layer module staged next to the running binary by build.rs.
+/// macOS: the CFBundle's inner Mach-O. Windows: `ControlServiceLayer.dll`.
+fn module_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
+    #[cfg(target_os = "macos")]
     let p = dir
         .join("TypeCommon Module.bundle")
         .join("Contents/MacOS/TypeCommon Module");
+    #[cfg(target_os = "windows")]
+    let p = dir.join("ControlServiceLayer.dll");
     p.exists().then_some(p)
 }
 
-/// Copies the 3 `.config` files (shipped next to the binary) into
-/// `~/Library/Preferences/Nikon/NXTether/`, where the SDK expects them.
-/// Best-effort: missing files are logged, not fatal.
+/// Per-platform directory where the SDK expects its 3 `.config` files:
+/// `~/Library/Preferences/Nikon/NXTether/` on macOS, `%APPDATA%\Nikon\NXTether\`
+/// on Windows (mirroring NX Tether's own user-config location). `None` if the
+/// base env var is unset.
+fn config_dest_dir() -> Option<std::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var_os("HOME")?;
+        Some(std::path::Path::new(&home).join("Library/Preferences/Nikon/NXTether"))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let appdata = std::env::var_os("APPDATA")?;
+        Some(std::path::Path::new(&appdata).join("Nikon").join("NXTether"))
+    }
+}
+
+/// Copies the 3 `.config` files (staged next to the binary by build.rs) into the
+/// directory the SDK reads them from (see `config_dest_dir`). Best-effort:
+/// missing files are logged, not fatal.
 fn deploy_config_files() {
-    let Some(home) = std::env::var_os("HOME") else {
+    let Some(dest) = config_dest_dir() else {
         return;
     };
-    let dest = std::path::Path::new(&home).join("Library/Preferences/Nikon/NXTether");
     if std::fs::create_dir_all(&dest).is_err() {
         return;
     }
@@ -888,9 +1098,17 @@ fn connect_impl(
 
     let mut cap_info: *mut c_void = std::ptr::null_mut();
     let err = unsafe { (sdk.connect_device)(device_id, &mut cap_info) };
+    // Capture the capability operation bits (what is gettable/settable) before
+    // freeing the table — this is the SDK's authoritative settability source.
+    let cap_ops = parse_cap_operations(cap_info);
     if !cap_info.is_null() {
-        // We don't keep the capability snapshot; free it.
-        unsafe { free(cap_info) };
+        unsafe {
+            let eci = &*(cap_info as *const NkMaidEnumCapInfo);
+            if !eci.p_cap_array.is_null() {
+                free(eci.p_cap_array as *mut c_void);
+            }
+            free(cap_info);
+        }
     }
     if err != RESULT_NO_ERROR {
         return Err(CameraError::SdkError(err as u32));
@@ -899,6 +1117,7 @@ fn connect_impl(
     *session = Some(Session {
         native_id: native_id.to_string(),
         live_view_running: false,
+        cap_ops,
     });
     Ok(())
 }
@@ -1023,9 +1242,24 @@ fn capture_photo_impl(
     let tmp_dir = std::env::temp_dir().join("toucan-nikon-capture");
     let _ = std::fs::remove_dir_all(&tmp_dir);
     let _ = std::fs::create_dir_all(&tmp_dir);
-    let c_dir = CString::new(tmp_dir.to_string_lossy().as_bytes())
-        .map_err(|_| CameraError::NotSupported)?;
-    unsafe { (sdk.set_image_video_save_path)(c_dir.as_ptr(), c_dir.as_ptr()) };
+    // Point capture output at the temp dir, in the SDK's path encoding (UTF-16
+    // on Windows, a UTF-8 C string elsewhere). The buffer outlives the call.
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = tmp_dir
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe { (sdk.set_image_video_save_path)(wide.as_ptr(), wide.as_ptr()) };
+    }
+    #[cfg(not(windows))]
+    {
+        let c_dir = CString::new(tmp_dir.to_string_lossy().as_bytes())
+            .map_err(|_| CameraError::NotSupported)?;
+        unsafe { (sdk.set_image_video_save_path)(c_dir.as_ptr(), c_dir.as_ptr()) };
+    }
 
     *LAST_SAVED_PATH.lock().unwrap() = None;
 
@@ -1210,6 +1444,142 @@ fn decode_shutter_speed(v: i64) -> String {
     v.to_string()
 }
 
+/// True for the non-deterministic shutter speeds Bulb and Time, which expose for
+/// an operator-controlled duration (held shutter / two presses) rather than a
+/// fixed one. A single-shot JPEG capture can't drive them, so they are hidden
+/// from the ShutterSpeed options. Matches the SDK's `PackedString` labels (the
+/// real labels on Z bodies); the numeric fallback path never produces these.
+fn is_bulb_or_time(label: &str) -> bool {
+    let l = label.trim().to_ascii_lowercase();
+    l.contains("bulb") || l.contains("time")
+}
+
+/// `eNkMAIDFocusMode` (Maid3d1.h). Numeric fallback only — on the validated Z
+/// bodies the cap is `PackedString` (real labels "MF" / "AF-S" / …). Unknown
+/// codes fall back to the raw value.
+fn decode_focus_mode(v: i64) -> String {
+    match v {
+        0 => "MF",
+        1 => "AF-S",
+        2 => "AF-C",
+        3 => "AF-A",
+        4 => "AF-F",
+        0x10 => "AF",
+        0x11 => "Macro",
+        0x12 => "Infinity",
+        _ => return v.to_string(),
+    }
+    .to_string()
+}
+
+/// `eNkMAIDAFMode` (Maid3d1.h) — the mirrorless focus-mode cap. Numeric fallback
+/// only (PackedString on Z bodies). M_FIX/M_SEL are the two manual-focus variants.
+fn decode_af_mode(v: i64) -> String {
+    match v {
+        0 => "AF-S",
+        1 => "AF-C",
+        2 => "AF-A",
+        3 => "MF (fixed)",
+        4 => "MF (selected)",
+        5 => "AF-F",
+        _ => return v.to_string(),
+    }
+    .to_string()
+}
+
+/// `eNkMAIDAFModeAtLiveView` (Maid3d1.h) — the mirrorless live-view focus-mode cap.
+/// Numeric fallback only (PackedString on Z bodies). M_FIX/M_SEL are the two manual
+/// variants.
+fn decode_af_mode_at_lv(v: i64) -> String {
+    match v {
+        0 => "AF-S",
+        1 => "AF-C",
+        2 => "AF-F",
+        3 => "MF (fixed)",
+        4 => "MF (selected)",
+        5 => "AF-A",
+        _ => return v.to_string(),
+    }
+    .to_string()
+}
+
+/// The numeric-fallback decoder for a focus-mode capability id.
+fn focus_decode_for(cap_id: u32) -> fn(i64) -> String {
+    match cap_id {
+        CAP_AF_MODE_AT_LV => decode_af_mode_at_lv,
+        CAP_AF_MODE => decode_af_mode,
+        _ => decode_focus_mode,
+    }
+}
+
+/// True when a focus-mode label denotes manual focus (the one mode that is NOT
+/// autofocus). Used to split the focus mode into a `FocusAuto` boolean + an AF-only
+/// `FocusMode` select, and to drive the AF/MF toggle. Covers both caps' labels:
+/// `FocusMode` "MF", `AFMode` "MF (fixed)" / "MF (selected)", and the numeric
+/// fallbacks ("M_FIX"/"M_SEL"), case-insensitively.
+fn is_manual_focus(label: &str) -> bool {
+    let l = label.trim().to_ascii_lowercase();
+    l.starts_with("mf") || l.contains("manual") || l.contains("m_fix") || l.contains("m_sel")
+}
+
+/// Builds the focus parameters from a FocusMode option list (labels + current
+/// index), decomposed so the UI mirrors the ISO auto split:
+/// - `FocusAuto` boolean — false when the current mode is MF.
+/// - `FocusMode` select — the AF sub-modes only (MF removed); each option keeps
+///   its **original SDK index** as `value` (what `SetCapability` expects, like
+///   `read_enum_param`). Disabled while in MF.
+///
+/// There is intentionally no manual-focus *drive* (`Focus`) control: `MFDrive`
+/// (0x8249) is inert on the validated Z5II (see `FOCUS_MODE_CAPS`).
+///
+/// `mode_settable` reflects whether the body accepts focus-mode writes (some
+/// bodies expose it read-only). When false the FocusAuto / FocusMode controls are
+/// shown but `disabled`, so the UI reflects state without offering a write the SDK
+/// would reject (`OperationNotSupported`).
+///
+/// Pure (no SDK calls) so it is unit-tested. Returns empty if no mode is usable.
+fn build_focus_params(labels: &[String], current: u32, mode_settable: bool) -> Vec<CameraParameter> {
+    let cur = current as usize;
+    let focus_auto = labels.get(cur).map(|l| !is_manual_focus(l)).unwrap_or(false);
+
+    let af_options: Vec<ParameterOption> = labels
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !is_manual_focus(l))
+        .map(|(i, l)| ParameterOption { label: l.clone(), value: i.to_string() })
+        .collect();
+
+    // Nothing meaningful to expose (e.g. an empty list).
+    if labels.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    out.push(CameraParameter::Boolean {
+        param_type: ParameterType::FocusAuto,
+        current: focus_auto,
+        disabled: !mode_settable,
+    });
+
+    if !af_options.is_empty() {
+        // In AF, reflect the real current mode; in MF (or if it somehow isn't an
+        // AF option) fall back to the first AF option as an enabled-time default.
+        let mode_current = if focus_auto && af_options.iter().any(|o| o.value == cur.to_string()) {
+            cur.to_string()
+        } else {
+            af_options[0].value.clone()
+        };
+        out.push(CameraParameter::Select {
+            param_type: ParameterType::FocusMode,
+            current: mode_current,
+            options: af_options,
+            disabled: !focus_auto || !mode_settable,
+        });
+    }
+
+    out
+}
+
 const ENUM_PARAMS: &[EnumSpec] = &[
     EnumSpec { param_type: ParameterType::Exposure, cap_id: CAP_EXPOSURE_MODE, ordered: false, decode: decode_exposure_mode },
     EnumSpec { param_type: ParameterType::ShutterSpeed, cap_id: CAP_SHUTTER_SPEED, ordered: true, decode: decode_shutter_speed },
@@ -1231,7 +1601,7 @@ fn get_parameters_impl(
     native_id: &str,
     session: &Option<Session>,
 ) -> Result<Vec<CameraParameter>, CameraError> {
-    require_connected(native_id, session)?;
+    let s = require_connected(native_id, session)?;
 
     let iso_auto = read_bool_cap(sdk, CAP_ISO_CONTROL);
 
@@ -1261,7 +1631,108 @@ fn get_parameters_impl(
         result.push(q);
     }
 
+    // Focus: FocusAuto (AF/MF) + FocusMode (AF sub-modes) + Focus (manual jog).
+    // The settable focus-mode cap differs by body (AFModeAtLiveView on mirrorless,
+    // FocusMode on DSLRs) — resolve it (and whether it is currently settable, from
+    // the connect-time cap table) so the controls target the right cap and render
+    // disabled rather than failing when locked.
+    dump_focus_caps(sdk, &s.cap_ops);
+    if let Some((cap, settable)) = resolve_focus_cap(sdk, &s.cap_ops) {
+        if let Some((labels, cur)) = read_enum_labels(sdk, cap, focus_decode_for(cap)) {
+            result.extend(build_focus_params(&labels, cur, settable));
+        }
+    }
+
     Ok(result)
+}
+
+/// Reads an enum capability's option labels and current index (mode 1). Handles
+/// both the PackedString form (the real labels on Z bodies) and the numeric
+/// fallback (decoded via `decode`). `None` if unsupported in the current state.
+fn read_enum_labels(sdk: &Sdk, cap_id: u32, decode: fn(i64) -> String) -> Option<(Vec<String>, u32)> {
+    let mut data: *mut c_void = std::ptr::null_mut();
+    let mut data_type: i32 = 0;
+    let err = unsafe {
+        (sdk.get_capability)(
+            cap_id,
+            GET_SETTING_SUPPORTED_VALUE_ARRAY,
+            &mut data,
+            &mut data_type,
+        )
+    };
+    if err != RESULT_NO_ERROR || data.is_null() || data_type != DATATYPE_ENUM_PTR {
+        if !data.is_null() {
+            unsafe { free(data) };
+        }
+        return None;
+    }
+    let res = unsafe {
+        let en = &*(data as *const NkMaidEnum);
+        let labels = if en.ul_type == ARRAY_TYPE_PACKED_STRING {
+            parse_packed_strings(en.p_data, en.ul_elements as usize)
+        } else {
+            let elem_bytes = en.w_physical_bytes.max(1) as usize;
+            (0..en.ul_elements as usize)
+                .map(|i| read_enum_element(en.p_data, i, elem_bytes))
+                .map(decode)
+                .collect()
+        };
+        let cur = en.ul_value;
+        if !en.p_data.is_null() {
+            free(en.p_data);
+        }
+        (labels, cur)
+    };
+    unsafe { free(data) };
+    Some(res)
+}
+
+/// Picks the focus-mode capability to use, returning `(cap_id, settable)`. Prefers
+/// the first `FOCUS_MODE_CAPS` entry the body reports *settable* (`AFMode` on
+/// mirrorless, `FocusMode` on DSLRs); if none is settable in the current state it
+/// falls back to the first *readable* one for a read-only display. `None` if no
+/// focus-mode cap is exposed at all.
+fn resolve_focus_cap(sdk: &Sdk, cap_ops: &HashMap<u32, u32>) -> Option<(u32, bool)> {
+    for &cap in FOCUS_MODE_CAPS {
+        if cap_is_settable(cap_ops, cap) == Some(true)
+            && read_enum_labels(sdk, cap, focus_decode_for(cap)).is_some()
+        {
+            return Some((cap, true));
+        }
+    }
+    for &cap in FOCUS_MODE_CAPS {
+        if read_enum_labels(sdk, cap, focus_decode_for(cap)).is_some() {
+            return Some((cap, false));
+        }
+    }
+    None
+}
+
+/// Dumps the get/set/labels state of every focus-related capability — only when
+/// `NIKON_SDK_DEBUG` is set. Lets us see, on a given body and state (live view on
+/// vs off), which cap carries the settable focus mode. `0x8310` is AFModeAtLiveView.
+fn dump_focus_caps(sdk: &Sdk, cap_ops: &HashMap<u32, u32>) {
+    if std::env::var_os("NIKON_SDK_DEBUG").is_none() {
+        return;
+    }
+    eprintln!("[nikon] connect cap table: {} capabilities", cap_ops.len());
+    for (cap, name, decode) in [
+        (CAP_FOCUS_MODE, "FocusMode(0x8120)", decode_focus_mode as fn(i64) -> String),
+        (CAP_AF_MODE, "AFMode(0x81c3)", decode_af_mode),
+        (CAP_AF_MODE_AT_LV, "AFModeAtLiveView(0x8310)", decode_af_mode_at_lv),
+    ] {
+        // Raw operation bits (Start=0x1, Get=0x2, Set=0x4, GetArray=0x8, GetDefault=0x10).
+        let ops = cap_ops.get(&cap).copied();
+        let settable = cap_is_settable(cap_ops, cap);
+        match read_enum_labels(sdk, cap, decode) {
+            Some((labels, cur)) => eprintln!(
+                "[nikon] focus cap {name}: ops={ops:#x?} settable={settable:?} current_idx={cur} options={labels:?}"
+            ),
+            None => eprintln!(
+                "[nikon] focus cap {name}: ops={ops:#x?} settable={settable:?} (not readable)"
+            ),
+        }
+    }
 }
 
 /// Reads one enum capability into a Select / RangeSelect parameter. Returns
@@ -1304,12 +1775,22 @@ fn read_enum_param(sdk: &Sdk, spec: &EnumSpec, disabled: bool) -> Option<CameraP
                 .collect()
         };
 
-        let options: Vec<ParameterOption> = labels
+        let mut options: Vec<ParameterOption> = labels
             .into_iter()
             .enumerate()
             .map(|(i, label)| ParameterOption { label, value: i.to_string() })
             .collect();
-        let current = en.ul_value.to_string(); // current index into the array
+        // Drop the non-deterministic shutter speeds (Bulb / Time): they expose
+        // for an operator-controlled duration, which a single-shot JPEG capture
+        // can't drive — mirrors the gphoto2 backend dropping the bulb entry.
+        // Filtering after the `enumerate` above keeps each option's `value` equal
+        // to its original SDK array index (what `SetCapability` expects).
+        if spec.param_type == ParameterType::ShutterSpeed {
+            options.retain(|o| !is_bulb_or_time(&o.label));
+        }
+        // Copy out of the (possibly packed) struct before borrowing for to_string.
+        let cur_index = en.ul_value;
+        let current = cur_index.to_string(); // current index into the array
 
         // Free the SDK-allocated value array and the enum struct.
         if !en.p_data.is_null() {
@@ -1373,6 +1854,13 @@ fn read_bool_cap(sdk: &Sdk, cap_id: u32) -> Option<bool> {
     Some(on)
 }
 
+/// Whether `cap_id` accepts writes on the connected body, from the `ConnectDevice`
+/// capability table's `CAP_OPERATION_SET` bit. `None` if the cap is absent from the
+/// table (unknown on this body).
+fn cap_is_settable(cap_ops: &HashMap<u32, u32>, cap_id: u32) -> Option<bool> {
+    cap_ops.get(&cap_id).map(|ops| ops & CAP_OPERATION_SET != 0)
+}
+
 /// Reads `ExposureComp` (a RangePtr) as a RangeSelect over its discrete steps.
 /// Returns `None` if unsupported or continuous (`ulSteps < 2`).
 fn read_exposure_comp(sdk: &Sdk) -> Option<CameraParameter> {
@@ -1392,11 +1880,14 @@ fn read_exposure_comp(sdk: &Sdk) -> Option<CameraParameter> {
         if r.ul_steps < 2 {
             None
         } else {
+            // Copy fields out of the (possibly packed) struct before borrowing.
             let steps = r.ul_steps;
+            let cur_index = r.ul_value_index;
+            let lower = r.lf_lower;
             let span = r.lf_upper - r.lf_lower;
             let options = (0..steps)
                 .map(|i| {
-                    let ev = r.lf_lower + (i as f64) * span / ((steps - 1) as f64);
+                    let ev = lower + (i as f64) * span / ((steps - 1) as f64);
                     ParameterOption {
                         label: format!("{ev:+.1} EV"),
                         value: i.to_string(),
@@ -1405,7 +1896,7 @@ fn read_exposure_comp(sdk: &Sdk) -> Option<CameraParameter> {
                 .collect();
             Some(CameraParameter::RangeSelect {
                 param_type: ParameterType::ExposureCompensation,
-                current: r.ul_value_index.to_string(),
+                current: cur_index.to_string(),
                 options,
                 disabled: false,
             })
@@ -1422,7 +1913,7 @@ fn set_parameter_impl(
     value: &str,
     session: &Option<Session>,
 ) -> Result<(), CameraError> {
-    require_connected(native_id, session)?;
+    let s = require_connected(native_id, session)?;
 
     match param_type {
         ParameterType::IsoAuto => return set_bool_cap(sdk, CAP_ISO_CONTROL, value == "true"),
@@ -1433,6 +1924,14 @@ fn set_parameter_impl(
         ParameterType::ImageQuality => {
             let idx: u32 = value.parse().map_err(|_| CameraError::NotSupported)?;
             return set_enum_index(sdk, CAP_COMPRESSION_LEVEL, idx);
+        }
+        // AF/MF toggle, mapped onto the resolved focus-mode capability.
+        ParameterType::FocusAuto => return set_focus_auto(sdk, &s.cap_ops, value == "true"),
+        // AF sub-mode: `value` is the option's original SDK index in the resolved cap.
+        ParameterType::FocusMode => {
+            let (cap, _) = resolve_focus_cap(sdk, &s.cap_ops).ok_or(CameraError::NotSupported)?;
+            let idx: u32 = value.parse().map_err(|_| CameraError::NotSupported)?;
+            return set_enum_index(sdk, cap, idx);
         }
         _ => {}
     }
@@ -1452,6 +1951,11 @@ fn set_enum_index(sdk: &Sdk, cap_id: u32, idx: u32) -> Result<(), CameraError> {
     let mut data_type: i32 = 0;
     let err = unsafe { (sdk.get_capability)(cap_id, GET_SETTING_VALUE, &mut data, &mut data_type) };
     if err != RESULT_NO_ERROR || data.is_null() || data_type != DATATYPE_ENUM_PTR {
+        if std::env::var_os("NIKON_SDK_DEBUG").is_some() {
+            eprintln!(
+                "[nikon] set_enum_index(cap={cap_id:#06x}): GetSettingValue err={err} data_type={data_type} (expected EnumPtr={DATATYPE_ENUM_PTR})"
+            );
+        }
         if !data.is_null() {
             unsafe { free(data) };
         }
@@ -1648,6 +2152,30 @@ fn set_bool_cap(sdk: &Sdk, cap_id: u32, on: bool) -> Result<(), CameraError> {
     }
 }
 
+/// Toggles AF/MF by mapping onto the resolved focus-mode capability (Nikon has no
+/// separate AF/MF boolean — MF is one of its values): `false` selects the manual
+/// mode, `true` the first AF mode when coming from MF. A no-op if already on the
+/// requested side.
+fn set_focus_auto(sdk: &Sdk, cap_ops: &HashMap<u32, u32>, auto: bool) -> Result<(), CameraError> {
+    let (cap, _) = resolve_focus_cap(sdk, cap_ops).ok_or(CameraError::NotSupported)?;
+    let (labels, current) =
+        read_enum_labels(sdk, cap, focus_decode_for(cap)).ok_or(CameraError::NotSupported)?;
+    let cur_is_manual = labels
+        .get(current as usize)
+        .map(|l| is_manual_focus(l))
+        .unwrap_or(false);
+    if auto != cur_is_manual {
+        return Ok(()); // already in the requested AF/MF state
+    }
+    let target = if auto {
+        labels.iter().position(|l| !is_manual_focus(l))
+    } else {
+        labels.iter().position(|l| is_manual_focus(l))
+    }
+    .ok_or(CameraError::NotSupported)?;
+    set_enum_index(sdk, cap, target as u32)
+}
+
 /// Sets `ExposureComp` by its discrete step index (read-modify-write the range).
 fn set_exposure_comp(sdk: &Sdk, idx: u32) -> Result<(), CameraError> {
     let mut data: *mut c_void = std::ptr::null_mut();
@@ -1730,6 +2258,129 @@ mod tests {
     }
 
     #[test]
+    fn bulb_and_time_are_filtered() {
+        // Real labels (any case) are dropped; fixed speeds are kept.
+        assert!(is_bulb_or_time("Bulb"));
+        assert!(is_bulb_or_time("bulb"));
+        assert!(is_bulb_or_time("Time"));
+        assert!(is_bulb_or_time(" TIME "));
+        assert!(!is_bulb_or_time("1/250"));
+        assert!(!is_bulb_or_time("30"));
+        assert!(!is_bulb_or_time("4\""));
+    }
+
+    #[test]
+    fn focus_mode_labels_and_manual_detection() {
+        assert_eq!(decode_focus_mode(0), "MF");
+        assert_eq!(decode_focus_mode(1), "AF-S");
+        assert_eq!(decode_focus_mode(2), "AF-C");
+        assert_eq!(decode_focus_mode(99), "99"); // unknown → raw
+        assert!(is_manual_focus("MF"));
+        assert!(is_manual_focus("Manual"));
+        assert!(!is_manual_focus("AF-S"));
+        assert!(!is_manual_focus("AF-C"));
+    }
+
+    #[test]
+    fn af_mode_labels_and_manual_variants() {
+        assert_eq!(decode_af_mode(0), "AF-S");
+        assert_eq!(decode_af_mode(1), "AF-C");
+        assert_eq!(decode_af_mode(3), "MF (fixed)");
+        assert_eq!(decode_af_mode(4), "MF (selected)");
+        assert_eq!(decode_af_mode(42), "42"); // unknown → raw
+        // The AFMode manual variants must read as manual focus.
+        assert!(is_manual_focus("MF (fixed)"));
+        assert!(is_manual_focus("MF (selected)"));
+        assert!(is_manual_focus("M_FIX"));
+        assert!(is_manual_focus("M_SEL"));
+    }
+
+    #[test]
+    fn focus_params_split_in_af() {
+        // Current = AF-S (index 1): autofocus on.
+        let labels = vec!["MF".to_string(), "AF-S".to_string(), "AF-C".to_string()];
+        let params = build_focus_params(&labels, 1, true);
+
+        // FocusAuto = true.
+        let auto = params.iter().find_map(|p| match p {
+            CameraParameter::Boolean { param_type: ParameterType::FocusAuto, current, .. } => Some(*current),
+            _ => None,
+        });
+        assert_eq!(auto, Some(true));
+
+        // FocusMode select: MF removed, original indices kept, enabled, current = "1".
+        let mode = params.iter().find_map(|p| match p {
+            CameraParameter::Select { param_type: ParameterType::FocusMode, current, options, disabled } => {
+                Some((current.clone(), options.clone(), *disabled))
+            }
+            _ => None,
+        });
+        let (cur, options, disabled) = mode.expect("focus_mode present");
+        assert_eq!(cur, "1");
+        assert!(!disabled);
+        assert_eq!(options.iter().map(|o| o.value.as_str()).collect::<Vec<_>>(), vec!["1", "2"]);
+        assert!(options.iter().all(|o| o.label != "MF"));
+
+        // No manual-focus drive control is exposed (MFDrive is inert on the Z5II).
+        assert!(!params.iter().any(|p| matches!(
+            p,
+            CameraParameter::Range { param_type: ParameterType::Focus, .. }
+        )));
+    }
+
+    #[test]
+    fn focus_params_split_in_mf() {
+        // Current = MF (index 0): manual focus.
+        let labels = vec!["MF".to_string(), "AF-S".to_string(), "AF-C".to_string()];
+        let params = build_focus_params(&labels, 0, true);
+
+        let auto = params.iter().find_map(|p| match p {
+            CameraParameter::Boolean { param_type: ParameterType::FocusAuto, current, .. } => Some(*current),
+            _ => None,
+        });
+        assert_eq!(auto, Some(false));
+
+        // FocusMode disabled, current falls back to the first AF option.
+        let mode = params.iter().find_map(|p| match p {
+            CameraParameter::Select { param_type: ParameterType::FocusMode, current, disabled, .. } => {
+                Some((current.clone(), *disabled))
+            }
+            _ => None,
+        });
+        assert_eq!(mode, Some(("1".to_string(), true)));
+
+        // Still no manual-focus drive control, even in MF.
+        assert!(!params.iter().any(|p| matches!(
+            p,
+            CameraParameter::Range { param_type: ParameterType::Focus, .. }
+        )));
+    }
+
+    #[test]
+    fn focus_params_empty_when_no_modes() {
+        assert!(build_focus_params(&[], 0, true).is_empty());
+    }
+
+    #[test]
+    fn focus_params_read_only_when_mode_not_settable() {
+        // FocusMode read-only on the body (e.g. driven by a physical control):
+        // FocusAuto + FocusMode are shown but disabled, even in AF.
+        let labels = vec!["MF".to_string(), "AF-S".to_string(), "AF-C".to_string()];
+        let params = build_focus_params(&labels, 1, false);
+
+        let auto_disabled = params.iter().any(|p| matches!(
+            p,
+            CameraParameter::Boolean { param_type: ParameterType::FocusAuto, disabled: true, .. }
+        ));
+        let mode_disabled = params.iter().any(|p| matches!(
+            p,
+            CameraParameter::Select { param_type: ParameterType::FocusMode, disabled: true, .. }
+        ));
+        assert!(auto_disabled);
+        assert!(mode_disabled);
+    }
+
+    #[test]
     fn packed_strings_parse() {
         // "A\0BB\0C\0" (trailing terminator dropped) → ["A","BB","C"].
         let bytes = b"A\0BB\0C\0";
@@ -1775,11 +2426,17 @@ mod tests {
 
     #[test]
     fn live_view_data_layout() {
-        // pImageData must land at offset 896 (header 884 + 8 prefix, padded to
-        // the pointer's 8-byte alignment). A mismatch means a wrong header size.
+        // pImageData follows the 8-byte prefix + 884-byte header. On macOS the
+        // pointer pads up to its 8-byte alignment (→ 896); on Windows `pack(2)`
+        // places it right after the header (→ 892). A mismatch means a wrong
+        // header size.
+        #[cfg(windows)]
+        let expected = 892;
+        #[cfg(not(windows))]
+        let expected = 896;
         assert_eq!(
             std::mem::offset_of!(NkMaidLiveViewData, p_image_data),
-            896
+            expected
         );
     }
 }

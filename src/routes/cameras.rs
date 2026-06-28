@@ -306,6 +306,21 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                 // Only broadcast frames that actually changed, so polling faster
                 // than the camera's frame rate doesn't flood clients with duplicates.
                 let mut last_jpeg: Option<Bytes> = None;
+                // Cached multipart frame + when it was last sent, for the heartbeat
+                // below.
+                let mut last_frame: Option<Arc<Bytes>> = None;
+                let mut last_send = tokio::time::Instant::now();
+                // Re-send the cached frame at least this often (~15x/s) even when
+                // the bytes are unchanged. Real cameras have sensor noise so every
+                // frame differs and dedup rarely triggers; but virtual cameras
+                // (OBS, Logi Capture) re-emit byte-identical JPEGs on a static
+                // scene, which the dedup would otherwise drop forever — freezing
+                // the preview and starving late `broadcast` subscribers, who only
+                // receive frames sent after they subscribe. The heartbeat keeps a
+                // static virtual camera alive and feeds late subscribers within
+                // one interval.
+                const HEARTBEAT: tokio::time::Duration =
+                    tokio::time::Duration::from_millis(66);
 
                 loop {
                     let tick = tokio::time::Instant::now();
@@ -324,9 +339,18 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                         Ok(Ok(jpeg)) => {
                             consecutive_misses = 0;
                             let jpeg = Bytes::from(jpeg);
-                            // Skip unchanged frames (we may poll faster than the
-                            // camera produces).
+                            // Unchanged frame (we may poll faster than the camera
+                            // produces). Re-send the cached frame only on the
+                            // heartbeat, otherwise skip to save bandwidth.
                             if last_jpeg.as_ref() == Some(&jpeg) {
+                                if last_send.elapsed() >= HEARTBEAT {
+                                    if let Some(frame) = &last_frame {
+                                        if tx.send(frame.clone()).is_err() {
+                                            break;
+                                        }
+                                        last_send = tokio::time::Instant::now();
+                                    }
+                                }
                                 let elapsed = tick.elapsed();
                                 if elapsed < frame_interval {
                                     tokio::time::sleep(frame_interval - elapsed).await;
@@ -343,10 +367,13 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                             buf.extend_from_slice(&jpeg);
                             buf.extend_from_slice(b"\r\n");
 
+                            let frame = Arc::new(Bytes::from(buf));
+                            last_frame = Some(frame.clone());
                             // send() only errors when there are no receivers.
-                            if tx.send(Arc::new(Bytes::from(buf))).is_err() {
+                            if tx.send(frame).is_err() {
                                 break;
                             }
+                            last_send = tokio::time::Instant::now();
                         }
                         Ok(Err(crate::camera::CameraError::SdkError(0x0000_A102))) => {
                             // EVF / camera not ready yet — skip frame.

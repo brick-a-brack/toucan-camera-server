@@ -220,7 +220,8 @@
       border-color: #666;
     }
 
-    .param-range {
+    .param-range,
+    .param-rangeselect {
       width: 100%;
       accent-color: #60a5fa;
       cursor: pointer;
@@ -690,6 +691,12 @@
         el.addEventListener('input', () => { if (valEl) valEl.textContent = el.value; });
         el.addEventListener('change', () => setParamRange(el));
       });
+      grid.querySelectorAll('.param-rangeselect').forEach(el => {
+        const curEl = el.closest('.param-item').querySelector('.param-current');
+        const labels = JSON.parse(el.dataset.labels);
+        el.addEventListener('input', () => { if (curEl) curEl.textContent = labels[+el.value] ?? ''; });
+        el.addEventListener('change', () => setParamRangeSelect(el));
+      });
     }
 
     function renderParamItem(p, id) {
@@ -731,7 +738,36 @@
           </div>`;
       }
 
-      // select or range_select — p.current is the raw value key; look up the label for display
+      // range_select — ordered discrete values (aperture, ISO, shutter): render a
+      // snap-to slider backed by a <datalist> instead of a dropdown. The slider
+      // position is the option index; the option's opaque value key is mapped
+      // back from the index on change (it isn't necessarily 0..n).
+      if (p.kind === 'range_select') {
+        let idx = p.options.findIndex(o => o.value === p.current);
+        if (idx < 0) idx = 0;
+        const currentLabel = p.options[idx]?.label ?? p.current;
+        const listId = `dl-${escHtml(id)}-${escHtml(p.type)}`;
+        const values = escHtml(JSON.stringify(p.options.map(o => o.value)));
+        const labels = escHtml(JSON.stringify(p.options.map(o => o.label)));
+        return `
+          <div class="param-item${disabledCls}">
+            <div class="param-label">${name}</div>
+            <div class="param-current">${escHtml(currentLabel)}</div>
+            <div class="param-range-row">
+              <input type="range" class="param-rangeselect"
+                     min="0" max="${p.options.length - 1}" step="1" value="${idx}"${disabledAttr}
+                     list="${listId}"
+                     data-device-id="${escHtml(id)}" data-kind="${escHtml(p.type)}"
+                     data-values="${values}" data-labels="${labels}">
+            </div>
+            <datalist id="${listId}">
+              ${p.options.map((o, i) => `<option value="${i}"></option>`).join('')}
+            </datalist>
+          </div>`;
+      }
+
+      // select — arbitrary discrete choices; p.current is the raw value key,
+      // look up the label for display.
       const currentLabel = p.options.find(o => o.value === p.current)?.label ?? p.current;
       return `
         <div class="param-item${disabledCls}">
@@ -772,6 +808,26 @@
       } catch (e) {
         alert(`Failed to set ${formatParamName(kind)}: ${e.message}`);
       } finally {
+        await refreshParams(deviceId);
+      }
+    }
+
+    async function setParamRangeSelect(input) {
+      const deviceId = input.dataset.deviceId;
+      const kind = input.dataset.kind;
+      // The slider position is the option index; map it back to the option's
+      // opaque value key (not necessarily equal to the index).
+      const values = JSON.parse(input.dataset.values);
+      const value = values[+input.value];
+
+      input.disabled = true;
+      try {
+        await api('PUT', `/cameras/${deviceId}/parameters`, { type: kind, value });
+      } catch (e) {
+        alert(`Failed to set ${formatParamName(kind)}: ${e.message}`);
+      } finally {
+        // Re-fetch all parameters: changing one ordered value can flip other
+        // params' disabled state (same as the select/range setters).
         await refreshParams(deviceId);
       }
     }

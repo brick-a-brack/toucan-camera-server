@@ -90,6 +90,7 @@ pub enum ParameterType {
     // Camera focus
     Focus,
     FocusAuto,
+    FocusMode,
 
     // Camera saturation
     Saturation,

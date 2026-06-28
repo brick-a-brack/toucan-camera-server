@@ -38,9 +38,13 @@ fn main() {
         copy_gphoto2_bundle();
     }
 
-    if std::env::var_os("CARGO_FEATURE_BACKEND_NIKON").is_some() && target.contains("apple") {
+    if std::env::var_os("CARGO_FEATURE_BACKEND_NIKON").is_some() {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
-        copy_nikon_runtime(&manifest_dir);
+        if target.contains("apple") {
+            copy_nikon_runtime(&manifest_dir);
+        } else if target.contains("windows") {
+            copy_nikon_runtime_windows(&manifest_dir);
+        }
     }
 
     if std::env::var_os("CARGO_FEATURE_BACKEND_WEBCAM_MACOS").is_some()
@@ -291,6 +295,73 @@ fn copy_nikon_runtime(manifest_dir: &str) {
 
     println!(
         "cargo:warning=Nikon runtime staged in {}",
+        profile_dir.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Nikon runtime (Windows)
+//
+// Unlike macOS, the Windows SDK ships loose, ready-to-use artifacts (no zip, no
+// `.app` layout, no codesigning, and no Objective-C class clash with the Canon
+// EDSDK — the PTP driver is a plain DLL). We copy the CS-Layer DLL, its
+// dependent DLLs and the 3 `.config` files next to the produced binary so:
+//   - the backend `LoadLibrary`s `ControlServiceLayer.dll` via `current_exe()`;
+//   - Windows resolves the dependent DLLs (`NkdPTP.dll`, `NkRoyalmile.dll`,
+//     `dnssd.dll`) from the binary's directory (the default search path);
+//   - the backend deploys the `.config` files to %APPDATA%\Nikon\NXTether at
+//     startup from the copies staged here.
+//
+// Source layout (as unzipped from the SDK package, no rearranging needed):
+//   external/NIKON/Module/Win/BinaryFile/{*.dll, *.config}
+//
+// Best-effort: a missing source only logs a warning so dev machines without the
+// SDK keep building.
+// ---------------------------------------------------------------------------
+
+fn copy_nikon_runtime_windows(manifest_dir: &str) {
+    println!("cargo:rerun-if-changed=external/NIKON/Module/Win/BinaryFile");
+
+    let src = Path::new(manifest_dir).join("external/NIKON/Module/Win/BinaryFile");
+    if !src.exists() {
+        println!(
+            "cargo:warning=Nikon Windows runtime not found at {} — see src/backends/nikon/README.md",
+            src.display()
+        );
+        return;
+    }
+
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let profile_dir = Path::new(&out_dir)
+        .ancestors()
+        .nth(3)
+        .expect("unexpected OUT_DIR structure")
+        .to_path_buf();
+
+    for name in [
+        "ControlServiceLayer.dll",
+        "NkdPTP.dll",
+        "NkRoyalmile.dll",
+        "dnssd.dll",
+        "DC_PTP_Config.config",
+        "MaidLayer.config",
+        "RangeValue.config",
+    ] {
+        let s = src.join(name);
+        if s.exists() {
+            let dst = profile_dir.join(name);
+            // Drop a possibly read-only stale copy before overwriting.
+            let _ = std::fs::remove_file(&dst);
+            if let Err(e) = std::fs::copy(&s, &dst) {
+                println!("cargo:warning=Nikon Windows copy {name} failed: {e}");
+            }
+        } else {
+            println!("cargo:warning=Nikon Windows runtime missing: {}", s.display());
+        }
+    }
+
+    println!(
+        "cargo:warning=Nikon Windows runtime staged in {}",
         profile_dir.display()
     );
 }

@@ -1,7 +1,7 @@
-#[cfg(feature = "backend-canon")]
+#[cfg(all(feature = "backend-canon", any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub mod canon;
 
-#[cfg(all(feature = "backend-nikon", target_os = "macos"))]
+#[cfg(all(feature = "backend-nikon", any(target_os = "macos", target_os = "windows")))]
 pub mod nikon;
 
 #[cfg(all(feature = "backend-webcam-linux", target_os = "linux"))]
