@@ -138,6 +138,7 @@ impl CameraBackend for RemoteBackend {
                 id: DeviceId::new("remote", &native).encode(),
                 name,
                 connected: connected.contains(&native),
+                dedup_key: None,
             })
             .collect())
     }

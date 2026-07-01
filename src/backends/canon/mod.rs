@@ -17,6 +17,10 @@ use crate::camera::{
 const EDS_MAX_NAME: usize = 256;
 const EDS_ERR_OK: u32 = 0x00000000;
 
+/// Canon's USB vendor id — used to build the cross-backend dedup key so gphoto2
+/// yields EOS bodies to this (higher-priority) backend.
+const USB_VENDOR_CANON: u16 = 0x04A9;
+
 type EdsBaseRef = *mut std::ffi::c_void;
 type EdsCameraListRef = EdsBaseRef;
 type EdsCameraRef = EdsBaseRef;
@@ -335,6 +339,12 @@ impl CameraBackend for CanonBackend {
         "canon"
     }
 
+    /// Above the generic backends: the EDSDK gives native EVF live view and the
+    /// full Canon parameter set, so it wins dedup over gphoto2 for the same body.
+    fn dedup_priority(&self) -> i32 {
+        10
+    }
+
     fn is_connected(&self, native_id: &str) -> bool {
         let (reply_tx, reply_rx) = mpsc::channel();
         if self
@@ -637,7 +647,11 @@ fn list_devices_impl(connected: &HashMap<String, EdsCameraRef>) -> Result<Vec<De
             };
             let id = DeviceId::new("canon", &port).encode();
             let is_connected = connected.contains_key(port.as_ref() as &str);
-            devices.push(DeviceInfo { id, name, connected: is_connected });
+            // Dedup key so gphoto2 yields EOS bodies to the EDSDK backend. EDSDK
+            // only lists Canon bodies it supports, so unsupported Canons (no
+            // entry here) stay on gphoto2.
+            let dedup_key = Some(crate::camera::dedup_key(USB_VENDOR_CANON, &name));
+            devices.push(DeviceInfo { id, name, connected: is_connected, dedup_key });
         }
 
         unsafe { EdsRelease(camera_ref) };

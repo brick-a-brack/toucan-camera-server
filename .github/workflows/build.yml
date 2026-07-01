@@ -6,12 +6,23 @@ on:
       - master
       - dev
       - feature/libgphoto2
+      - feature/nikonZS2
   workflow_dispatch:
 
 env:
   CANON_EDSDK_MACOS_URL: "https://uploads.brickfilms.com/files/1/29d5aec8-edsdkv132010m.zip"
   CANON_EDSDK_WINDOWS_URL: "https://uploads.brickfilms.com/files/1/a3039b9f-edsdkv132010w.zip"
   CANON_EDSDK_LINUX_URL: "https://uploads.brickfilms.com/files/1/a0d2f38c-edsdkv132010l.zip"
+  # Nikon Remote SDK (S-SDKZ-200BF-ALLIN) — a single multi-platform archive that
+  # contains both Module/Mac (macOS) and Module/Win (Windows) runtimes. The macOS
+  # and Windows jobs each extract only the part they need.
+  #
+  # backend-nikon dlopen's / LoadLibrary's the CS-Layer at runtime (no build-time
+  # link), so the Rust build succeeds WITHOUT this archive — the URL only stages
+  # the runtime so the packaged artifact is actually runnable. Staging is
+  # best-effort: leaving this empty just skips it (no Nikon runtime in the zip).
+  # TODO: set to the hosted Nikon SDK archive URL (or wire a secret) to ship it.
+  NIKON_SDK_URL: "https://uploads.brickfilms.com/files/1/cd8a665a-s-sdkz-200bf-allin-1.zip"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -70,6 +81,42 @@ jobs:
           fi
           arch -x86_64 /usr/local/bin/brew install libgphoto2
 
+      - name: Install Nikon Remote SDK runtime (best-effort)
+        # backend-nikon dlopen's the CS-Layer at runtime (no build-time link), so
+        # this only stages the runtime for a runnable artifact — the Rust build
+        # still succeeds without it. Skipped when NIKON_SDK_URL is empty.
+        run: |
+          URL="${{ env.NIKON_SDK_URL }}"
+          if [ -z "$URL" ]; then
+            echo "NIKON_SDK_URL empty — skipping Nikon runtime (backend still builds)."
+            exit 0
+          fi
+          curl -fsSL "$URL" -o nikon_sdk.zip
+          # Only the macOS runtime is needed here: a nested TestApp.zip under Module/Mac.
+          unzip -q -o nikon_sdk.zip "Module/Mac/BinaryFile/TestApp.zip" -d nikon_sdk_tmp
+          unzip -q -o "nikon_sdk_tmp/Module/Mac/BinaryFile/TestApp.zip" -d nikon_testapp
+
+          BUNDLE="nikon_testapp/TestApp/TestApp/TypeCommon Module.bundle"
+          FRAMEWORKS="nikon_testapp/TestApp/Frameworks"
+          CFGDIR="nikon_testapp/TestApp/TestApp"
+          [ -d "$BUNDLE" ] || { echo "ERROR: '$BUNDLE' missing in Nikon SDK archive"; exit 1; }
+          [ -d "$FRAMEWORKS" ] || { echo "ERROR: '$FRAMEWORKS' missing in Nikon SDK archive"; exit 1; }
+
+          mkdir -p external/NIKON/runtime/config
+          # ditto preserves the bundle's code signature and the framework's version
+          # symlinks (a plain cp -r would flatten them and break loading). build.rs
+          # then rewrites install names / rpaths and re-signs (see fixup_nikon_runtime).
+          ditto "$BUNDLE" "external/NIKON/runtime/TypeCommon Module.bundle"
+          ditto "$FRAMEWORKS" "external/NIKON/runtime/Frameworks"
+          for cfg in DC_PTP_Config.config MaidLayer.config RangeValue.config; do
+            if [ -f "$CFGDIR/$cfg" ]; then
+              cp "$CFGDIR/$cfg" external/NIKON/runtime/config/
+            else
+              echo "WARNING: Nikon config $cfg not found in archive"
+            fi
+          done
+          echo "Nikon macOS runtime staged into external/NIKON/runtime"
+
       - name: Build x86_64
         env:
           # Cross-link against the Intel libgphoto2 under /usr/local. brew symlinks
@@ -80,7 +127,7 @@ jobs:
         run: |
           cargo build --release \
             --target x86_64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-remote
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon,backend-remote
 
       - name: Build arm64
         env:
@@ -88,7 +135,7 @@ jobs:
         run: |
           cargo build --release \
             --target aarch64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-remote
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon,backend-remote
 
       - name: Create universal binary with lipo
         run: |
@@ -123,6 +170,22 @@ jobs:
             target/aarch64-apple-darwin/release \
             dist/toucan-camera-server-macos
 
+          # Nikon runtime — staged and fixed-up by build.rs in the per-arch release
+          # dir; the SDK binaries are universal, so copy from one arch. The backend
+          # dlopen's "TypeCommon Module.bundle" next to the binary and resolves the
+          # sibling Frameworks/ via @loader_path, so both sit at the artifact root.
+          # Only present if the Nikon SDK was provided (see the Nikon staging step).
+          NIKON_REL="target/aarch64-apple-darwin/release"
+          if [ -d "$NIKON_REL/TypeCommon Module.bundle" ]; then
+            ditto "$NIKON_REL/TypeCommon Module.bundle" \
+                  "dist/toucan-camera-server-macos/TypeCommon Module.bundle"
+            ditto "$NIKON_REL/Frameworks" "dist/toucan-camera-server-macos/Frameworks"
+            for cfg in DC_PTP_Config.config MaidLayer.config RangeValue.config; do
+              [ -f "$NIKON_REL/$cfg" ] && cp "$NIKON_REL/$cfg" dist/toucan-camera-server-macos/
+            done
+            echo "Nikon runtime bundled into the macOS artifact"
+          fi
+
           cd dist/toucan-camera-server-macos
           zip -r ../toucan-camera-server-macos.zip .
 
@@ -150,11 +213,34 @@ jobs:
           Invoke-WebRequest -Uri "$env:CANON_EDSDK_WINDOWS_URL" -OutFile canon_sdk.zip
           Expand-Archive canon_sdk.zip -DestinationPath external\EDSDK\
 
+      - name: Download Nikon Remote SDK runtime (best-effort)
+        # backend-nikon LoadLibrary's the CS-Layer at runtime (no build-time link),
+        # so this only stages the runtime for a runnable artifact — the Rust build
+        # still succeeds without it. Skipped when NIKON_SDK_URL is empty.
+        shell: pwsh
+        run: |
+          $url = "${{ env.NIKON_SDK_URL }}"
+          if ([string]::IsNullOrEmpty($url)) {
+            Write-Host "NIKON_SDK_URL empty — skipping Nikon runtime (backend still builds)."
+            exit 0
+          }
+          Invoke-WebRequest -Uri $url -OutFile nikon_sdk.zip
+          Expand-Archive nikon_sdk.zip -DestinationPath nikon_sdk_tmp -Force
+          # The Windows runtime ships as loose, ready-to-use files under Module/Win.
+          $binSrc = "nikon_sdk_tmp\Module\Win\BinaryFile"
+          if (-not (Test-Path $binSrc)) {
+            Write-Error "Module\Win\BinaryFile not found in Nikon SDK archive"; exit 1
+          }
+          $dest = "external\NIKON\Module\Win\BinaryFile"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item "$binSrc\*" $dest -Recurse -Force
+          Write-Host "Nikon Windows runtime staged into $dest"
+
       - name: Build x86_64
         run: |
           cargo build --release `
             --target x86_64-pc-windows-msvc `
-            --features backend-webcam-windows,backend-canon,backend-remote
+            --features backend-webcam-windows,backend-canon,backend-nikon,backend-remote
 
       - name: Package into zip
         shell: pwsh
@@ -168,6 +254,21 @@ jobs:
           $dlls = @("EDSDK.dll", "EdsImage.dll")
           foreach ($dll in $dlls) {
             $src = "target\x86_64-pc-windows-msvc\release\$dll"
+            if (Test-Path $src) {
+              Copy-Item $src $out
+            }
+          }
+
+          # Nikon runtime — DLLs + config files staged next to the binary by
+          # build.rs (only present if the Nikon SDK was provided). The backend
+          # LoadLibrary's ControlServiceLayer.dll and deploys the .config files to
+          # %APPDATA%\Nikon\NXTether at startup from these copies.
+          $nikon = @(
+            "ControlServiceLayer.dll", "NkdPTP.dll", "NkRoyalmile.dll", "dnssd.dll",
+            "DC_PTP_Config.config", "MaidLayer.config", "RangeValue.config"
+          )
+          foreach ($f in $nikon) {
+            $src = "target\x86_64-pc-windows-msvc\release\$f"
             if (Test-Path $src) {
               Copy-Item $src $out
             }

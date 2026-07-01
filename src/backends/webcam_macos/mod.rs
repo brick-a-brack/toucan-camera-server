@@ -315,7 +315,7 @@ fn list_devices_impl(sessions: &HashMap<String, SessionHandle>) -> Result<Vec<De
                 .into_owned();
             let id = DeviceId::new("webcam-macos", &native_id).encode();
             let connected = sessions.contains_key(&native_id);
-            DeviceInfo { id, name, connected }
+            DeviceInfo { id, name, connected, dedup_key: None }
         })
         .collect();
 
