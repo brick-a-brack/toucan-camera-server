@@ -14,7 +14,7 @@ env:
   CANON_EDSDK_LINUX_URL: "https://uploads.brickfilms.com/files/1/a0d2f38c-edsdkv132010l.zip"
   # libgphoto2 is compiled from source (the OS packages are often outdated).
   # Pin a branch, tag, or full commit SHA of github.com/gphoto/libgphoto2.
-  LIBGPHOTO2_REF: "master"
+  LIBGPHOTO2_REF: "7fc007d0ba6b52b8608da7b46920ae2416a94358"
 
 jobs:
   # ---------------------------------------------------------------------------
