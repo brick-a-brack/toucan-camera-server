@@ -299,8 +299,23 @@ fn copy_gphoto2_bundle() {
     let mut plugins = camlib_plugins.clone();
     plugins.extend(iolib_plugins.iter().cloned());
     let closure = collect_closure(&roots, &plugins, is_mac);
-    for lib in &closure {
-        copy_into(lib, &profile_dir);
+    // Bundle file name per flat lib. `canonicalize` resolved the dev symlink
+    // (`libgphoto2.so`) to the fully-versioned real file (`libgphoto2.so.6.0.0`),
+    // but on Linux the loader resolves NEEDED entries by SONAME
+    // (`libgphoto2.so.6`). Copy under the SONAME so $ORIGIN lookups from the
+    // binary and the plugins resolve. On macOS the install name already uses the
+    // versioned file name, so keep the canonical file name there.
+    let named: Vec<(PathBuf, String)> = closure
+        .iter()
+        .map(|lib| {
+            let fallback =
+                lib.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
+            let name = if is_linux { soname(lib).unwrap_or_else(|| fallback.clone()) } else { fallback };
+            (lib.clone(), name)
+        })
+        .collect();
+    for (lib, name) in &named {
+        copy_as(lib, &profile_dir.join(name));
     }
     copy_plugins(&camlib_plugins, &profile_dir.join("camlibs"));
     copy_plugins(&iolib_plugins, &profile_dir.join("iolibs"));
@@ -315,10 +330,9 @@ fn copy_gphoto2_bundle() {
 
     // Record the bundled flat dylibs so the macOS CI packaging step knows exactly
     // which files to lipo-merge and relink (plugin dirs are always camlibs/ iolibs/).
-    let manifest: Vec<&str> = closure
-        .iter()
-        .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
-        .collect();
+    // The manifest drives the CI copy step, so it must list the names actually
+    // written to the bundle (SONAMEs on Linux, canonical names on macOS).
+    let manifest: Vec<&str> = named.iter().map(|(_, n)| n.as_str()).collect();
     // Trailing newline is required: the CI packaging scripts read this file with
     // `while read`, which silently drops a final line that is not newline-
     // terminated — leaving that lib unbundled while the binary still gets
@@ -331,10 +345,8 @@ fn copy_gphoto2_bundle() {
     if is_linux {
         // Flat libs find siblings via $ORIGIN; plugins (one dir down) via $ORIGIN/..
         println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
-        for lib in &closure {
-            if let Some(name) = lib.file_name() {
-                patch_rpath(&profile_dir.join(name), "$ORIGIN");
-            }
+        for (_, name) in &named {
+            patch_rpath(&profile_dir.join(name), "$ORIGIN");
         }
         for sub in ["camlibs", "iolibs"] {
             let dir = profile_dir.join(sub);
@@ -466,17 +478,34 @@ fn collect_closure(roots: &[PathBuf], plugins: &[PathBuf], is_mac: bool) -> Vec<
 
 fn copy_into(src: &Path, dest_dir: &Path) {
     let Some(name) = src.file_name() else { return };
-    let dest = dest_dir.join(name);
+    copy_as(src, &dest_dir.join(name));
+}
+
+/// Copy `src` to an explicit destination path (used to rename a lib to its
+/// SONAME while copying).
+fn copy_as(src: &Path, dest: &Path) {
     // brew dylibs are read-only, and std::fs::copy copies their mode — so a stale
     // read-only copy from a previous build can't be overwritten. Drop it first.
-    let _ = std::fs::remove_file(&dest);
-    if let Err(e) = std::fs::copy(src, &dest) {
+    let _ = std::fs::remove_file(dest);
+    if let Err(e) = std::fs::copy(src, dest) {
         println!("cargo:warning=gphoto2 bundle: copy {} failed: {e}", src.display());
         return;
     }
     // brew/apt dylibs are read-only; make the copy writable so the Linux patchelf
     // pass and the macOS CI install_name_tool relink can modify it.
-    make_writable(&dest);
+    make_writable(dest);
+}
+
+/// The SONAME an ELF advertises (Linux), e.g. `libgphoto2.so.6` — the name the
+/// dynamic loader resolves NEEDED entries by. `None` if patchelf is unavailable
+/// or the lib carries no SONAME (fall back to the file name).
+fn soname(lib: &Path) -> Option<String> {
+    let out = Command::new("patchelf").arg("--print-soname").arg(lib).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 #[cfg(unix)]
