@@ -111,6 +111,8 @@ startup from the files staged next to the binary.
 | `get_parameters` | `GetCapability(id, SupportedValueArray)` → options; `ulValue` = current **index** |
 | `set_parameter` | read enum (mode 0) for a valid struct, set `ulValue = index`, `pData = NULL`, `SetCapability(id, &enum, EnumPtr)` |
 | `get_live_view_frame` | `StartLiveView` once; JPEG arrives via `LiveViewDataProc`; kept in a global latest-frame cell |
+| `LiveViewZoom` | `LiveViewImageZoomRate` (0x823f) enum (Fit / 25 % … 200 %), set by option index like the other enum caps |
+| `LiveViewPan` / `LiveViewTilt` | scroll the magnified area: current center + bounds read from the frame header (`m_DispCenter*` / `m_Total*`), written via the `ContrastAFArea` (0x824a) `Point` cap |
 | `capture_photo` | SaveMedia=SDRAM + `SetImageVideoSavePath(tmp)` + `StartShooting(Single)`; read the file from the `ImageSaved` event (newest-file fallback) |
 
 **Enum semantics (important):** `NkMAIDEnum.ulValue` is an **index** into the
@@ -189,6 +191,31 @@ we can still recover the numeric `ID` for `ConnectDevice`.
 | AFModeAtLiveView | 0x8310 |
 | IsoControl | 0x816c |
 | SaveMedia | 0x8305 |
+| LiveViewImageZoomRate | 0x823f |
+| ContrastAFArea (live-view AF/zoom scroll, `Point` type) | 0x824a |
+
+`eNkMAIDLiveViewImageZoomRate`: All(Fit)=0, 25 %=1, 33 %=2, 50 %=3, 67 %=4, 100 %=5, 200 %=6, 13 %=7, 17 %=8.
+`kNkMAIDDataType_PointPtr = 8` (the `SetCapability` data type for `NkMAIDPoint { SLONG x, y }`).
+
+### Live-view zoom / pan / tilt
+The zoom window is reported in the **live-view header** every frame: `m_TotalW/H` (full
+image), `m_DispAreaW/H` (visible/magnified window), `m_DispCenterW/H` (its center).
+`parse_lv_zoom_pos` reads those six `u16` (`SIZEINFO`) fields at header offsets
+28/30/32/34/36/38 — identical on macOS (natural) and Windows (`pack(2)`), since every
+preceding field is already 2-aligned — into `LV_ZOOM_POS`, updated by `LiveViewDataProc`.
+- **Zoom** (`LiveViewZoom`): a Select over `LiveViewImageZoomRate` (settable while live
+  view is active). Absent until the stream is running and the enum reads back.
+- **Pan/Tilt** (`LiveViewPan`/`LiveViewTilt`): Ranges `0..m_Total*`, current = `m_DispCenter*`,
+  `disabled` while not magnified (`m_DispArea == m_Total`). Written by setting the
+  `ContrastAFArea` **Point** cap (x,y); a single-axis move holds the other axis at its
+  last center. Emitted only when the cap is settable in the connect-time cap table.
+
+> **Hardware validation pending.** Zoom (the enum) is the standard settable-enum path,
+> like the other caps. Pan/tilt writes assume `ContrastAFArea`'s point coordinate space
+> matches the header's `m_Total*` pixel space; this pairing is not yet confirmed on a Z
+> body. Both controls are gated (they only appear when the caps/position are available),
+> so an unsupported body simply omits them. Confirm on the Z5II and adjust the coordinate
+> mapping if the scroll does not track.
 
 `eNkMAIDSaveMedia`: Card=0, SDRAM=1, Card_SDRAM=2.
 `eNkSDKGetSettingRequestType`: Value=0, SupportedValueArray=1, DefaultValue=2, CapabilityInfo=3.

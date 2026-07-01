@@ -200,6 +200,12 @@ enum Command {
         native_id: String,
         reply: mpsc::Sender<Result<Vec<u8>, CameraError>>,
     },
+    /// Graceful shutdown: release all capture sources and tear down Media
+    /// Foundation / COM on the SDK thread, then ack. Driven by
+    /// `WebcamWindowsBackend::shutdown`.
+    PrepareExit {
+        ack: mpsc::Sender<()>,
+    },
     Shutdown,
 }
 
@@ -307,6 +313,16 @@ impl Drop for WebcamWindowsBackend {
 impl CameraBackend for WebcamWindowsBackend {
     fn backend_id(&self) -> &str {
         "webcam-windows"
+    }
+
+    /// Releases capture sources and tears down Media Foundation / COM before the
+    /// process exits, waiting — bounded — for the SDK thread so an abrupt Ctrl-C
+    /// leaves the webcam free. The wait is capped so the exit never hangs.
+    fn shutdown(&self) {
+        let (ack_tx, ack_rx) = mpsc::channel();
+        if self.tx.send(Command::PrepareExit { ack: ack_tx }).is_ok() {
+            let _ = ack_rx.recv_timeout(std::time::Duration::from_secs(3));
+        }
     }
 
     fn list_devices(&self) -> Result<Vec<DeviceInfo>, CameraError> {
@@ -520,6 +536,22 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
                         .and_then(capture_photo_impl)
                 };
                 let _ = reply.send(result);
+            }
+            // Graceful shutdown: release the sources and tear down MF/COM here (all
+            // valid only on this thread), ack, then return so the process can exit.
+            // `return` skips the post-loop teardown so nothing is torn down twice.
+            Ok(Command::PrepareExit { ack }) => {
+                for (_, state) in connected.drain() {
+                    unsafe { let _ = state.source.Shutdown(); }
+                }
+                for (_, state) in connected_ds.drain() {
+                    unsafe { let _ = state.control.Stop(); }
+                    drop(state);
+                }
+                let _ = unsafe { MFShutdown() };
+                unsafe { CoUninitialize() };
+                let _ = ack.send(());
+                return;
             }
             Ok(Command::Shutdown) => break,
             Err(mpsc::RecvTimeoutError::Disconnected) => break,

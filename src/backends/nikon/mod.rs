@@ -156,6 +156,17 @@ const FOCUS_MODE_CAPS: &[u32] = &[CAP_AF_MODE_AT_LV, CAP_AF_MODE, CAP_FOCUS_MODE
 const CAP_ISO_CONTROL: u32 = 0x816c; // boolean: auto-ISO on/off
 const CAP_SAVE_MEDIA: u32 = 0x8305;
 
+// Live-view zoom/scroll (magnify into the stream and move the magnified area):
+// - `LiveViewImageZoomRate` (0x823f) — an enum of magnifications (Fit / 25% … 200%);
+//   settable while live view is active. Drives the `LiveViewZoom` control.
+// - `ContrastAFArea` (0x824a) — a `Point` capability (x/y in the live-view image
+//   coordinate space) that positions the AF/zoom area; setting it scrolls the
+//   magnified window. Drives `LiveViewPan` (x) / `LiveViewTilt` (y). The current
+//   window position and bounds are read back from the live-view header (see
+//   `parse_lv_zoom_pos`), not from a getter — the header reports them every frame.
+const CAP_LIVE_VIEW_ZOOM: u32 = 0x823f;
+const CAP_CONTRAST_AF_AREA: u32 = 0x824a;
+
 // eNkSDKGetSettingRequestType
 const GET_SETTING_VALUE: i32 = 0;
 const GET_SETTING_SUPPORTED_VALUE_ARRAY: i32 = 1;
@@ -171,6 +182,7 @@ const ARRAY_TYPE_PACKED_STRING: u32 = 7;
 // eNkMAIDDataType
 const DATATYPE_BOOLEAN_PTR: i32 = 4;
 const DATATYPE_UNSIGNED_PTR: i32 = 6;
+const DATATYPE_POINT_PTR: i32 = 8; // pointer to NkMAIDPoint (used by ContrastAFArea)
 const DATATYPE_RANGE_PTR: i32 = 14;
 const DATATYPE_ENUM_PTR: i32 = 16;
 
@@ -303,6 +315,61 @@ struct NkMaidLiveViewData {
     p_image_data: *mut c_void,
 }
 
+/// Mirrors `NkMAIDPoint` (`SLONG x; SLONG y;`). Passed to `SetCapability` with
+/// `DATATYPE_POINT_PTR` to position the live-view AF/zoom area (`ContrastAFArea`).
+#[cfg_attr(windows, repr(C, packed(2)))]
+#[cfg_attr(not(windows), repr(C))]
+struct NkMaidPoint {
+    x: i32,
+    y: i32,
+}
+
+/// The live-view zoom window, parsed from the `NkMAIDLiveViewData` header on every
+/// frame (see `parse_lv_zoom_pos`). `total_*` is the full image, `area_*` the
+/// visible (magnified) window, and `center_*` its center — the current pan/tilt
+/// value. When `area == total` the stream is not magnified (pan/tilt inert).
+#[derive(Clone, Copy)]
+struct LvZoomPos {
+    total_w: u16,
+    total_h: u16,
+    area_w: u16,
+    area_h: u16,
+    center_w: u16,
+    center_h: u16,
+}
+
+impl LvZoomPos {
+    /// True when the live view is magnified (the visible area is smaller than the
+    /// full image on either axis), i.e. panning/tilting is meaningful.
+    fn is_zoomed(&self) -> bool {
+        self.area_w < self.total_w || self.area_h < self.total_h
+    }
+}
+
+/// Reads the zoom window from a live-view header (`NkMAIDLiveViewHeader`, the 884
+/// opaque bytes of `NkMaidLiveViewData.st_live_view_header`). The `SIZEINFO`
+/// (`u16`) fields sit at fixed offsets after 22 leading byte fields + two `UWORD`
+/// version fields: `m_TotalW`@28, `m_TotalH`@30, `m_DispAreaW`@32, `m_DispAreaH`@34,
+/// `m_DispCenterW`@36, `m_DispCenterH`@38 (little-endian on x86_64/arm64). Offsets
+/// are identical on macOS (natural) and Windows (`pack(2)`) — every preceding field
+/// is already 2-aligned. Returns `None` if the buffer is too short or reports a
+/// zero total size (no valid frame yet).
+fn parse_lv_zoom_pos(header: &[u8]) -> Option<LvZoomPos> {
+    if header.len() < 40 {
+        return None;
+    }
+    let rd = |off: usize| u16::from_le_bytes([header[off], header[off + 1]]);
+    let pos = LvZoomPos {
+        total_w: rd(28),
+        total_h: rd(30),
+        area_w: rd(32),
+        area_h: rd(34),
+        center_w: rd(36),
+        center_h: rd(38),
+    };
+    (pos.total_w != 0 && pos.total_h != 0).then_some(pos)
+}
+
 #[cfg_attr(windows, repr(C, packed(2)))]
 #[cfg_attr(not(windows), repr(C))]
 struct NkMaidCsCallback {
@@ -388,6 +455,10 @@ struct Sdk {
 
 /// Latest JPEG frame delivered by `LiveViewDataProc`.
 static LATEST_LV_FRAME: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+/// Latest live-view zoom window (magnification + scroll position), parsed from the
+/// frame header by `LiveViewDataProc`. Drives the `LiveViewPan` / `LiveViewTilt`
+/// current values and bounds; `None` until the first frame arrives.
+static LV_ZOOM_POS: Mutex<Option<LvZoomPos>> = Mutex::new(None);
 /// Full path of the most recent saved image, from the `ImageSaved` event.
 static LAST_SAVED_PATH: Mutex<Option<String>> = Mutex::new(None);
 
@@ -461,6 +532,14 @@ unsafe extern "C" fn live_view_data_proc(_ref: *mut c_void, data: *mut NkMaidLiv
         return RESULT_NO_ERROR;
     }
     let lv = &*data;
+    // Record the zoom window (magnification + scroll position) from the header —
+    // the source for the live-view pan/tilt controls. `st_live_view_header` is an
+    // align-1 `[u8; 884]`, so borrowing it is sound even on the packed layout.
+    if let Some(pos) = parse_lv_zoom_pos(&lv.st_live_view_header) {
+        if let Ok(mut g) = LV_ZOOM_POS.lock() {
+            *g = Some(pos);
+        }
+    }
     if lv.ul_lv_image_size > 0 && !lv.p_image_data.is_null() {
         let bytes = std::slice::from_raw_parts(
             lv.p_image_data as *const u8,
@@ -519,6 +598,12 @@ enum Command {
     /// Fire-and-forget: initialize the SDK in the background (pre-warm) so the
     /// first real command doesn't pay the ~10 s InitializeSDK cost inline.
     Warmup,
+    /// Graceful shutdown: tear the SDK down (stop live view, disconnect, free) on
+    /// the sdk thread, then ack so the caller can exit without leaving the body in
+    /// an open PTP session. Driven by `NikonBackend::shutdown`.
+    PrepareExit {
+        ack: mpsc::Sender<()>,
+    },
     Shutdown,
 }
 
@@ -584,6 +669,17 @@ impl CameraBackend for NikonBackend {
     /// full parameter set, so it wins dedup over gphoto2 for the same body.
     fn dedup_priority(&self) -> i32 {
         10
+    }
+
+    /// Releases the SDK before the process exits: asks the sdk thread to stop live
+    /// view, disconnect, and free the SDK, then waits — bounded — for it to finish.
+    /// The thread may be mid-SDK-call when Ctrl-C fires, so the wait is capped so
+    /// the exit never hangs.
+    fn shutdown(&self) {
+        let (ack_tx, ack_rx) = mpsc::channel();
+        if self.tx.send(Command::PrepareExit { ack: ack_tx }).is_ok() {
+            let _ = ack_rx.recv_timeout(std::time::Duration::from_secs(3));
+        }
     }
 
     fn list_devices(&self) -> Result<Vec<DeviceInfo>, CameraError> {
@@ -844,19 +940,35 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, ready: Arc<AtomicBool>) {
             Ok(Command::Warmup) => {
                 let _ = ensure_sdk(&mut sdk);
             }
+            // Graceful shutdown: tear the SDK down here (SDK calls are only valid on
+            // this thread), ack, then exit the loop so the process can quit without
+            // leaving the body in an open PTP session.
+            Ok(Command::PrepareExit { ack }) => {
+                teardown_sdk(&mut sdk, &mut session);
+                let _ = ack.send(());
+                break;
+            }
             Ok(Command::Shutdown) | Err(_) => break,
         }
         // Reflect init state so list_devices knows when the SDK is usable.
         ready.store(sdk.is_some(), Ordering::Relaxed);
     }
 
-    if let Some(sdk) = sdk {
+    teardown_sdk(&mut sdk, &mut session);
+}
+
+/// Gracefully releases the SDK: stops live view + disconnects any open session,
+/// then frees the SDK. Idempotent — clears `sdk` so a second call is a no-op.
+/// MUST run on the nikon-sdk thread (SDK calls are thread-affine).
+fn teardown_sdk(sdk: &mut Option<Sdk>, session: &mut Option<Session>) {
+    if let Some(s) = sdk.as_ref() {
         if session.take().is_some() {
-            unsafe { (sdk.stop_live_view)(std::ptr::null_mut(), std::ptr::null_mut()) };
-            unsafe { (sdk.disconnect_device)() };
+            unsafe { (s.stop_live_view)(std::ptr::null_mut(), std::ptr::null_mut()) };
+            unsafe { (s.disconnect_device)() };
         }
-        unsafe { (sdk.free_sdk)() };
+        unsafe { (s.free_sdk)() };
     }
+    *sdk = None;
 }
 
 /// Lazily loads and initializes the Nikon SDK, caching it in `slot`. Returns the
@@ -954,44 +1066,13 @@ fn load_and_init_sdk() -> Result<Sdk, CameraError> {
 
     // The Nikon CS-Layer registers its own Windows console control handler during
     // InitializeSDK, which swallows Ctrl-C so the process can no longer be stopped
-    // from the terminal. Re-install our own handler *after* init: console handlers
-    // fire LIFO, so ours runs first and exits the process before the SDK's is ever
-    // consulted.
+    // from the terminal. Re-install the shared handler *after* init: console
+    // handlers fire LIFO, so ours runs first, releases every backend, and exits
+    // before the SDK's is ever consulted (see `crate::shutdown`).
     #[cfg(windows)]
-    restore_ctrl_c_handler();
+    crate::shutdown::install_console_handler();
 
     Ok(sdk)
-}
-
-/// Re-installs a console Ctrl-C / Ctrl-Break handler that terminates the process.
-///
-/// The Nikon SDK installs its own handler that swallows these events; because
-/// Windows invokes handlers in reverse registration order, installing ours after
-/// SDK init makes it fire first and exit, bypassing the SDK's handler entirely.
-#[cfg(windows)]
-fn restore_ctrl_c_handler() {
-    use std::os::raw::c_void;
-
-    const CTRL_C_EVENT: u32 = 0;
-    const CTRL_BREAK_EVENT: u32 = 1;
-
-    extern "system" {
-        fn SetConsoleCtrlHandler(handler: *mut c_void, add: i32) -> i32;
-    }
-
-    unsafe extern "system" fn handler(ctrl_type: u32) -> i32 {
-        match ctrl_type {
-            // 130 is the conventional exit code for termination via Ctrl-C.
-            CTRL_C_EVENT | CTRL_BREAK_EVENT => std::process::exit(130),
-            // Let the default (and other) handlers deal with close/logoff/shutdown.
-            _ => 0, // FALSE
-        }
-    }
-
-    let ok = unsafe { SetConsoleCtrlHandler(handler as *mut c_void, 1) };
-    if ok == 0 {
-        eprintln!("[nikon] failed to re-install Ctrl-C handler after SDK init");
-    }
 }
 
 /// Path to the CS-Layer module staged next to the running binary by build.rs.
@@ -1181,6 +1262,7 @@ fn disconnect_impl(
     let err = unsafe { (sdk.disconnect_device)() };
     *session = None;
     *LATEST_LV_FRAME.lock().unwrap() = None;
+    *LV_ZOOM_POS.lock().unwrap() = None;
     if err != RESULT_NO_ERROR {
         return Err(CameraError::SdkError(err as u32));
     }
@@ -1516,6 +1598,25 @@ fn decode_af_mode_at_lv(v: i64) -> String {
     .to_string()
 }
 
+/// `eNkMAIDLiveViewImageZoomRate` (Maid3d1.h) — the live-view magnification codes.
+/// Numeric fallback only (Z bodies report enum caps as PackedString, so the SDK's
+/// own labels are used when available). `0` is "fit to screen" (no magnification).
+fn decode_lv_zoom_rate(v: i64) -> String {
+    match v {
+        0 => "Fit",
+        1 => "25%",
+        2 => "33%",
+        3 => "50%",
+        4 => "67%",
+        5 => "100%",
+        6 => "200%",
+        7 => "13%",
+        8 => "17%",
+        _ => return v.to_string(),
+    }
+    .to_string()
+}
+
 /// The numeric-fallback decoder for a focus-mode capability id.
 fn focus_decode_for(cap_id: u32) -> fn(i64) -> String {
     match cap_id {
@@ -1655,7 +1756,65 @@ fn get_parameters_impl(
         }
     }
 
+    // Live-view zoom (magnification) + pan/tilt (scroll of the magnified area).
+    // These only exist while live view is streaming, so they appear once the
+    // stream is running and the caps report available.
+    result.extend(read_live_view_controls(sdk, &s.cap_ops));
+
     Ok(result)
+}
+
+/// Builds the live-view zoom / pan / tilt controls, when the body supports them:
+/// - `LiveViewZoom` — a Select over `LiveViewImageZoomRate`'s magnifications
+///   (Fit / 25% … 200%). Present whenever the enum reads back (i.e. live view is
+///   active on the body).
+/// - `LiveViewPan` / `LiveViewTilt` — Ranges over the scroll position of the
+///   magnified window, sourced from the last frame's header (`LV_ZOOM_POS`) and
+///   written through the `ContrastAFArea` point capability. Emitted only when that
+///   cap is settable and a zoom position is known; `disabled` while not magnified.
+///
+/// Returns an empty vec on bodies / states where none apply.
+fn read_live_view_controls(sdk: &Sdk, cap_ops: &HashMap<u32, u32>) -> Vec<CameraParameter> {
+    let mut out = Vec::new();
+
+    // Zoom: read the magnification enum. `read_enum_param` yields options whose
+    // `value` is the SDK index (what `set_enum_index` expects) and labels from the
+    // PackedString form or the numeric decoder.
+    let zoom_spec = EnumSpec {
+        param_type: ParameterType::LiveViewZoom,
+        cap_id: CAP_LIVE_VIEW_ZOOM,
+        ordered: false,
+        decode: decode_lv_zoom_rate,
+    };
+    if let Some(zoom) = read_enum_param(sdk, &zoom_spec, false) {
+        out.push(zoom);
+    }
+
+    // Pan/tilt: needs the settable point cap and a position from the live-view
+    // header. Bounds are the full image; the current value is the window center.
+    if cap_is_settable(cap_ops, CAP_CONTRAST_AF_AREA) == Some(true) {
+        if let Some(pos) = *LV_ZOOM_POS.lock().unwrap() {
+            let disabled = !pos.is_zoomed();
+            out.push(CameraParameter::Range {
+                param_type: ParameterType::LiveViewPan,
+                current: pos.center_w as i32,
+                min: 0,
+                max: pos.total_w as i32,
+                step: 1,
+                disabled,
+            });
+            out.push(CameraParameter::Range {
+                param_type: ParameterType::LiveViewTilt,
+                current: pos.center_h as i32,
+                min: 0,
+                max: pos.total_h as i32,
+                step: 1,
+                disabled,
+            });
+        }
+    }
+
+    out
 }
 
 /// Reads an enum capability's option labels and current index (mode 1). Handles
@@ -1945,6 +2104,17 @@ fn set_parameter_impl(
             let idx: u32 = value.parse().map_err(|_| CameraError::NotSupported)?;
             return set_enum_index(sdk, cap, idx);
         }
+        // Live-view magnification: `value` is the option index from read_enum_param.
+        ParameterType::LiveViewZoom => {
+            let idx: u32 = value.parse().map_err(|_| CameraError::NotSupported)?;
+            return set_enum_index(sdk, CAP_LIVE_VIEW_ZOOM, idx);
+        }
+        // Live-view scroll: move the magnified window along one axis via the
+        // ContrastAFArea point cap, keeping the other axis at its current center.
+        ParameterType::LiveViewPan | ParameterType::LiveViewTilt => {
+            let v: i32 = value.parse().map_err(|_| CameraError::NotSupported)?;
+            return set_lv_zoom_axis(sdk, param_type == ParameterType::LiveViewPan, v);
+        }
         _ => {}
     }
 
@@ -1952,6 +2122,35 @@ fn set_parameter_impl(
     // `value` is the option index produced by read_enum_param.
     let idx: u32 = value.parse().map_err(|_| CameraError::NotSupported)?;
     set_enum_index(sdk, cap_id, idx)
+}
+
+/// Moves the live-view zoom window along one axis (`is_x` → pan/horizontal, else
+/// tilt/vertical) by writing the `ContrastAFArea` point capability. The other axis
+/// is held at its last-known center (from `LV_ZOOM_POS`) so a single-axis move does
+/// not recentre the window. Requires a known zoom position (i.e. live view has
+/// delivered at least one frame).
+fn set_lv_zoom_axis(sdk: &Sdk, is_x: bool, value: i32) -> Result<(), CameraError> {
+    let pos = LV_ZOOM_POS
+        .lock()
+        .unwrap()
+        .ok_or(CameraError::NotSupported)?;
+    let point = if is_x {
+        NkMaidPoint { x: value, y: pos.center_h as i32 }
+    } else {
+        NkMaidPoint { x: pos.center_w as i32, y: value }
+    };
+    let r = unsafe {
+        (sdk.set_capability)(
+            CAP_CONTRAST_AF_AREA,
+            &point as *const NkMaidPoint as *mut c_void,
+            DATATYPE_POINT_PTR,
+        )
+    };
+    if r == RESULT_NO_ERROR {
+        Ok(())
+    } else {
+        Err(CameraError::SdkError(r as u32))
+    }
 }
 
 /// Sets an enum capability to the given option index: fetch the current enum to
@@ -2233,6 +2432,59 @@ mod tests {
     #[test]
     fn parse_device_id_rejects_garbage() {
         assert_eq!(parse_device_id("notanumber|x"), None);
+    }
+
+    #[test]
+    fn lv_zoom_rate_labels() {
+        assert_eq!(decode_lv_zoom_rate(0), "Fit");
+        assert_eq!(decode_lv_zoom_rate(5), "100%");
+        assert_eq!(decode_lv_zoom_rate(6), "200%");
+        // Unknown code falls back to raw.
+        assert_eq!(decode_lv_zoom_rate(42), "42");
+    }
+
+    #[test]
+    fn lv_zoom_pos_parses_header_offsets() {
+        // Build an 884-byte header with known little-endian u16 values at the zoom
+        // window offsets (Total 28/30, DispArea 32/34, DispCenter 36/38).
+        let mut h = [0u8; 884];
+        let put = |h: &mut [u8; 884], off: usize, v: u16| {
+            h[off..off + 2].copy_from_slice(&v.to_le_bytes());
+        };
+        put(&mut h, 28, 6000); // total_w
+        put(&mut h, 30, 4000); // total_h
+        put(&mut h, 32, 3000); // area_w
+        put(&mut h, 34, 2000); // area_h
+        put(&mut h, 36, 1500); // center_w
+        put(&mut h, 38, 2500); // center_h
+        let pos = parse_lv_zoom_pos(&h).expect("valid header");
+        assert_eq!((pos.total_w, pos.total_h), (6000, 4000));
+        assert_eq!((pos.area_w, pos.area_h), (3000, 2000));
+        assert_eq!((pos.center_w, pos.center_h), (1500, 2500));
+        // area < total on both axes → magnified.
+        assert!(pos.is_zoomed());
+    }
+
+    #[test]
+    fn lv_zoom_pos_not_zoomed_when_area_equals_total() {
+        let mut h = [0u8; 884];
+        let put = |h: &mut [u8; 884], off: usize, v: u16| {
+            h[off..off + 2].copy_from_slice(&v.to_le_bytes());
+        };
+        put(&mut h, 28, 6000); // total_w
+        put(&mut h, 30, 4000); // total_h
+        put(&mut h, 32, 6000); // area_w == total_w
+        put(&mut h, 34, 4000); // area_h == total_h
+        let pos = parse_lv_zoom_pos(&h).expect("valid header");
+        assert!(!pos.is_zoomed());
+    }
+
+    #[test]
+    fn lv_zoom_pos_rejects_empty_or_short() {
+        // Zero total size (no frame yet) → None.
+        assert!(parse_lv_zoom_pos(&[0u8; 884]).is_none());
+        // Buffer too short → None (defensive; the real header is always 884).
+        assert!(parse_lv_zoom_pos(&[0u8; 10]).is_none());
     }
 
     #[test]

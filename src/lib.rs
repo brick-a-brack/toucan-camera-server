@@ -2,6 +2,7 @@ mod auth;
 pub mod backends;
 pub mod camera;
 pub mod routes;
+pub mod shutdown;
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -291,6 +292,16 @@ pub async fn run_server() {
     let instance_id = Arc::new(uuid::Uuid::new_v4().to_string());
 
     let built = build_backends();
+
+    // Register the backends for the process-wide shutdown path so their SDK
+    // sessions are released on Ctrl-C / graceful stop instead of being left
+    // claimed (which would keep the camera from re-enumerating on the next run).
+    shutdown::set_backends(built.state.clone());
+    // Baseline Ctrl-C handler for the non-Nikon case; the Nikon backend re-installs
+    // it after its SDK init so ours stays on top of the SDK's swallowing handler.
+    #[cfg(windows)]
+    shutdown::install_console_handler();
+
     let state = AppState::new(
         built.state,
         token.clone(),
@@ -308,7 +319,23 @@ pub async fn run_server() {
     eprintln!("[config] EXPOSE={expose}");
     eprintln!("[config] TOKEN={}", token.read().unwrap());
     eprintln!("[info] Listening on http://{}/?token={}", addr, token.read().unwrap());
+
+    // Windows drives shutdown through the console control handler (which exits the
+    // process directly — see `shutdown::install_console_handler`), so serve plainly.
+    #[cfg(windows)]
     axum::serve(listener, app).await.unwrap();
+
+    // Elsewhere, stop serving on Ctrl-C and release the backends before returning.
+    #[cfg(not(windows))]
+    {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = tokio::signal::ctrl_c().await;
+            })
+            .await
+            .unwrap();
+        shutdown::run();
+    }
 }
 
 // ---------------------------------------------------------------------------

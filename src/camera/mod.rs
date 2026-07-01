@@ -338,6 +338,17 @@ pub trait CameraBackend: Send + Sync {
         let _ = native_id;
         Err(CameraError::NotSupported)
     }
+
+    /// Best-effort, bounded, blocking teardown before the process exits.
+    ///
+    /// Called by the process-wide shutdown path (`crate::shutdown`) on Ctrl-C
+    /// (Windows) and on graceful shutdown (Unix). Backends that own a hardware/SDK
+    /// session must release it here — close sessions, stop live view, terminate the
+    /// SDK — so the device is not left claimed and re-enumerates on the next run.
+    /// Must not block indefinitely: the SDK thread may be mid-call, so
+    /// implementations wait for teardown with a short timeout. Default: no-op (for
+    /// backends with nothing to release, e.g. the remote proxy).
+    fn shutdown(&self) {}
 }
 
 // ---------------------------------------------------------------------------
