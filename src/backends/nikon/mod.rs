@@ -132,7 +132,6 @@ const USB_VENDOR_NIKON: u16 = 0x04B0;
 
 const CAP_FILE_TYPE: u32 = 0x810f; // image format (JPEG/NEF/…) — codes camera-specific
 const CAP_COMPRESSION_LEVEL: u32 = 0x8110; // JPEG compression (Basic/Normal/Fine)
-const CAP_EXPOSURE_MODE: u32 = 0x8111;
 const CAP_SHUTTER_SPEED: u32 = 0x8112;
 const CAP_APERTURE: u32 = 0x8113;
 const CAP_EXPOSURE_COMP: u32 = 0x8115; // RangePtr (computed value), not an enum
@@ -953,7 +952,46 @@ fn load_and_init_sdk() -> Result<Sdk, CameraError> {
         return Err(CameraError::SdkError(err as u32));
     }
 
+    // The Nikon CS-Layer registers its own Windows console control handler during
+    // InitializeSDK, which swallows Ctrl-C so the process can no longer be stopped
+    // from the terminal. Re-install our own handler *after* init: console handlers
+    // fire LIFO, so ours runs first and exits the process before the SDK's is ever
+    // consulted.
+    #[cfg(windows)]
+    restore_ctrl_c_handler();
+
     Ok(sdk)
+}
+
+/// Re-installs a console Ctrl-C / Ctrl-Break handler that terminates the process.
+///
+/// The Nikon SDK installs its own handler that swallows these events; because
+/// Windows invokes handlers in reverse registration order, installing ours after
+/// SDK init makes it fire first and exit, bypassing the SDK's handler entirely.
+#[cfg(windows)]
+fn restore_ctrl_c_handler() {
+    use std::os::raw::c_void;
+
+    const CTRL_C_EVENT: u32 = 0;
+    const CTRL_BREAK_EVENT: u32 = 1;
+
+    extern "system" {
+        fn SetConsoleCtrlHandler(handler: *mut c_void, add: i32) -> i32;
+    }
+
+    unsafe extern "system" fn handler(ctrl_type: u32) -> i32 {
+        match ctrl_type {
+            // 130 is the conventional exit code for termination via Ctrl-C.
+            CTRL_C_EVENT | CTRL_BREAK_EVENT => std::process::exit(130),
+            // Let the default (and other) handlers deal with close/logoff/shutdown.
+            _ => 0, // FALSE
+        }
+    }
+
+    let ok = unsafe { SetConsoleCtrlHandler(handler as *mut c_void, 1) };
+    if ok == 0 {
+        eprintln!("[nikon] failed to re-install Ctrl-C handler after SDK init");
+    }
 }
 
 /// Path to the CS-Layer module staged next to the running binary by build.rs.
@@ -1344,9 +1382,8 @@ fn newest_file_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
 // ---------------------------------------------------------------------------
 // Parameters
 //
-// Enum capabilities are read into Select / RangeSelect params. `ExposureMode`
-// has a known value enum so it gets human labels; `ShutterSpeed` / `Aperture` /
-// `Sensitivity` / `WBMode` carry raw camera codes (the SDK ships no value→label
+// Enum capabilities are read into Select / RangeSelect params. `ShutterSpeed` /
+// `Aperture` / `Sensitivity` / `WBMode` carry raw camera codes (the SDK ships no value→label
 // table — even Nikon's own sample prints them raw), so their labels are the raw
 // codes for now, to be decoded empirically against hardware (see docs).
 //
@@ -1367,30 +1404,6 @@ struct EnumSpec {
 
 fn raw_label(v: i64) -> String {
     v.to_string()
-}
-
-/// `eNkMAIDExposureMode` (Maid3d1.h). Unknown codes fall back to the raw value.
-fn decode_exposure_mode(v: i64) -> String {
-    match v {
-        0 => "Program (P)",
-        1 => "Aperture priority (A)",
-        2 => "Shutter priority (S)",
-        3 => "Manual (M)",
-        4 => "Disable",
-        5 => "Auto",
-        6 => "Portrait",
-        7 => "Landscape",
-        8 => "Close-up",
-        9 => "Sports",
-        10 => "Night portrait",
-        11 => "Night view",
-        12 => "Child",
-        13 => "Flash off",
-        14 => "Scene",
-        17 => "Effects",
-        _ => return v.to_string(),
-    }
-    .to_string()
 }
 
 // The decoders below are a numeric fallback only: on the validated Z bodies the
@@ -1581,7 +1594,6 @@ fn build_focus_params(labels: &[String], current: u32, mode_settable: bool) -> V
 }
 
 const ENUM_PARAMS: &[EnumSpec] = &[
-    EnumSpec { param_type: ParameterType::Exposure, cap_id: CAP_EXPOSURE_MODE, ordered: false, decode: decode_exposure_mode },
     EnumSpec { param_type: ParameterType::ShutterSpeed, cap_id: CAP_SHUTTER_SPEED, ordered: true, decode: decode_shutter_speed },
     EnumSpec { param_type: ParameterType::Aperture, cap_id: CAP_APERTURE, ordered: true, decode: decode_aperture },
     EnumSpec { param_type: ParameterType::Iso, cap_id: CAP_SENSITIVITY, ordered: true, decode: decode_iso },
@@ -2221,15 +2233,6 @@ mod tests {
     #[test]
     fn parse_device_id_rejects_garbage() {
         assert_eq!(parse_device_id("notanumber|x"), None);
-    }
-
-    #[test]
-    fn exposure_mode_labels() {
-        assert_eq!(decode_exposure_mode(3), "Manual (M)");
-        assert_eq!(decode_exposure_mode(0), "Program (P)");
-        assert_eq!(decode_exposure_mode(17), "Effects");
-        // Unknown codes fall back to the raw value.
-        assert_eq!(decode_exposure_mode(99), "99");
     }
 
     #[test]

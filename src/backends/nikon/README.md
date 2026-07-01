@@ -13,9 +13,9 @@ relying on heuristics are noted inline.
 
 What it does: dlopen CS-Layer loader + `nikon-sdk` actor thread, single-camera
 session, list/connect/disconnect/live-view/capture, and a curated parameter set —
-`ExposureMode` decoded to labels, `ExposureComp` as a RangeSelect over its steps,
-`IsoControl` auto-ISO split (ISO disabled while auto), and a JPEG-only
-`ImageQuality` (RAW / RAW+JPEG options hidden).
+`ExposureComp` as a RangeSelect over its steps, `IsoControl` auto-ISO split
+(ISO disabled while auto), and a JPEG-only `ImageQuality` (RAW / RAW+JPEG options
+hidden).
 
 Key runtime facts confirmed on hardware:
 - **Enum capabilities come back as `PackedString`** (`NkMAIDEnum.ul_type == 7`):
@@ -285,7 +285,7 @@ identity instead of ad-hoc.
 
 - **Numeric `decode_*` fallback**: on the validated bodies enum caps are
   PackedString (labels for free), so `decode_aperture` (code/100), `decode_iso`
-  (direct), `decode_shutter_speed` (packed num/den) and `decode_exposure_mode`
+  (direct) and `decode_shutter_speed` (packed num/den)
   only run on bodies that report raw numeric codes. They guard on plausible ranges
   and fall back to the raw value. `WBMode` has no numeric decoder (raw fallback).
 - **`Sensitivity` (0x8117) vs other ISO caps**: confirmed adequate for stills on
