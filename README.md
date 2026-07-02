@@ -56,10 +56,10 @@ A server can relay cameras from other ToucanCameraServer instances ("peers") on 
 Manage peers from the **Remote peers** panel in the web UI, or via the API:
 
 | Method   | Endpoint      | Description                                                          |
-| -------- | ------------- | ------------------------------------------------------------------- |
-| `GET`    | `/peers`      | List registered peers                                               |
+| -------- | ------------- | -------------------------------------------------------------------- |
+| `GET`    | `/peers`      | List registered peers                                                |
 | `POST`   | `/peers`      | Register a peer — body `{ "url": "192.168.1.5:8040", "token": "…" }` |
-| `DELETE` | `/peers/{id}` | Remove a peer                                                       |
+| `DELETE` | `/peers/{id}` | Remove a peer                                                        |
 
 The `url` may be given as `host:port` or `http://host:port`. The `token` is the **peer's** own authentication token, and is optional. When adding a peer, the server checks that it is reachable and that the token is valid — an unreachable or invalid peer is rejected and never stored.
 
@@ -75,6 +75,7 @@ Feel free to make pull-requests or report issues 😉
 | ---------------------------- | ------- | ----- | ----- | ------- |
 | Webcams / Cameras            | 🟢¹     | 🟢²   | 🟢³   | 🟢⁴     |
 | Canon EOS (EDSDK)            | 🟢      | 🟢    | 🟢    | 🔴      |
+| Nikon Z series 2             | 🟢      | 🟢    | 🔴    | 🔴      |
 | Various cameras (libgphoto2) | 🔴      | 🟢⁶   | 🟢⁶   | 🔴      |
 | Remote (other instances)     | 🟢⁵     | 🟢⁵   | 🟢⁵   | 🟢⁵     |
 

@@ -38,7 +38,7 @@ fn main() {
         copy_gphoto2_bundle();
     }
 
-    if std::env::var_os("CARGO_FEATURE_BACKEND_NIKON").is_some() {
+    if std::env::var_os("CARGO_FEATURE_BACKEND_NIKON_ZS2").is_some() {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
         if target.contains("apple") {
             copy_nikon_runtime(&manifest_dir);
@@ -244,7 +244,7 @@ fn copy_canon_so(manifest_dir: &str) {
 //   - `Frameworks/Royalmile.framework`     → referenced via @rpath
 //   - the 3 `.config` files                → deployed to ~/Library/Preferences/Nikon/NXTether at startup
 //
-// Source layout expected (unzip TestApp.zip into this, see src/backends/nikon/README.md):
+// Source layout expected (unzip TestApp.zip into this, see src/backends/nikon_zs2/README.md):
 //   external/NIKON/runtime/{TypeCommon Module.bundle, Frameworks/, config/*.config}
 //
 // Best-effort: a missing source only logs a warning so non-Nikon builds and dev
@@ -257,7 +257,7 @@ fn copy_nikon_runtime(manifest_dir: &str) {
     let src_root = Path::new(manifest_dir).join("external/NIKON/runtime");
     if !src_root.exists() {
         println!(
-            "cargo:warning=Nikon runtime not found at {} — see src/backends/nikon/README.md (unzip TestApp.zip)",
+            "cargo:warning=Nikon runtime not found at {} — see src/backends/nikon_zs2/README.md (unzip TestApp.zip)",
             src_root.display()
         );
         return;
@@ -325,7 +325,7 @@ fn copy_nikon_runtime_windows(manifest_dir: &str) {
     let src = Path::new(manifest_dir).join("external/NIKON/Module/Win/BinaryFile");
     if !src.exists() {
         println!(
-            "cargo:warning=Nikon Windows runtime not found at {} — see src/backends/nikon/README.md",
+            "cargo:warning=Nikon Windows runtime not found at {} — see src/backends/nikon_zs2/README.md",
             src.display()
         );
         return;

@@ -17,7 +17,7 @@ env:
   # contains both Module/Mac (macOS) and Module/Win (Windows) runtimes. The macOS
   # and Windows jobs each extract only the part they need.
   #
-  # backend-nikon dlopen's / LoadLibrary's the CS-Layer at runtime (no build-time
+  # backend-nikon-zs2 dlopen's / LoadLibrary's the CS-Layer at runtime (no build-time
   # link), so the Rust build succeeds WITHOUT this archive — the URL only stages
   # the runtime so the packaged artifact is actually runnable. Staging is
   # best-effort: leaving this empty just skips it (no Nikon runtime in the zip).
@@ -82,7 +82,7 @@ jobs:
           arch -x86_64 /usr/local/bin/brew install libgphoto2
 
       - name: Install Nikon Remote SDK runtime (best-effort)
-        # backend-nikon dlopen's the CS-Layer at runtime (no build-time link), so
+        # backend-nikon-zs2 dlopen's the CS-Layer at runtime (no build-time link), so
         # this only stages the runtime for a runnable artifact — the Rust build
         # still succeeds without it. Skipped when NIKON_SDK_URL is empty.
         run: |
@@ -127,7 +127,7 @@ jobs:
         run: |
           cargo build --release \
             --target x86_64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon,backend-remote
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-remote
 
       - name: Build arm64
         env:
@@ -135,7 +135,7 @@ jobs:
         run: |
           cargo build --release \
             --target aarch64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon,backend-remote
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-remote
 
       - name: Create universal binary with lipo
         run: |
@@ -214,7 +214,7 @@ jobs:
           Expand-Archive canon_sdk.zip -DestinationPath external\EDSDK\
 
       - name: Download Nikon Remote SDK runtime (best-effort)
-        # backend-nikon LoadLibrary's the CS-Layer at runtime (no build-time link),
+        # backend-nikon-zs2 LoadLibrary's the CS-Layer at runtime (no build-time link),
         # so this only stages the runtime for a runnable artifact — the Rust build
         # still succeeds without it. Skipped when NIKON_SDK_URL is empty.
         shell: pwsh
@@ -240,7 +240,7 @@ jobs:
         run: |
           cargo build --release `
             --target x86_64-pc-windows-msvc `
-            --features backend-webcam-windows,backend-canon,backend-nikon,backend-remote
+            --features backend-webcam-windows,backend-canon,backend-nikon-zs2,backend-remote
 
       - name: Package into zip
         shell: pwsh

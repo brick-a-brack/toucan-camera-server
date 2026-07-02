@@ -1,4 +1,4 @@
-//! Nikon backend (Remote SDK v2.0.0, MAID3 "CS Layer").
+//! Nikon Z series 2 backend (Remote SDK v2.0.0, MAID3 "CS Layer").
 //!
 //! The Nikon SDK's CS-Layer functions are exported in plain C linkage from a
 //! runtime-loaded module — there is no build-time link step:
@@ -535,7 +535,8 @@ unsafe extern "C" fn live_view_data_proc(_ref: *mut c_void, data: *mut NkMaidLiv
     // Record the zoom window (magnification + scroll position) from the header —
     // the source for the live-view pan/tilt controls. `st_live_view_header` is an
     // align-1 `[u8; 884]`, so borrowing it is sound even on the packed layout.
-    if let Some(pos) = parse_lv_zoom_pos(&lv.st_live_view_header) {
+    let parsed = parse_lv_zoom_pos(&lv.st_live_view_header);
+    if let Some(pos) = parsed {
         if let Ok(mut g) = LV_ZOOM_POS.lock() {
             *g = Some(pos);
         }
@@ -600,7 +601,7 @@ enum Command {
     Warmup,
     /// Graceful shutdown: tear the SDK down (stop live view, disconnect, free) on
     /// the sdk thread, then ack so the caller can exit without leaving the body in
-    /// an open PTP session. Driven by `NikonBackend::shutdown`.
+    /// an open PTP session. Driven by `NikonZs2Backend::shutdown`.
     PrepareExit {
         ack: mpsc::Sender<()>,
     },
@@ -611,7 +612,7 @@ enum Command {
 // Backend
 // ---------------------------------------------------------------------------
 
-pub struct NikonBackend {
+pub struct NikonZs2Backend {
     tx: mpsc::Sender<Command>,
     /// Set once the SDK has finished initializing (on the sdk thread).
     ready: Arc<AtomicBool>,
@@ -619,7 +620,7 @@ pub struct NikonBackend {
     warming: Arc<AtomicBool>,
 }
 
-impl NikonBackend {
+impl NikonZs2Backend {
     pub fn new() -> Result<Self, CameraError> {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
         let ready = Arc::new(AtomicBool::new(false));
@@ -654,15 +655,15 @@ impl NikonBackend {
     }
 }
 
-impl Drop for NikonBackend {
+impl Drop for NikonZs2Backend {
     fn drop(&mut self) {
         let _ = self.tx.send(Command::Shutdown);
     }
 }
 
-impl CameraBackend for NikonBackend {
+impl CameraBackend for NikonZs2Backend {
     fn backend_id(&self) -> &str {
-        "nikon"
+        "nikon-zs2"
     }
 
     /// Above the generic backends: the Nikon SDK gives native live view and the
@@ -1191,7 +1192,7 @@ fn nikon_device_info(native_id: &str, name: &str, session: &Option<Session>) -> 
     // collides with gphoto2 for cameras the SDK drives — older Nikons (no SDK
     // entry) are left to gphoto2 automatically.
     DeviceInfo {
-        id: DeviceId::new("nikon", native_id).encode(),
+        id: DeviceId::new("nikon-zs2", native_id).encode(),
         dedup_key: Some(crate::camera::dedup_key(USB_VENDOR_NIKON, name)),
         name: name.to_string(),
         connected,
@@ -1284,10 +1285,7 @@ fn get_live_view_frame_impl(
     native_id: &str,
     session: &mut Option<Session>,
 ) -> Result<Vec<u8>, CameraError> {
-    {
-        let s = require_connected(native_id, session)?;
-        let _ = s;
-    }
+    require_connected(native_id, session)?;
 
     // Start the stream on first poll. The SDK then pushes frames via
     // LiveViewDataProc into LATEST_LV_FRAME.
@@ -1786,7 +1784,8 @@ fn read_live_view_controls(sdk: &Sdk, cap_ops: &HashMap<u32, u32>) -> Vec<Camera
         ordered: false,
         decode: decode_lv_zoom_rate,
     };
-    if let Some(zoom) = read_enum_param(sdk, &zoom_spec, false) {
+    let zoom = read_enum_param(sdk, &zoom_spec, false);
+    if let Some(zoom) = zoom {
         out.push(zoom);
     }
 

@@ -1,11 +1,11 @@
-# Nikon backend — implementation notes
+# Nikon Z series 2 backend — implementation notes
 
-Working notes for `backend-nikon` (Nikon "Remote SDK v2.0.0", MAID3-based,
+Working notes for `backend-nikon-zs2` (Nikon "Remote SDK v2.0.0", MAID3-based,
 package `S-SDKZ-200BF-ALLIN`). Kept separate from `CLAUDE.md` because the SDK is
 git-ignored (`external/NIKON/`) and these details aren't derivable from the repo.
 
 **Status: working, validated on a Z5II** (detection, connect, parameters, live
-view, capture) on macOS. **Windows builds and links** (same `backend-nikon`
+view, capture) on macOS. **Windows builds and links** (same `backend-nikon-zs2`
 feature) but is not yet hardware-validated — see §9 for the Windows specifics.
 On macOS it builds with the `backend-gphoto2` / `backend-canon` features
 alongside it (the three coexist — see §2 and §6). Body-specific items still
@@ -94,7 +94,7 @@ startup from the files staged next to the binary.
   live view).
 - **Coexistence** with the Canon EDSDK and gphoto2 backends — see §6 (ObjC class
   clash) and §3 (server-level dedup). Build with the features together, e.g.
-  `--features backend-nikon,backend-gphoto2`. Conflicts with NX Tether / Camera
+  `--features backend-nikon-zs2,backend-gphoto2`. Conflicts with NX Tether / Camera
   Control Pro / Nikon Transfer (quit them first).
 
 ---
@@ -103,7 +103,7 @@ startup from the files staged next to the binary.
 
 | trait method | CS Layer |
 |---|---|
-| `backend_id` | `"nikon"` |
+| `backend_id` | `"nikon-zs2"` |
 | `dedup_priority` | `10` (SDK backend wins dedup over gphoto2 for the same body) |
 | `list_devices` | `EnumDevices` → `NkMAIDEnumDevices.pDeviceData[]` (`ID:u32`, `Name`) |
 | `connect` | `ConnectDevice(id_u32)` (+ single-camera guard) |
@@ -329,9 +329,9 @@ identity instead of ad-hoc.
 ---
 
 ## 8. Files
-- `Cargo.toml` — `backend-nikon` feature (pulls `nusb`).
+- `Cargo.toml` — `backend-nikon-zs2` feature (pulls `nusb`).
 - `src/backends/mod.rs` — module decl (cfg `macos`/`windows` + feature).
-- `src/backends/nikon/mod.rs` — the backend (the `dynload` module abstracts the
+- `src/backends/nikon_zs2/mod.rs` — the backend (the `dynload` module abstracts the
   platform dynamic loader; structs are `repr(C, packed(2))` on Windows).
 - `build.rs` — macOS: `copy_nikon_runtime()` / `fixup_nikon_runtime()` /
   `patch_nikon_objc_classes()`. Windows: `copy_nikon_runtime_windows()`.
@@ -342,7 +342,7 @@ identity instead of ad-hoc.
 
 ## 9. Windows build
 
-The same `backend-nikon` feature targets `x86_64-pc-windows-msvc`. Windows is
+The same `backend-nikon-zs2` feature targets `x86_64-pc-windows-msvc`. Windows is
 **simpler** than macOS — no `.app` layout, no codesigning, no Objective-C class
 clash (the PTP driver is a plain DLL, `NkdPTP.dll`), so none of the §6 fixups
 apply. The CS-Layer API is identical; only the ABI/packaging differs.
