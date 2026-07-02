@@ -7,6 +7,7 @@ on:
       - dev
       - feature/libgphoto2
       - feature/nikonZS2
+      - feature/gphoto2-update
   workflow_dispatch:
 
 env:
@@ -23,6 +24,9 @@ env:
   # best-effort: leaving this empty just skips it (no Nikon runtime in the zip).
   # TODO: set to the hosted Nikon SDK archive URL (or wire a secret) to ship it.
   NIKON_SDK_URL: "https://uploads.brickfilms.com/files/1/cd8a665a-s-sdkz-200bf-allin-1.zip"
+  # libgphoto2 is compiled from source (the OS packages are often outdated).
+  # Pin a branch, tag, or full commit SHA of github.com/gphoto/libgphoto2.
+  LIBGPHOTO2_REF: "7fc007d0ba6b52b8608da7b46920ae2416a94358"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -66,20 +70,39 @@ jobs:
 
           hdiutil detach "$MOUNT_POINT" -quiet
 
-      - name: Install libgphoto2 (both arches for the universal binary)
+      - name: Install libgphoto2 build tools + deps (both arches)
         run: |
           set -eo pipefail
-          # Native arm64 build deps (Homebrew at /opt/homebrew).
-          brew install pkg-config libgphoto2
-          # The universal binary's x86_64 slice needs an x86_64 libgphoto2, but the
-          # arm64 runner ships no Intel Homebrew. Install one at /usr/local under
-          # Rosetta and pull the Intel bottle there.
+          # Native arm64 toolchain + libgphoto2 runtime deps (Homebrew at
+          # /opt/homebrew). autoconf/automake/libtool/gettext are needed to build
+          # libgphoto2 from a git checkout; libusb/libexif are its link deps.
+          brew install autoconf automake libtool pkg-config gettext libusb libexif
+          # The universal binary's x86_64 slice needs x86_64 deps, but the arm64
+          # runner ships no Intel Homebrew. Install one at /usr/local under Rosetta
+          # and pull the Intel bottles there.
           sudo softwareupdate --install-rosetta --agree-to-license || true
           if [ ! -x /usr/local/bin/brew ]; then
             curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o /tmp/brew-install.sh
             arch -x86_64 /bin/bash -c "NONINTERACTIVE=1 /bin/bash /tmp/brew-install.sh"
           fi
-          arch -x86_64 /usr/local/bin/brew install libgphoto2
+          arch -x86_64 /usr/local/bin/brew install autoconf automake libtool pkg-config gettext libusb libexif
+
+      - name: Build libgphoto2 from source (arm64)
+        run: |
+          export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig"
+          bash scripts/build-libgphoto2.sh "$LIBGPHOTO2_REF" "$HOME/gphoto2-arm"
+
+      - name: Build libgphoto2 from source (x86_64)
+        run: |
+          # Run the whole build as an x86_64 process (Rosetta) so clang defaults to
+          # the x86_64 target and config.guess reports x86_64. The script picks up
+          # the /usr/local (Intel) toolchain from uname -m.
+          arch -x86_64 /bin/bash -c '
+            set -eo pipefail
+            export PATH="/usr/local/bin:$PATH"
+            export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig"
+            bash scripts/build-libgphoto2.sh "$LIBGPHOTO2_REF" "$HOME/gphoto2-x86"
+          '
 
       - name: Install Nikon Remote SDK runtime (best-effort)
         # backend-nikon-zs2 dlopen's the CS-Layer at runtime (no build-time link), so
@@ -119,20 +142,18 @@ jobs:
 
       - name: Build x86_64
         env:
-          # Cross-link against the Intel libgphoto2 under /usr/local. brew symlinks
-          # every formula's .pc into <prefix>/lib/pkgconfig, covering libgphoto2,
-          # libgphoto2_port and their deps.
-          PKG_CONFIG_PATH: /usr/local/lib/pkgconfig
           PKG_CONFIG_ALLOW_CROSS: "1"
         run: |
+          # Link against the from-source Intel libgphoto2; fall back to /usr/local
+          # brew .pc files for its deps (libusb, libexif, …).
+          export PKG_CONFIG_PATH="$HOME/gphoto2-x86/lib/pkgconfig:/usr/local/lib/pkgconfig"
           cargo build --release \
             --target x86_64-apple-darwin \
             --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-remote
 
       - name: Build arm64
-        env:
-          PKG_CONFIG_PATH: /opt/homebrew/lib/pkgconfig
         run: |
+          export PKG_CONFIG_PATH="$HOME/gphoto2-arm/lib/pkgconfig:/opt/homebrew/lib/pkgconfig"
           cargo build --release \
             --target aarch64-apple-darwin \
             --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-remote
@@ -307,10 +328,15 @@ jobs:
         # libusb-1.0-0 is a transitive runtime dep of libEDSDK.so; we install
         # it on the runner so the post-build `ldd` sanity check can resolve
         # the full dependency graph and catch any breakage early.
+        # libgphoto2 is compiled from source (see next step), so we install its
+        # build tools (autoconf/automake/libtool/gettext) and link deps
+        # (libusb/libexif/libltdl -dev) instead of the outdated libgphoto2-dev.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config unzip libusb-1.0-0 libgphoto2-dev patchelf
+            build-essential pkg-config unzip libusb-1.0-0 patchelf \
+            git autoconf automake libtool libtool-bin gettext autopoint \
+            libusb-1.0-0-dev libexif-dev libltdl-dev
 
       - name: Install Canon EDSDK
         run: |
@@ -322,8 +348,16 @@ jobs:
           test -f "external/EDSDK/EDSDKv132010L/Linux/EDSDK/Library/x86_64/libEDSDK.so" \
             || { echo "ERROR: libEDSDK.so missing from Canon archive"; exit 1; }
 
+      - name: Build libgphoto2 from source
+        run: |
+          bash scripts/build-libgphoto2.sh "$LIBGPHOTO2_REF" "$HOME/gphoto2"
+
       - name: Build x86_64
         run: |
+          # Link against the from-source libgphoto2. LD_LIBRARY_PATH lets build.rs's
+          # ldd-based bundle walk resolve libgphoto2_port for the camlibs plugins.
+          export PKG_CONFIG_PATH="$HOME/gphoto2/lib/pkgconfig"
+          export LD_LIBRARY_PATH="$HOME/gphoto2/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           cargo build --release \
             --target x86_64-unknown-linux-gnu \
             --features backend-canon,backend-gphoto2,backend-webcam-linux,backend-remote
