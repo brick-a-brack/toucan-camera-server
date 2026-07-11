@@ -84,6 +84,15 @@ pub fn build_backends() -> BuiltBackends {
         Err(e) => eprintln!("[error] Nikon Z series 2 backend failed to initialize: {e}"),
     }
 
+    #[cfg(all(feature = "backend-sony", any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    match backends::sony::SonyBackend::new() {
+        Ok(b) => {
+            let b: Arc<dyn camera::CameraBackend> = Arc::new(b);
+            map.insert(b.backend_id().to_string(), b);
+        }
+        Err(e) => eprintln!("[error] Sony backend failed to initialize: {e}"),
+    }
+
     #[cfg(all(feature = "backend-gphoto2", any(target_os = "linux", target_os = "macos")))]
     match backends::gphoto2::GPhoto2Backend::new() {
         Ok(b) => {

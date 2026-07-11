@@ -4,6 +4,9 @@ pub mod canon;
 #[cfg(all(feature = "backend-nikon-zs2", any(target_os = "macos", target_os = "windows")))]
 pub mod nikon_zs2;
 
+#[cfg(all(feature = "backend-sony", any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub mod sony;
+
 #[cfg(all(feature = "backend-webcam-linux", target_os = "linux"))]
 pub mod webcam_linux;
 
