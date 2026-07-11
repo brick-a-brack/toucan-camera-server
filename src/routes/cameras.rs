@@ -229,6 +229,26 @@ pub async fn disconnect_camera(
     dispatch(&state.backends, &id, |b, native_id| b.disconnect(native_id)).await
 }
 
+/// Predefined placeholder JPEGs pushed into the live-view stream when the
+/// camera is not delivering frames, so the client always sees a clear image
+/// instead of a frozen or blank panel.
+/// - `NOSIGNAL_JPEG`: the camera is connected but not producing frames.
+/// - `ENDOFSTREAM_JPEG`: the stream was working and then stopped.
+const NOSIGNAL_JPEG: &[u8] = include_bytes!("../../static/assets/nosignal.jpg");
+const ENDOFSTREAM_JPEG: &[u8] = include_bytes!("../../static/assets/endofstream.jpg");
+
+/// Wrap raw JPEG bytes in a `multipart/x-mixed-replace` part (boundary `frame`).
+fn multipart_frame(jpeg: &[u8]) -> Bytes {
+    let mut buf = format!(
+        "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+        jpeg.len()
+    )
+    .into_bytes();
+    buf.extend_from_slice(jpeg);
+    buf.extend_from_slice(b"\r\n");
+    Bytes::from(buf)
+}
+
 pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     let dev_id = match DeviceId::decode(&id) {
         Ok(d) => d,
@@ -303,6 +323,26 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                 // parameter change that disrupts the capture pipeline).
                 let mut consecutive_misses: u32 = 0;
                 const MAX_CONSECUTIVE_MISSES: u32 = 300;
+                // Grace period before showing the "no signal" placeholder while the
+                // camera is still warming up (before its very first frame). Without
+                // it, "no signal" flashes during normal initialization. ~2 s at
+                // ~32 ms/poll ≈ 60 misses.
+                const NOSIGNAL_GRACE_MISSES: u32 = 60;
+                // Once the camera has been delivering frames, a sustained run of
+                // not-ready polls means the live stream stopped (e.g. the camera was
+                // disconnected). End the stream straight to the "end of stream"
+                // placeholder — never fall back to "no signal", which only applies
+                // to warm-up. ~1.5 s at ~32 ms/poll ≈ 45 misses, short enough to
+                // react quickly yet tolerant of brief mid-stream hiccups (e.g. a
+                // parameter change momentarily disrupting the pipeline).
+                const POST_SIGNAL_STALL_MISSES: u32 = 45;
+                // Whether the camera has ever delivered a real frame. Decides the
+                // terminal placeholder: "end of stream" if it worked and then
+                // stopped, "no signal" if it never produced anything.
+                let mut had_signal = false;
+                // Precomputed placeholder frames (built once, cloned per send).
+                let nosignal_frame = Arc::new(multipart_frame(NOSIGNAL_JPEG));
+                let endofstream_frame = Arc::new(multipart_frame(ENDOFSTREAM_JPEG));
                 // Only broadcast frames that actually changed, so polling faster
                 // than the camera's frame rate doesn't flood clients with duplicates.
                 let mut last_jpeg: Option<Bytes> = None;
@@ -338,6 +378,7 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                     match result {
                         Ok(Ok(jpeg)) => {
                             consecutive_misses = 0;
+                            had_signal = true;
                             let jpeg = Bytes::from(jpeg);
                             // Unchanged frame (we may poll faster than the camera
                             // produces). Re-send the cached frame only on the
@@ -359,15 +400,7 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                             }
                             last_jpeg = Some(jpeg.clone());
 
-                            let mut buf = format!(
-                                "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
-                                jpeg.len()
-                            )
-                            .into_bytes();
-                            buf.extend_from_slice(&jpeg);
-                            buf.extend_from_slice(b"\r\n");
-
-                            let frame = Arc::new(Bytes::from(buf));
+                            let frame = Arc::new(multipart_frame(&jpeg));
                             last_frame = Some(frame.clone());
                             // send() only errors when there are no receivers.
                             if tx.send(frame).is_err() {
@@ -376,11 +409,38 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                             last_send = tokio::time::Instant::now();
                         }
                         Ok(Err(crate::camera::CameraError::SdkError(0x0000_A102))) => {
-                            // EVF / camera not ready yet — skip frame.
+                            // Camera not ready — no frame available.
                             consecutive_misses += 1;
-                            if consecutive_misses >= MAX_CONSECUTIVE_MISSES {
-                                eprintln!("[warn] live view stalled for {native_id} after {consecutive_misses} consecutive misses, stopping loop");
-                                break;
+                            if had_signal {
+                                // The stream was live and stopped: treat a sustained
+                                // gap as end of stream. Keep showing the last real
+                                // frame until then (no "no signal" flash), then break
+                                // so the loop's terminal placeholder is "end of
+                                // stream", not "no signal".
+                                if consecutive_misses >= POST_SIGNAL_STALL_MISSES {
+                                    eprintln!("[warn] live view for {native_id} stopped after {consecutive_misses} not-ready polls, ending stream");
+                                    break;
+                                }
+                            } else {
+                                // Warm-up: the camera has not produced a frame yet.
+                                // After the grace period, show "no signal"
+                                // (heartbeat-paced) so the client sees a clear image
+                                // instead of a blank panel.
+                                if consecutive_misses >= NOSIGNAL_GRACE_MISSES
+                                    && last_send.elapsed() >= HEARTBEAT
+                                {
+                                    if tx.send(nosignal_frame.clone()).is_err() {
+                                        break;
+                                    }
+                                    last_send = tokio::time::Instant::now();
+                                    // Force the next real frame to be broadcast even
+                                    // if byte-identical to the placeholder gap.
+                                    last_jpeg = None;
+                                }
+                                if consecutive_misses >= MAX_CONSECUTIVE_MISSES {
+                                    eprintln!("[warn] live view stalled for {native_id} after {consecutive_misses} consecutive misses, stopping loop");
+                                    break;
+                                }
                             }
                         }
                         Ok(Err(e)) => {
@@ -394,6 +454,20 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                     if elapsed < frame_interval {
                         tokio::time::sleep(frame_interval - elapsed).await;
                     }
+                }
+
+                // Stream ended. Send a terminal placeholder as the final frame so
+                // the client sees a clear last image: "end of stream" if the camera
+                // had been delivering frames, otherwise "no signal" (it never
+                // started). Buffered broadcast frames are still delivered to
+                // subscribers after `tx` is dropped, so they receive it.
+                if tx.receiver_count() > 0 {
+                    let terminal = if had_signal {
+                        endofstream_frame.clone()
+                    } else {
+                        nosignal_frame.clone()
+                    };
+                    let _ = tx.send(terminal);
                 }
 
                 // Remove the sender only if it is still ours. A reconnect may have
@@ -411,18 +485,16 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
     };
 
     // Convert the broadcast receiver into an HTTP body stream.
-    // When the broadcast channel closes (capture loop stopped), chain a deliberate
-    // IO error so axum resets the TCP connection instead of ending the response
-    // cleanly. A clean end is invisible to the browser (onerror never fires on the
-    // <img> element), leaving the live view panel frozen with the last frame.
-    let stream = BroadcastStream::new(rx)
-        .filter_map(|res| match res {
-            Ok(frame) => Some(Ok::<Bytes, std::io::Error>((*frame).clone())),
-            Err(_) => None, // lagged frames — just skip
-        })
-        .chain(tokio_stream::iter(std::iter::once(Err::<Bytes, std::io::Error>(
-            std::io::Error::new(std::io::ErrorKind::ConnectionReset, "live view stream closed"),
-        ))));
+    // The capture loop broadcasts a terminal placeholder frame (end-of-stream or
+    // no-signal) before it exits, then the channel closes and the stream ends
+    // cleanly. A clean end leaves that placeholder displayed on the <img> element
+    // (onerror does not fire) — which is exactly the clear final image we want,
+    // instead of a frozen last real frame. Genuine transport failures (server
+    // gone) still surface as a real error and trigger the client's onerror.
+    let stream = BroadcastStream::new(rx).filter_map(|res| match res {
+        Ok(frame) => Some(Ok::<Bytes, std::io::Error>((*frame).clone())),
+        Err(_) => None, // lagged frames — just skip
+    });
 
     Response::builder()
         .header(
