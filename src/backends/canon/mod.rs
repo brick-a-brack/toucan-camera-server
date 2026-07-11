@@ -17,6 +17,10 @@ use crate::camera::{
 const EDS_MAX_NAME: usize = 256;
 const EDS_ERR_OK: u32 = 0x00000000;
 
+/// Canon's USB vendor id — used to build the cross-backend dedup key so gphoto2
+/// yields EOS bodies to this (higher-priority) backend.
+const USB_VENDOR_CANON: u16 = 0x04A9;
+
 type EdsBaseRef = *mut std::ffi::c_void;
 type EdsCameraListRef = EdsBaseRef;
 type EdsCameraRef = EdsBaseRef;
@@ -289,6 +293,12 @@ enum Command {
         value: i32,
         reply: mpsc::Sender<Result<(), CameraError>>,
     },
+    /// Graceful shutdown: close all sessions and terminate the SDK on the SDK
+    /// thread, then ack so the caller can exit without leaving a body claimed.
+    /// Driven by `CanonBackend::shutdown`.
+    PrepareExit {
+        ack: mpsc::Sender<()>,
+    },
     Shutdown,
 }
 
@@ -333,6 +343,23 @@ impl Drop for CanonBackend {
 impl CameraBackend for CanonBackend {
     fn backend_id(&self) -> &str {
         "canon"
+    }
+
+    /// Above the generic backends: the EDSDK gives native EVF live view and the
+    /// full Canon parameter set, so it wins dedup over gphoto2 for the same body.
+    fn dedup_priority(&self) -> i32 {
+        10
+    }
+
+    /// Releases the EDSDK before the process exits: asks the SDK thread to close
+    /// all sessions and terminate the SDK, then waits — bounded — for it to finish
+    /// so an abrupt Ctrl-C doesn't leave a body claimed. The thread may be mid-call,
+    /// so the wait is capped and the exit never hangs.
+    fn shutdown(&self) {
+        let (ack_tx, ack_rx) = mpsc::channel();
+        if self.tx.send(Command::PrepareExit { ack: ack_tx }).is_ok() {
+            let _ = ack_rx.recv_timeout(Duration::from_secs(3));
+        }
     }
 
     fn is_connected(&self, native_id: &str) -> bool {
@@ -575,6 +602,21 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
             Ok(Command::SetEvfZoomAxis { device_id, axis_is_x, value, reply }) => {
                 let _ = reply.send(set_evf_zoom_axis_impl(&device_id, axis_is_x, value, &connected));
             }
+            // Graceful shutdown: release everything here (EDSDK calls are only
+            // valid on this thread), ack, then return so the process can exit
+            // without leaving a body claimed. `return` skips the post-loop
+            // teardown below so the SDK isn't terminated twice.
+            Ok(Command::PrepareExit { ack }) => {
+                for (_, camera_ref) in connected.drain() {
+                    unsafe {
+                        EdsCloseSession(camera_ref);
+                        EdsRelease(camera_ref);
+                    }
+                }
+                unsafe { EdsTerminateSDK() };
+                let _ = ack.send(());
+                return;
+            }
             Ok(Command::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
@@ -637,7 +679,11 @@ fn list_devices_impl(connected: &HashMap<String, EdsCameraRef>) -> Result<Vec<De
             };
             let id = DeviceId::new("canon", &port).encode();
             let is_connected = connected.contains_key(port.as_ref() as &str);
-            devices.push(DeviceInfo { id, name, connected: is_connected });
+            // Dedup key so gphoto2 yields EOS bodies to the EDSDK backend. EDSDK
+            // only lists Canon bodies it supports, so unsupported Canons (no
+            // entry here) stay on gphoto2.
+            let dedup_key = Some(crate::camera::dedup_key(USB_VENDOR_CANON, &name));
+            devices.push(DeviceInfo { id, name, connected: is_connected, dedup_key });
         }
 
         unsafe { EdsRelease(camera_ref) };

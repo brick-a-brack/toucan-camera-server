@@ -2,6 +2,7 @@ mod auth;
 pub mod backends;
 pub mod camera;
 pub mod routes;
+pub mod shutdown;
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -62,6 +63,9 @@ pub fn build_backends() -> BuiltBackends {
         Err(e) => eprintln!("[error] Remote backend failed to initialize: {e}"),
     }
 
+    // All hardware backends run in-process. (EDSDK and the Nikon SDK coexist on
+    // macOS thanks to build.rs renaming the Nikon driver's clashing ObjC PTP
+    // classes.)
     #[cfg(feature = "backend-canon")]
     match backends::canon::CanonBackend::new() {
         Ok(b) => {
@@ -69,6 +73,15 @@ pub fn build_backends() -> BuiltBackends {
             map.insert(b.backend_id().to_string(), b);
         }
         Err(e) => eprintln!("[error] Canon backend failed to initialize: {e}"),
+    }
+
+    #[cfg(all(feature = "backend-nikon-zs2", any(target_os = "macos", target_os = "windows")))]
+    match backends::nikon_zs2::NikonZs2Backend::new() {
+        Ok(b) => {
+            let b: Arc<dyn camera::CameraBackend> = Arc::new(b);
+            map.insert(b.backend_id().to_string(), b);
+        }
+        Err(e) => eprintln!("[error] Nikon Z series 2 backend failed to initialize: {e}"),
     }
 
     #[cfg(all(feature = "backend-gphoto2", any(target_os = "linux", target_os = "macos")))]
@@ -118,6 +131,20 @@ pub fn build_backends() -> BuiltBackends {
     }
 
     eprintln!("[main] registered backends: {:?}", map.keys().collect::<Vec<_>>());
+
+    // macOS: pre-warm each backend in the background so the first /cameras is fast
+    // — triggers the Nikon SDK warm-up (when a body is present) up front instead of
+    // on the first user request.
+    #[cfg(target_os = "macos")]
+    {
+        let warm: Vec<Arc<dyn camera::CameraBackend>> = map.values().cloned().collect();
+        std::thread::spawn(move || {
+            for backend in warm {
+                let _ = backend.list_devices();
+            }
+        });
+    }
+
     BuiltBackends {
         state: Arc::new(map),
         #[cfg(feature = "backend-remote")]
@@ -265,6 +292,16 @@ pub async fn run_server() {
     let instance_id = Arc::new(uuid::Uuid::new_v4().to_string());
 
     let built = build_backends();
+
+    // Register the backends for the process-wide shutdown path so their SDK
+    // sessions are released on Ctrl-C / graceful stop instead of being left
+    // claimed (which would keep the camera from re-enumerating on the next run).
+    shutdown::set_backends(built.state.clone());
+    // Baseline Ctrl-C handler for the non-Nikon case; the Nikon backend re-installs
+    // it after its SDK init so ours stays on top of the SDK's swallowing handler.
+    #[cfg(windows)]
+    shutdown::install_console_handler();
+
     let state = AppState::new(
         built.state,
         token.clone(),
@@ -282,7 +319,23 @@ pub async fn run_server() {
     eprintln!("[config] EXPOSE={expose}");
     eprintln!("[config] TOKEN={}", token.read().unwrap());
     eprintln!("[info] Listening on http://{}/?token={}", addr, token.read().unwrap());
+
+    // Windows drives shutdown through the console control handler (which exits the
+    // process directly — see `shutdown::install_console_handler`), so serve plainly.
+    #[cfg(windows)]
     axum::serve(listener, app).await.unwrap();
+
+    // Elsewhere, stop serving on Ctrl-C and release the backends before returning.
+    #[cfg(not(windows))]
+    {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = tokio::signal::ctrl_c().await;
+            })
+            .await
+            .unwrap();
+        shutdown::run();
+    }
 }
 
 // ---------------------------------------------------------------------------

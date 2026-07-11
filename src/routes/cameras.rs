@@ -72,21 +72,101 @@ impl AppState {
 // ---------------------------------------------------------------------------
 
 pub async fn list_cameras(State(backends): State<BackendState>) -> Json<Vec<DeviceInfo>> {
-    let mut devices = Vec::new();
-    for backend in backends.values() {
-        match backend.list_devices() {
-            Ok(mut found) => devices.append(&mut found),
-            Err(e) => eprintln!("[error] failed to list devices from backend: {e}"),
+    // Query every backend concurrently, each on a blocking thread with a timeout.
+    // `list_devices` is a blocking SDK call; running them in parallel means a slow
+    // backend can't serialize behind the others, and the timeout means one that is
+    // still initializing (e.g. a Nikon SDK warming up) can't stall the listing —
+    // it simply appears on a later poll once ready.
+    let timeout = std::time::Duration::from_secs(3);
+
+    let tasks: Vec<_> = backends
+        .values()
+        .cloned()
+        .map(|backend| {
+            tokio::spawn(async move {
+                let priority = backend.dedup_priority();
+                let listed = tokio::time::timeout(
+                    timeout,
+                    tokio::task::spawn_blocking(move || backend.list_devices()),
+                )
+                .await;
+                match listed {
+                    Ok(Ok(Ok(found))) => {
+                        found.into_iter().map(|d| (priority, d)).collect::<Vec<_>>()
+                    }
+                    Ok(Ok(Err(e))) => {
+                        eprintln!("[error] failed to list devices from backend: {e}");
+                        Vec::new()
+                    }
+                    Ok(Err(_)) => Vec::new(), // spawn_blocking panicked
+                    Err(_) => Vec::new(),     // backend too slow this round
+                }
+            })
+        })
+        .collect();
+
+    // Await in spawn order so the listing order stays stable across polls.
+    let mut devices: Vec<(i32, DeviceInfo)> = Vec::new();
+    for task in tasks {
+        if let Ok(part) = task.await {
+            devices.extend(part);
         }
     }
-    Json(devices)
+
+    Json(dedup_devices(devices))
+}
+
+/// Drops cross-backend duplicates: when several backends report the same physical
+/// camera (same [`DeviceInfo::dedup_key`]), only the highest-priority backend's
+/// entry is kept. Devices without a dedup key are always kept (never deduped).
+/// Order is otherwise preserved.
+fn dedup_devices(devices: Vec<(i32, DeviceInfo)>) -> Vec<DeviceInfo> {
+    use std::collections::HashMap;
+
+    // Diagnostic (TOUCAN_DEDUP_DEBUG=1): one line per /cameras call showing each
+    // device's (priority, dedup_key, name) to spot cross-backend key mismatches.
+    if crate::camera::dedup_debug_enabled() {
+        eprintln!(
+            "[dedup] in: {:?}",
+            devices
+                .iter()
+                .map(|(p, d)| (*p, d.dedup_key.clone(), d.name.clone()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // Winning priority per dedup key.
+    let mut best: HashMap<&str, i32> = HashMap::new();
+    for (priority, dev) in &devices {
+        if let Some(key) = dev.dedup_key.as_deref() {
+            best.entry(key)
+                .and_modify(|p| *p = (*p).max(*priority))
+                .or_insert(*priority);
+        }
+    }
+
+    // Keep keyless devices, and for keyed ones only the first at the winning
+    // priority (guards against two backends sharing the top priority).
+    let mut taken: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(devices.len());
+    for (priority, dev) in &devices {
+        match dev.dedup_key.as_deref() {
+            None => out.push(dev.clone()),
+            Some(key) => {
+                if best.get(key) == Some(priority) && taken.insert(key) {
+                    out.push(dev.clone());
+                }
+            }
+        }
+    }
+    out
 }
 
 pub async fn connect_camera(
     State(backends): State<BackendState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    dispatch(&backends, &id, |b, native_id| b.connect(native_id))
+    dispatch(&backends, &id, |b, native_id| b.connect(native_id)).await
 }
 
 pub async fn get_parameters(
@@ -146,7 +226,7 @@ pub async fn disconnect_camera(
     // Drop the live-view sender before disconnecting so the capture loop stops
     // and the next connection always starts with a fresh sender.
     state.live_views.lock().await.remove(&id);
-    dispatch(&state.backends, &id, |b, native_id| b.disconnect(native_id))
+    dispatch(&state.backends, &id, |b, native_id| b.disconnect(native_id)).await
 }
 
 pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -212,12 +292,35 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                 // Cap at 30 fps (≈32 ms/frame). Backends slower than this run
                 // at their natural pace; fast backends (AVFoundation) are
                 // prevented from spinning at CPU speed.
+                // ~30 fps. This already oversamples real camera live-view rates
+                // (~20-30 fps unique), so it captures every fresh frame; polling
+                // faster (e.g. 16 ms) only wastes USB bandwidth — which matters when
+                // two cameras stream at once: aggressive per-frame USB reads (Canon
+                // EVF) starve another camera's passive SDK stream (Nikon).
                 let frame_interval = tokio::time::Duration::from_millis(32);
                 // Break after ~10 s of consecutive not-ready frames to avoid
                 // spinning forever when the camera stalls (e.g. after a
                 // parameter change that disrupts the capture pipeline).
                 let mut consecutive_misses: u32 = 0;
                 const MAX_CONSECUTIVE_MISSES: u32 = 300;
+                // Only broadcast frames that actually changed, so polling faster
+                // than the camera's frame rate doesn't flood clients with duplicates.
+                let mut last_jpeg: Option<Bytes> = None;
+                // Cached multipart frame + when it was last sent, for the heartbeat
+                // below.
+                let mut last_frame: Option<Arc<Bytes>> = None;
+                let mut last_send = tokio::time::Instant::now();
+                // Re-send the cached frame at least this often (~15x/s) even when
+                // the bytes are unchanged. Real cameras have sensor noise so every
+                // frame differs and dedup rarely triggers; but virtual cameras
+                // (OBS, Logi Capture) re-emit byte-identical JPEGs on a static
+                // scene, which the dedup would otherwise drop forever — freezing
+                // the preview and starving late `broadcast` subscribers, who only
+                // receive frames sent after they subscribe. The heartbeat keeps a
+                // static virtual camera alive and feeds late subscribers within
+                // one interval.
+                const HEARTBEAT: tokio::time::Duration =
+                    tokio::time::Duration::from_millis(66);
 
                 loop {
                     let tick = tokio::time::Instant::now();
@@ -235,6 +338,27 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                     match result {
                         Ok(Ok(jpeg)) => {
                             consecutive_misses = 0;
+                            let jpeg = Bytes::from(jpeg);
+                            // Unchanged frame (we may poll faster than the camera
+                            // produces). Re-send the cached frame only on the
+                            // heartbeat, otherwise skip to save bandwidth.
+                            if last_jpeg.as_ref() == Some(&jpeg) {
+                                if last_send.elapsed() >= HEARTBEAT {
+                                    if let Some(frame) = &last_frame {
+                                        if tx.send(frame.clone()).is_err() {
+                                            break;
+                                        }
+                                        last_send = tokio::time::Instant::now();
+                                    }
+                                }
+                                let elapsed = tick.elapsed();
+                                if elapsed < frame_interval {
+                                    tokio::time::sleep(frame_interval - elapsed).await;
+                                }
+                                continue;
+                            }
+                            last_jpeg = Some(jpeg.clone());
+
                             let mut buf = format!(
                                 "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
                                 jpeg.len()
@@ -243,10 +367,13 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                             buf.extend_from_slice(&jpeg);
                             buf.extend_from_slice(b"\r\n");
 
+                            let frame = Arc::new(Bytes::from(buf));
+                            last_frame = Some(frame.clone());
                             // send() only errors when there are no receivers.
-                            if tx.send(Arc::new(Bytes::from(buf))).is_err() {
+                            if tx.send(frame).is_err() {
                                 break;
                             }
+                            last_send = tokio::time::Instant::now();
                         }
                         Ok(Err(crate::camera::CameraError::SdkError(0x0000_A102))) => {
                             // EVF / camera not ready yet — skip frame.
@@ -435,12 +562,14 @@ pub async fn capture_photo(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Decodes an opaque device ID, routes to the correct backend, and runs `op`.
-fn dispatch(
+/// Decodes an opaque device ID, routes to the correct backend, and runs `op` on a
+/// blocking thread (the SDK calls are blocking — keep them off the async executor
+/// so one slow/stuck backend can't freeze the HTTP server).
+async fn dispatch(
     backends: &HashMap<String, Arc<dyn CameraBackend>>,
     opaque_id: &str,
-    op: impl Fn(&Arc<dyn CameraBackend>, &str) -> Result<(), CameraError>,
-) -> impl IntoResponse {
+    op: fn(&dyn CameraBackend, &str) -> Result<(), CameraError>,
+) -> Response {
     let dev_id = match DeviceId::decode(opaque_id) {
         Ok(d) => d,
         Err(_) => {
@@ -453,7 +582,7 @@ fn dispatch(
     };
 
     let backend = match backends.get(&dev_id.backend) {
-        Some(b) => b,
+        Some(b) => b.clone(),
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -463,7 +592,12 @@ fn dispatch(
         }
     };
 
-    match op(backend, &dev_id.native_id) {
+    let native_id = dev_id.native_id;
+    let result = tokio::task::spawn_blocking(move || op(backend.as_ref(), &native_id))
+        .await
+        .unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)));
+
+    match result {
         Ok(()) => StatusCode::OK.into_response(),
         Err(CameraError::DeviceNotFound(id)) => (
             StatusCode::NOT_FOUND,
@@ -475,5 +609,53 @@ fn dispatch(
             Json(json!({ "error": e.to_string() })),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod dedup_tests {
+    use super::*;
+
+    fn dev(id: &str, key: Option<&str>) -> DeviceInfo {
+        DeviceInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            connected: false,
+            dedup_key: key.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn higher_priority_backend_wins_duplicate() {
+        // gphoto2 (prio 0) and the Nikon SDK (prio 10) both report the same body.
+        let out = dedup_devices(vec![
+            (0, dev("gphoto", Some("04b0:z5ii"))),
+            (10, dev("nikon", Some("04b0:z5ii"))),
+        ]);
+        let ids: Vec<&str> = out.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, vec!["nikon"]);
+    }
+
+    #[test]
+    fn keyless_and_distinct_devices_are_all_kept() {
+        let out = dedup_devices(vec![
+            (0, dev("webcam", None)),                    // no key → always kept
+            (0, dev("gphoto-d850", Some("04b0:d850"))),  // no SDK entry → unique
+            (10, dev("nikon-z5ii", Some("04b0:z5ii"))),
+            (0, dev("gphoto-z5ii", Some("04b0:z5ii"))),  // dup of the Nikon one
+        ]);
+        let ids: Vec<&str> = out.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, vec!["webcam", "gphoto-d850", "nikon-z5ii"]);
+    }
+
+    #[test]
+    fn two_keyless_duplicates_of_same_key_collapse_to_one() {
+        // Same priority + same key (e.g. two backends both prio 0) → keep first.
+        let out = dedup_devices(vec![
+            (0, dev("a", Some("04a9:eosr5"))),
+            (0, dev("b", Some("04a9:eosr5"))),
+        ]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "a");
     }
 }

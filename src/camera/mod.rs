@@ -90,6 +90,7 @@ pub enum ParameterType {
     // Camera focus
     Focus,
     FocusAuto,
+    FocusMode,
 
     // Camera saturation
     Saturation,
@@ -155,6 +156,47 @@ pub struct DeviceInfo {
     pub name: String,
     /// Whether a session is currently open with this device.
     pub connected: bool,
+    /// Stable cross-backend identity of the physical device (see [`dedup_key`]),
+    /// or `None` when the backend can't determine it. The server uses it to drop
+    /// duplicates when several backends see the same camera (e.g. a Nikon shown by
+    /// both the Nikon SDK and gphoto2), keeping the higher-priority backend.
+    /// Never serialized — it is an internal dedup hint, not part of the API.
+    #[serde(skip)]
+    pub dedup_key: Option<String>,
+}
+
+/// Builds the cross-backend dedup key for a physical camera from its USB vendor
+/// id and model name. Backends that can identify a device's vendor + model emit
+/// this so the server can recognise the same body reported by two backends.
+///
+/// The model is normalised so the various spellings agree: the dedicated SDK's
+/// name (e.g. "Z5_2"), libgphoto2's name ("Nikon Z 5_2") and the USB product
+/// string ("Z 5_2") all reduce to the same token.
+pub fn dedup_key(vendor_id: u16, model: &str) -> String {
+    format!("{vendor_id:04x}:{}", normalize_model(model))
+}
+
+/// Whether to log cross-backend dedup decisions (`TOUCAN_DEDUP_DEBUG=1`).
+pub fn dedup_debug_enabled() -> bool {
+    std::env::var_os("TOUCAN_DEDUP_DEBUG").is_some()
+}
+
+/// Normalises a camera model for cross-backend matching: lowercase, map Nikon's
+/// `_2`/`_3` mark suffixes to `ii`/`iii`, drop vendor/category noise words that
+/// appear in some names but not others (`nikon`, and the `dsc` = "Digital Still
+/// Camera" prefix USB product strings carry), and strip everything but
+/// alphanumerics. So the dedicated SDK's name ("Z5_2"), libgphoto2's name and the
+/// USB product string ("DSC Z5_2") all reduce to the same token.
+/// e.g. `"Nikon Z 6_2"` → `"z6ii"`, `"DSC Z5_2"` → `"z5ii"`, `"Canon EOS R5"` →
+/// `"canoneosr5"`.
+pub fn normalize_model(model: &str) -> String {
+    let s = model
+        .to_ascii_lowercase()
+        .replace("_3", "iii")
+        .replace("_2", "ii")
+        .replace("nikon", "")
+        .replace("dsc", "");
+    s.chars().filter(|c| c.is_ascii_alphanumeric()).collect()
 }
 
 /// One option in a Select or RangeSelect parameter.
@@ -221,7 +263,7 @@ pub enum CameraParameter {
 // Errors
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, Serialize, Deserialize)]
 pub enum CameraError {
     #[error("SDK error: {0:#010x}")]
     SdkError(u32),
@@ -248,6 +290,14 @@ pub enum CameraError {
 pub trait CameraBackend: Send + Sync {
     /// Unique name of this backend (e.g. `"canon"`). Used to build opaque device IDs.
     fn backend_id(&self) -> &str;
+
+    /// Priority used to break cross-backend duplicates (devices sharing a
+    /// [`DeviceInfo::dedup_key`]). The highest-priority backend wins. Dedicated
+    /// vendor SDK backends (richer control: native live view, full parameter set)
+    /// override this above the generic backends. Default: generic priority.
+    fn dedup_priority(&self) -> i32 {
+        0
+    }
 
     /// Returns all devices currently visible to this backend.
     /// The `DeviceInfo.id` field contains the already-encoded opaque ID.
@@ -287,5 +337,52 @@ pub trait CameraBackend: Send + Sync {
     fn capture_photo(&self, native_id: &str) -> Result<Vec<u8>, CameraError> {
         let _ = native_id;
         Err(CameraError::NotSupported)
+    }
+
+    /// Best-effort, bounded, blocking teardown before the process exits.
+    ///
+    /// Called by the process-wide shutdown path (`crate::shutdown`) on Ctrl-C
+    /// (Windows) and on graceful shutdown (Unix). Backends that own a hardware/SDK
+    /// session must release it here — close sessions, stop live view, terminate the
+    /// SDK — so the device is not left claimed and re-enumerates on the next run.
+    /// Must not block indefinitely: the SDK thread may be mid-call, so
+    /// implementations wait for teardown with a short timeout. Default: no-op (for
+    /// backends with nothing to release, e.g. the remote proxy).
+    fn shutdown(&self) {}
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_normalization() {
+        assert_eq!(normalize_model("Nikon Z 6"), "z6");
+        assert_eq!(normalize_model("Nikon Z 6_2"), "z6ii"); // mark II
+        assert_eq!(normalize_model("Nikon Z 6_3"), "z6iii"); // mark III
+        assert_eq!(normalize_model("Z5_2"), "z5ii"); // SDK-style name
+        assert_eq!(normalize_model("Nikon Z 5_2"), "z5ii"); // gphoto / USB style
+        assert_eq!(normalize_model("DSC Z5_2"), "z5ii"); // USB product string (DSC prefix)
+        assert_eq!(normalize_model("Canon EOS R5"), "canoneosr5");
+        assert_eq!(normalize_model("Nikon D850"), "d850");
+    }
+
+    #[test]
+    fn dedup_key_agrees_across_naming() {
+        // The same physical Z5II named the SDK way and the gphoto2/USB way yields
+        // one key, so the server recognises it as a single camera.
+        let from_sdk = dedup_key(0x04b0, "Z5_2");
+        let from_gphoto = dedup_key(0x04b0, "Nikon Z 5_2");
+        let from_usb_product = dedup_key(0x04b0, "DSC Z5_2"); // real Z5II USB product string
+        assert_eq!(from_sdk, from_gphoto);
+        assert_eq!(from_sdk, from_usb_product);
+        assert_eq!(from_sdk, "04b0:z5ii");
+        // Distinct bodies → distinct keys (z5 vs z5ii vs z50).
+        assert_ne!(dedup_key(0x04b0, "Z 5"), dedup_key(0x04b0, "Z 5_2"));
+        assert_ne!(dedup_key(0x04b0, "Z 5"), dedup_key(0x04b0, "Z 50"));
     }
 }
