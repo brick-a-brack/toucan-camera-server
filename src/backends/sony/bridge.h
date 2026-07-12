@@ -72,6 +72,10 @@ int  sn_get_parameters(void* cam, SnParam* out, int capacity);
 /* Set one property; the bridge looks up the value type. Returns SN_OK or a CrError. */
 int  sn_set_parameter(void* cam, uint32_t code, uint64_t value);
 
+/* Toggle ISO Auto. enable!=0 selects ISO AUTO; enable==0 leaves auto by setting
+ * the lowest concrete ISO offered by the body. Returns SN_OK or a CrError. */
+int  sn_set_iso_auto(void* cam, int enable);
+
 /* Grab one live-view JPEG. On SN_OK, *out is a malloc'd buffer of *size bytes. */
 int  sn_get_live_view(void* cam, uint8_t** out, uint32_t* size);
 

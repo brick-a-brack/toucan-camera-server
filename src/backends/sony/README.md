@@ -13,8 +13,42 @@ a flat, synchronous C API; the Rust side (`mod.rs`) drives it from one dedicated
 - Capture: still is routed to the PC (`StillImageStoreDestination = HostPC + card`),
   saved by the SDK to a temp dir, read back as JPEG and deleted. Put the body in a
   JPEG image-quality mode — RAW-only capture yields a RAW file.
-- The camera must be in **PC Remote** USB connection mode (menu:
-  Network → USB → USB Connection Mode → PC Remote, or Setup → USB) to enumerate.
+## Camera + host setup (required to be detected)
+
+A Sony body is only enumerable when it exposes a **PC Remote (PTP)** USB interface
+*and* the host talks to it through libusb. Getting `/cameras` to list it:
+
+1. **On the camera — enable PC Remote and stop it sleeping:**
+   - `MENU → Network → Transfer/Remote → PC Remote Function → PC Remote: On`,
+     `PC Remote Cnct Method: USB` (some models also expose `Setup → USB → USB
+     Connection Mode → PC Remote`).
+   - `MENU → Setup → Power Setting Option → Auto Power OFF Temp` / power-save →
+     **long / off** while tethered. A body that sleeps drops off the USB bus and
+     re-enumerates in a non–PC-Remote mode (different PID, HID class), and the SDK
+     stops seeing it.
+2. **On Windows — bind the libusbK driver (CrSDK talks to the camera via libusb,
+   not the MTP/WPD driver):** the SDK package ships it in `Driver.zip`
+   (`srcameradriver.inf`, `libusbK.sys`). In Device Manager, right-click the
+   camera (it appears under *Portable Devices* as `ILCE-…` once in PC Remote) →
+   *Update driver* → *Browse* → *Let me pick* → *Have Disk* → point at
+   `srcameradriver.inf`. It then shows as **libusbK Usb Devices / Service:
+   libusbK** ("Sony Remote Control Camera"). Until then it stays on `WUDFWpdMtp`
+   (MTP) and the SDK can't open it.
+
+   Verify the target state:
+   ```powershell
+   Get-PnpDevice -PresentOnly | ? { $_.InstanceId -match 'VID_054C' } | Select Class,Service,InstanceId
+   ```
+   You want `Service : libusbK` and a PC-Remote PID (`0x0CCC`–`0x1002`).
+
+macOS / Linux use libusb directly (no per-device driver install); the camera just
+needs to be in PC Remote mode.
+
+### Detection is cached, not inline
+The CrSDK USB scan (`EnumCameraObjects`) takes ~3 s and the `/cameras` route drops
+a backend that exceeds a 3 s timeout, so `list_devices()` serves a cache the SDK
+thread refreshes while idle (`mod.rs`). A freshly plugged/woken camera appears
+within one refresh (~5 s), not on the very first poll.
 
 ## Vendoring the SDK (not committed — `external/` is git-ignored)
 

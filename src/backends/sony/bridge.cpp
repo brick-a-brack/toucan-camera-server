@@ -198,8 +198,28 @@ public:
 
 static std::atomic<bool> g_inited{false};
 
+// Reads one property's current raw value; returns false if unavailable.
+static bool get_current_value(SDK::CrDeviceHandle handle, uint32_t code, uint64_t* out) {
+    CrInt32u codes[1] = { code };
+    SDK::CrDeviceProperty* props = nullptr;
+    CrInt32 num = 0;
+    if (SDK::GetSelectDeviceProperties(handle, 1, codes, &props, &num) != SDK::CrError_None
+        || num < 1 || !props) {
+        return false;
+    }
+    *out = props[0].GetCurrentValue();
+    SDK::ReleaseDeviceProperties(handle, props);
+    return true;
+}
+
 // Sets one device property, resolving its value type from the camera so callers
 // only need the property code + raw value.
+//
+// SetDeviceProperty is asynchronous: the body applies the change a moment later
+// and signals it via OnPropertyChanged. We block until the value actually takes
+// (or the body snaps it to a nearby valid value) so the caller's follow-up read
+// reflects the new state instead of the stale one — otherwise the UI glitches.
+// Bounded, so a value the body silently rejects can't hang the request.
 static SDK::CrError set_property(SDK::CrDeviceHandle handle, uint32_t code, uint64_t value) {
     CrInt32u codes[1] = { code };
     SDK::CrDeviceProperty* props = nullptr;
@@ -208,12 +228,27 @@ static SDK::CrError set_property(SDK::CrDeviceHandle handle, uint32_t code, uint
         || num < 1 || !props) {
         return SDK::CrError_Generic;
     }
+    SDK::CrDataType value_type = props[0].GetValueType();
+    uint64_t old_value = props[0].GetCurrentValue();
+    SDK::ReleaseDeviceProperties(handle, props);
+
     SDK::CrDeviceProperty prop;
     prop.SetCode(code);
-    prop.SetValueType(props[0].GetValueType());
+    prop.SetValueType(value_type);
     prop.SetCurrentValue(value);
-    SDK::ReleaseDeviceProperties(handle, props);
-    return SDK::SetDeviceProperty(handle, &prop);
+    SDK::CrError err = SDK::SetDeviceProperty(handle, &prop);
+    if (err != SDK::CrError_None) {
+        return err;
+    }
+
+    for (int i = 0; i < 40; ++i) { // up to ~2 s
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        uint64_t now = old_value;
+        if (get_current_value(handle, code, &now) && (now == value || now != old_value)) {
+            break;
+        }
+    }
+    return SDK::CrError_None;
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +259,10 @@ extern "C" {
 
 int sn_init(void) {
     if (g_inited.load()) return SN_OK;
-    if (!SDK::Init(0)) return SN_ERR;
+    bool ok = SDK::Init(0);
+    std::fprintf(stderr, "[sony-bridge] SDK::Init -> %s (SDK version 0x%08X)\n",
+                 ok ? "OK" : "FAIL", SDK::GetSDKVersion());
+    if (!ok) return SN_ERR;
     ensure_tempdir();
     g_inited.store(true);
     return SN_OK;
@@ -239,8 +277,11 @@ void sn_release(void) {
 int sn_list_devices(SnDeviceInfo* out, int capacity) {
     if (sn_init() != SN_OK) return SN_ERR;
 
+    // Full 3 s scan: the α7 IV (and others) need it to be discovered over USB.
+    // The Rust side never calls this inline for /cameras — it serves a cached list
+    // refreshed on the idle SDK thread — so the scan time doesn't stall the route.
     SDK::ICrEnumCameraObjectInfo* list = nullptr;
-    if (SDK::EnumCameraObjects(&list) != SDK::CrError_None || !list) {
+    if (SDK::EnumCameraObjects(&list, 3) != SDK::CrError_None || !list) {
         return 0; // no cameras (or enumeration failed) — treat as empty
     }
 
@@ -367,6 +408,46 @@ int sn_set_parameter(void* handle, uint32_t code, uint64_t value) {
     SonyCamera* cam = static_cast<SonyCamera*>(handle);
     if (!cam) return SN_ERR;
     return set_property(cam->handle, code, value);
+}
+
+int sn_set_iso_auto(void* handle, int enable) {
+    SonyCamera* cam = static_cast<SonyCamera*>(handle);
+    if (!cam) return SN_ERR;
+
+    const uint32_t ISO_AUTO = 0x00FFFFFF; // bits 0-23 all set = AUTO
+    if (enable) {
+        return set_property(cam->handle, SDK::CrDeviceProperty_IsoSensitivity, ISO_AUTO);
+    }
+
+    // Leaving auto: the ISO property has no separate toggle, so pick the lowest
+    // concrete value the body currently offers.
+    CrInt32u code = SDK::CrDeviceProperty_IsoSensitivity;
+    SDK::CrDeviceProperty* props = nullptr;
+    CrInt32 num = 0;
+    if (SDK::GetSelectDeviceProperties(cam->handle, 1, &code, &props, &num) != SDK::CrError_None
+        || num < 1 || !props) {
+        return SDK::CrError_Generic;
+    }
+    uint32_t w = element_width(props[0].GetValueType());
+    const uint8_t* vals = props[0].GetValues();
+    uint32_t vsize = props[0].GetValueSize();
+    bool found = false;
+    uint32_t lowest = 0;
+    if (w != 0 && vals) {
+        for (uint32_t off = 0; off + w <= vsize; off += w) {
+            uint64_t v = 0;
+            std::memcpy(&v, vals + off, w);
+            uint32_t iso = static_cast<uint32_t>(v) & 0x00FFFFFF;
+            if (iso == 0x00FFFFFF) continue; // skip AUTO
+            if (!found || iso < (lowest & 0x00FFFFFF)) {
+                lowest = static_cast<uint32_t>(v);
+                found = true;
+            }
+        }
+    }
+    SDK::ReleaseDeviceProperties(cam->handle, props);
+    if (!found) return SDK::CrError_Generic;
+    return set_property(cam->handle, code, lowest);
 }
 
 int sn_get_live_view(void* handle, uint8_t** out, uint32_t* size) {

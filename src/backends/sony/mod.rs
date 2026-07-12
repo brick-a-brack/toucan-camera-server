@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 use crate::camera::{
@@ -64,6 +64,7 @@ extern "C" {
     fn sn_disconnect(cam: *mut c_void);
     fn sn_get_parameters(cam: *mut c_void, out: *mut SnParam, capacity: c_int) -> c_int;
     fn sn_set_parameter(cam: *mut c_void, code: u32, value: u64) -> c_int;
+    fn sn_set_iso_auto(cam: *mut c_void, enable: c_int) -> c_int;
     fn sn_get_live_view(cam: *mut c_void, out: *mut *mut u8, size: *mut u32) -> c_int;
     fn sn_capture(cam: *mut c_void, out: *mut *mut u8, size: *mut u32) -> c_int;
     fn sn_free(p: *mut u8);
@@ -80,6 +81,41 @@ const CODE_ISO: u32 = 0x0104;
 const CODE_STILL_QUALITY: u32 = 0x0107;
 const CODE_WHITE_BALANCE: u32 = 0x0108;
 const CODE_FOCUS_MODE: u32 = 0x0109;
+
+/// Human name for a CrDevicePropertyCode (photo-relevant subset), for the
+/// `SONY_DUMP` diagnostic only.
+fn prop_name(code: u32) -> &'static str {
+    match code {
+        0x0100 => "FNumber",
+        0x0101 => "ExposureBiasCompensation",
+        0x0102 => "FlashCompensation",
+        0x0103 => "ShutterSpeed",
+        0x0104 => "IsoSensitivity",
+        0x0105 => "ExposureProgramMode",
+        0x0106 => "FileType",
+        0x0107 => "StillImageQuality",
+        0x0108 => "WhiteBalance",
+        0x0109 => "FocusMode",
+        0x010A => "MeteringMode",
+        0x010B => "FlashMode",
+        0x010C => "WirelessFlash",
+        0x010D => "RedEyeReduction",
+        0x010E => "DriveMode",
+        0x010F => "DRO",
+        0x0110 => "ImageSize",
+        0x0111 => "AspectRatio",
+        0x0112 => "PictureEffect",
+        0x0113 => "FocusArea",
+        0x0115 => "ColorTemp",
+        0x0116 => "ColorTuningAB",
+        0x0117 => "ColorTuningGM",
+        0x0118 => "LiveViewDisplayEffect",
+        0x0119 => "StillImageStoreDestination",
+        0x011A => "PriorityKeySettings",
+        0x011B => "AFTrackingSensitivity",
+        _ => "-",
+    }
+}
 
 fn code_to_param_type(code: u32) -> Option<ParameterType> {
     match code {
@@ -132,6 +168,13 @@ fn element_width(value_type: u32) -> u32 {
         0x0004 => 8,
         _ => 0,
     }
+}
+
+/// Options dropped from the choice list. Shutter speed hides Bulb (`0x00000000`)
+/// and the "nothing to display" sentinel (`0xFFFFFFFF`): capture is single-shot
+/// JPEG, so a bulb exposure has no meaning here.
+fn is_hidden_option(pt: ParameterType, raw: u64) -> bool {
+    matches!(pt, ParameterType::ShutterSpeed) && (raw as u32 == 0 || raw as u32 == 0xFFFF_FFFF)
 }
 
 fn decode_label(pt: ParameterType, raw: u64) -> String {
@@ -258,9 +301,6 @@ fn fmt_image_quality(raw: u64) -> String {
 // ---------------------------------------------------------------------------
 
 enum Command {
-    ListDevices {
-        reply: mpsc::Sender<Result<Vec<DeviceInfo>, CameraError>>,
-    },
     Connect {
         device_id: String,
         reply: mpsc::Sender<Result<(), CameraError>>,
@@ -303,23 +343,30 @@ enum Command {
 
 pub struct SonyBackend {
     tx: mpsc::Sender<Command>,
+    /// Latest enumerated devices, refreshed on the idle SDK thread. `list_devices`
+    /// reads this directly (no actor round-trip) so `/cameras` returns instantly —
+    /// the CrSDK USB enumeration takes ~3 s and would otherwise blow the route's
+    /// per-backend timeout. A freshly plugged camera appears within one refresh.
+    cache: Arc<Mutex<Vec<DeviceInfo>>>,
 }
 
 impl SonyBackend {
     pub fn new() -> Result<Self, CameraError> {
         let (tx, rx) = mpsc::channel::<Command>();
         let (init_tx, init_rx) = mpsc::channel::<Result<(), CameraError>>();
+        let cache: Arc<Mutex<Vec<DeviceInfo>>> = Arc::new(Mutex::new(Vec::new()));
+        let thread_cache = cache.clone();
 
         std::thread::Builder::new()
             .name("sony-sdk".to_string())
-            .spawn(move || actor_thread(rx, init_tx))
+            .spawn(move || actor_thread(rx, init_tx, thread_cache))
             .map_err(|_| CameraError::SdkError(0xFFFF_FFFF))?;
 
         init_rx
             .recv()
             .unwrap_or(Err(CameraError::SdkError(0xFFFF_FFFF)))?;
 
-        Ok(Self { tx })
+        Ok(Self { tx, cache })
     }
 
     fn call<T>(&self, make: impl FnOnce(mpsc::Sender<T>) -> Command, on_err: T) -> T {
@@ -359,10 +406,8 @@ impl CameraBackend for SonyBackend {
     }
 
     fn list_devices(&self) -> Result<Vec<DeviceInfo>, CameraError> {
-        self.call(
-            |reply| Command::ListDevices { reply },
-            Err(CameraError::SdkError(0xFFFF_FFFF)),
-        )
+        // Served from the background-refreshed cache — never blocks on the SDK.
+        Ok(self.cache.lock().map(|c| c.clone()).unwrap_or_default())
     }
 
     fn connect(&self, native_id: &str) -> Result<(), CameraError> {
@@ -457,7 +502,11 @@ impl Drop for SessionHandle {
     }
 }
 
-fn actor_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), CameraError>>) {
+fn actor_thread(
+    rx: mpsc::Receiver<Command>,
+    init_tx: mpsc::Sender<Result<(), CameraError>>,
+    cache: Arc<Mutex<Vec<DeviceInfo>>>,
+) {
     let init = unsafe { sn_init() };
     if init != SN_OK {
         let _ = init_tx.send(Err(CameraError::SdkError(0xFFFF_FFFF)));
@@ -467,19 +516,32 @@ fn actor_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Ca
 
     let mut sessions: HashMap<String, SessionHandle> = HashMap::new();
 
+    // Warm the cache up front so a camera present at startup shows on an early poll.
+    refresh_cache(&cache, &sessions);
+
+    // Re-enumerate after this much idle time to pick up (un)plugged cameras. During
+    // active use, commands arrive faster than this so the refresh never fires and
+    // the SDK's ~3 s scan stays off the hot path.
+    const REFRESH: Duration = Duration::from_secs(5);
+
     loop {
-        match rx.recv() {
-            Ok(Command::ListDevices { reply }) => {
-                let _ = reply.send(list_devices_impl(&sessions));
-            }
+        match rx.recv_timeout(REFRESH) {
             Ok(Command::IsConnected { device_id, reply }) => {
                 let _ = reply.send(sessions.contains_key(&device_id));
             }
             Ok(Command::Connect { device_id, reply }) => {
-                let _ = reply.send(connect_impl(&device_id, &mut sessions));
+                let result = connect_impl(&device_id, &mut sessions);
+                if result.is_ok() {
+                    set_cached_connected(&cache, &device_id, true);
+                }
+                let _ = reply.send(result);
             }
             Ok(Command::Disconnect { device_id, reply }) => {
-                let _ = reply.send(disconnect_impl(&device_id, &mut sessions));
+                let result = disconnect_impl(&device_id, &mut sessions);
+                if result.is_ok() {
+                    set_cached_connected(&cache, &device_id, false);
+                }
+                let _ = reply.send(result);
             }
             Ok(Command::GetParameters { device_id, reply }) => {
                 let _ = reply.send(get_parameters_impl(&device_id, &sessions));
@@ -508,12 +570,33 @@ fn actor_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Ca
                 let _ = ack.send(());
                 return;
             }
-            Ok(Command::Shutdown) | Err(_) => break,
+            Ok(Command::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => refresh_cache(&cache, &sessions),
         }
     }
 
     sessions.clear();
     unsafe { sn_release() };
+}
+
+/// Re-enumerates and replaces the shared device cache (runs on the SDK thread).
+fn refresh_cache(cache: &Arc<Mutex<Vec<DeviceInfo>>>, sessions: &HashMap<String, SessionHandle>) {
+    if let Ok(devices) = list_devices_impl(sessions) {
+        if let Ok(mut c) = cache.lock() {
+            *c = devices;
+        }
+    }
+}
+
+/// Patches a cached device's `connected` flag after a connect/disconnect, so the
+/// UI reflects it immediately instead of waiting for the next enumeration.
+fn set_cached_connected(cache: &Arc<Mutex<Vec<DeviceInfo>>>, native_id: &str, connected: bool) {
+    let id = DeviceId::new("sony", native_id).encode();
+    if let Ok(mut c) = cache.lock() {
+        for d in c.iter_mut().filter(|d| d.id == id) {
+            d.connected = connected;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -594,17 +677,89 @@ fn get_parameters_impl(
     }
     buf.truncate(count as usize);
 
-    let params = buf.iter().filter_map(build_parameter).collect();
+    // Diagnostic: `SONY_DUMP=1` lists every property the body exposes (code, name,
+    // whether we map it, settable flag, option count) so we can see what the SDK
+    // offers beyond the handful we surface.
+    if std::env::var_os("SONY_DUMP").is_some() {
+        eprintln!("[sony-dump] {} properties:", buf.len());
+        for p in &buf {
+            eprintln!(
+                "  0x{:04X} {:32} mapped={} settable={} options={}",
+                p.code,
+                prop_name(p.code),
+                code_to_param_type(p.code).is_some() || p.code == CODE_ISO,
+                p.writable != 0,
+                p.num_options
+            );
+        }
+    }
+
+    let mut params: Vec<CameraParameter> = Vec::new();
+    for p in &buf {
+        if p.code == CODE_ISO {
+            // ISO is split into an IsoAuto toggle + an Iso selector (AUTO removed),
+            // mirroring the Canon / gphoto2 backends.
+            params.extend(build_iso_params(p));
+        } else if let Some(cp) = build_parameter(p) {
+            params.push(cp);
+        }
+    }
     Ok(params)
 }
 
+/// Sony encodes ISO AUTO as the value `0x00FFFFFF` (bits 0-23 all set) in the ISO
+/// list; there is no separate auto toggle property.
+const ISO_AUTO: u32 = 0x00FF_FFFF;
+
+fn iso_is_auto(raw: u64) -> bool {
+    (raw as u32) & ISO_AUTO == ISO_AUTO
+}
+
+/// Splits the ISO property into an `IsoAuto` boolean plus an `Iso` selector with
+/// the AUTO entry removed; the selector is `disabled` while auto is on.
+fn build_iso_params(p: &SnParam) -> Vec<CameraParameter> {
+    let mask = 0xFFFF_FFFFu64; // ISO is UInt32
+    let writable = p.writable != 0;
+    let current_raw = p.current & mask;
+    let auto_on = iso_is_auto(current_raw);
+
+    let options: Vec<ParameterOption> = p.options[..p.num_options.max(0) as usize]
+        .iter()
+        .map(|&raw| raw as u64 & mask)
+        .filter(|&v| !iso_is_auto(v))
+        .map(|v| ParameterOption {
+            label: fmt_iso(v),
+            value: v.to_string(),
+        })
+        .collect();
+
+    let mut out = vec![CameraParameter::Boolean {
+        param_type: ParameterType::IsoAuto,
+        current: auto_on,
+        disabled: !writable,
+    }];
+
+    if options.len() >= 2 {
+        out.push(CameraParameter::RangeSelect {
+            param_type: ParameterType::Iso,
+            current: current_raw.to_string(),
+            options,
+            disabled: auto_on || !writable,
+        });
+    }
+    out
+}
+
 /// Turns one raw SDK property into a CameraParameter, or `None` if we don't map
-/// the code or it has fewer than two selectable options (no real choice).
+/// the code.
+///
+/// When the body currently offers no real choice — e.g. exposure compensation
+/// locked by the physical dial or neutralised in Manual mode, where the SDK
+/// reports fewer than two options — the control is kept **visible but disabled**
+/// (showing its current value) rather than made to vanish, so the parameter list
+/// doesn't flicker as the camera state changes.
 fn build_parameter(p: &SnParam) -> Option<CameraParameter> {
     let param_type = code_to_param_type(p.code)?;
-    if p.num_options < 2 {
-        return None;
-    }
 
     let width = element_width(p.value_type);
     let mask = if width == 0 || width >= 8 {
@@ -613,19 +768,29 @@ fn build_parameter(p: &SnParam) -> Option<CameraParameter> {
         (1u64 << (8 * width)) - 1
     };
 
-    let options: Vec<ParameterOption> = p.options[..p.num_options as usize]
+    let current_val = p.current & mask;
+    let current = current_val.to_string();
+
+    let mut options: Vec<ParameterOption> = p.options[..p.num_options.max(0) as usize]
         .iter()
-        .map(|&raw| {
-            let v = raw as u64 & mask;
-            ParameterOption {
-                label: decode_label(param_type, v),
-                value: v.to_string(),
-            }
+        .map(|&raw| raw as u64 & mask)
+        .filter(|&v| !is_hidden_option(param_type, v))
+        .map(|v| ParameterOption {
+            label: decode_label(param_type, v),
+            value: v.to_string(),
         })
         .collect();
 
-    let current = (p.current & mask).to_string();
-    let disabled = p.writable == 0;
+    // Fewer than two options → no real choice: show it greyed out. Ensure at least
+    // the current value is present so the disabled control still displays it.
+    let no_choice = options.len() < 2;
+    if options.is_empty() {
+        options.push(ParameterOption {
+            label: decode_label(param_type, current_val),
+            value: current.clone(),
+        });
+    }
+    let disabled = p.writable == 0 || no_choice;
 
     Some(if is_range_select(param_type) {
         CameraParameter::RangeSelect {
@@ -651,6 +816,23 @@ fn set_parameter_impl(
     sessions: &HashMap<String, SessionHandle>,
 ) -> Result<(), CameraError> {
     let handle = sessions.get(device_id).ok_or(CameraError::NotConnected)?.0;
+
+    // ISO Auto has no dedicated SDK property — the bridge translates the toggle to
+    // an ISO value (AUTO sentinel, or the lowest concrete ISO when turned off).
+    if param_type == ParameterType::IsoAuto {
+        let enable = match value {
+            "true" => 1,
+            "false" => 0,
+            _ => return Err(CameraError::NotSupported),
+        };
+        let ret = unsafe { sn_set_iso_auto(handle, enable) };
+        return if ret == SN_OK {
+            Ok(())
+        } else {
+            Err(CameraError::SdkError(ret as u32))
+        };
+    }
+
     let code = param_type_to_code(param_type).ok_or(CameraError::NotSupported)?;
     let raw: u64 = value.parse().map_err(|_| CameraError::NotSupported)?;
 
