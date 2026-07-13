@@ -983,13 +983,10 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, ready: Arc<AtomicBool>) {
             // clear the cache so the next list re-enumerates. No reply expected.
             Ok(Command::UsbGone) => {
                 if session.is_some() {
-                    if let Some(s) = ensure_sdk(&mut sdk) {
-                        let _ = drop_session(s, &mut session);
-                    } else {
-                        session = None;
-                        *LATEST_LV_FRAME.lock().unwrap() = None;
-                        *LV_ZOOM_POS.lock().unwrap() = None;
-                    }
+                    // The body left the bus: reset local state only. A real SDK
+                    // teardown (StopLiveView / DisconnectDevice) would block on a PTP
+                    // timeout against the vanished device and wedge this thread.
+                    reset_session_state(&mut session);
                     cached.clear();
                     last_enum = None;
                     eprintln!("[nikon] body left the USB bus; dropped stale session");
@@ -1318,20 +1315,36 @@ fn disconnect_impl(
 }
 
 /// Tears down the current session and resets live-view state, returning the SDK's
-/// `DisconnectDevice` result. Shared by the explicit `disconnect` and by the
-/// unplug / live-view-stall auto-detection (which ignore the returned code).
+/// `DisconnectDevice` result. Used ONLY by the explicit `disconnect`, where the body
+/// is still on the bus and responsive.
 ///
 /// Always stops live view first (not just when the flag says it is running): a
 /// `StartLiveView` that failed mid-recovery can leave the SDK with live view on,
 /// which would make the next session's `StartLiveView` fail. `StopLiveView` when
 /// nothing is running is harmless (`AlreadyStopped`).
+///
+/// WARNING: do NOT call this when the body is gone (unplugged / powered off / left
+/// the USB bus). `StopLiveView` / `DisconnectDevice` then block on a PTP timeout
+/// against the vanished device and wedge the single SDK thread — freezing live view
+/// and stalling every other command. Use [`reset_session_state`] in those paths.
 fn drop_session(sdk: &Sdk, session: &mut Option<Session>) -> i32 {
     unsafe { (sdk.stop_live_view)(std::ptr::null_mut(), std::ptr::null_mut()) };
     let err = unsafe { (sdk.disconnect_device)() };
+    reset_session_state(session);
+    err
+}
+
+/// Drops the current session and live-view state **locally, without any SDK calls**.
+///
+/// For the "body is gone" paths (`UsbGone`, live-view stall): the device has left
+/// the USB bus, so calling `StopLiveView` / `DisconnectDevice` would block on a PTP
+/// timeout and jam the SDK thread. Reconnection re-enumerates the body from scratch
+/// (`UsbGone` clears the enum cache) and `start_live_view` already recovers stale
+/// SDK live-view state, so skipping the SDK teardown here is safe.
+fn reset_session_state(session: &mut Option<Session>) {
     *session = None;
     *LATEST_LV_FRAME.lock().unwrap() = None;
     *LV_ZOOM_POS.lock().unwrap() = None;
-    err
 }
 
 fn require_connected<'a>(
@@ -1364,7 +1377,13 @@ fn get_live_view_frame_impl(
         }
     }
 
-    match LATEST_LV_FRAME.lock().unwrap().clone() {
+    // Bind to a `let` so the MutexGuard is released HERE, at the end of this
+    // statement — NOT held across the match below. A `match LATEST_LV_FRAME.lock()`
+    // scrutinee keeps its temporary guard alive until the end of the match, so the
+    // stall arm's `reset_session_state` (which re-locks LATEST_LV_FRAME on this same
+    // thread) would deadlock a non-reentrant `std::sync::Mutex`.
+    let latest = LATEST_LV_FRAME.lock().unwrap().clone();
+    match latest {
         // A frame arrived recently — serve it and reset the stall counter.
         Some((frame, at)) if at.elapsed() <= LV_FRAME_STALE_AFTER => {
             if let Some(s) = session.as_mut() {
@@ -1392,7 +1411,10 @@ fn get_live_view_frame_impl(
                     "[nikon] live view for {native_id} produced no frame for {stalls} polls; \
                      body appears gone, dropping session"
                 );
-                drop_session(sdk, session);
+                // The body is gone: reset local state only. Calling the SDK's
+                // StopLiveView / DisconnectDevice here would block on a PTP timeout
+                // against the vanished device and wedge this thread.
+                reset_session_state(session);
                 return Err(CameraError::NotConnected);
             }
             Err(CameraError::SdkError(0x0000_A102))
