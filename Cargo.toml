@@ -21,13 +21,13 @@ backend-canon = []
 # EDSDK because build.rs renames the Nikon driver's clashing ObjC PTP classes
 # (no clash on Windows — the driver is a plain DLL, not Objective-C).
 backend-nikon-zs2 = ["dep:nusb"]
-backend-webcam-linux = ["dep:v4l", "dep:image"]
+backend-webcam-linux = ["dep:v4l"]
 # nusb resolves the real USB vendor of a libgphoto2 device, so gphoto2 can dedup
 # cameras owned by a dedicated SDK backend (Canon/Nikon) by USB vendor, not name.
 backend-gphoto2 = ["dep:gphoto2", "dep:nusb"]
 backend-webcam-macos = []
-backend-webcam-windows = ["dep:windows", "dep:windows-core", "dep:image"]
-backend-camera2-android = ["dep:image"]
+backend-webcam-windows = ["dep:windows", "dep:windows-core"]
+backend-camera2-android = []
 # Relays cameras exposed by other toucan-camera-server instances over HTTP.
 backend-remote = ["dep:reqwest"]
 
@@ -45,7 +45,10 @@ tower-http = { version = "0.6", features = ["cors"] }
 # HTTP client for the remote backend. No TLS stack: peers are reached over plain
 # HTTP on the LAN (the server itself is HTTP-only), keeping the dependency light.
 reqwest = { version = "0.12", optional = true, default-features = false, features = ["json", "stream"] }
-image = { version = "0.25", optional = true, default-features = false, features = ["jpeg"] }
+# Always compiled: the live-view route composites the terminal "end of stream"
+# placeholder onto a canvas matching the last real frame's resolution. Several
+# backends also use it to encode captured frames to JPEG.
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 gphoto2 = { version = "3.4", optional = true }
 windows-core = { version = "0.58", optional = true }
 windows = { version = "0.58", optional = true, features = [
