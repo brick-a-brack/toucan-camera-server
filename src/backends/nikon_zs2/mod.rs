@@ -453,8 +453,21 @@ struct Sdk {
 // natural fit (and avoids passing Rust refs through C callbacks).
 // ---------------------------------------------------------------------------
 
-/// Latest JPEG frame delivered by `LiveViewDataProc`.
-static LATEST_LV_FRAME: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+/// Latest JPEG frame delivered by `LiveViewDataProc`, with the time it arrived.
+/// The timestamp lets `get_live_view_frame_impl` detect a dead stream (camera
+/// unplugged / SDK stopped pushing) and report "not ready" instead of serving the
+/// frozen last frame forever — see [`LV_FRAME_STALE_AFTER`].
+static LATEST_LV_FRAME: Mutex<Option<(Vec<u8>, std::time::Instant)>> = Mutex::new(None);
+/// A pushed live-view frame older than this is treated as stale. Nikon live view
+/// runs ~30 fps (a frame every ~33 ms), so 500 ms means roughly 15 consecutive
+/// missed frames — well clear of normal jitter, yet quick enough to end the stream
+/// promptly once the body stops delivering frames.
+const LV_FRAME_STALE_AFTER: Duration = Duration::from_millis(500);
+/// Consecutive live-view polls with no fresh frame before the body is presumed
+/// gone and its session is torn down. The route layer gives up on a live view
+/// after 45 not-ready polls, so a smaller value tears the session down first —
+/// which also ends the stream with a real error.
+const LV_STALL_LIMIT: u32 = 30;
 /// Latest live-view zoom window (magnification + scroll position), parsed from the
 /// frame header by `LiveViewDataProc`. Drives the `LiveViewPan` / `LiveViewTilt`
 /// current values and bounds; `None` until the first frame arrives.
@@ -549,7 +562,18 @@ unsafe extern "C" fn live_view_data_proc(_ref: *mut c_void, data: *mut NkMaidLiv
         let is_jpeg = bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF;
         if is_jpeg {
             if let Ok(mut g) = LATEST_LV_FRAME.lock() {
-                *g = Some(bytes.to_vec());
+                // Only refresh the timestamp when the frame content actually
+                // changes. After an unplug (or with the body powered off) the SDK
+                // keeps re-delivering the *same* buffer; timestamping those as
+                // "fresh" would freeze the stream forever. A repeated identical
+                // frame keeps its old timestamp and ages out, so
+                // get_live_view_frame_impl can detect the dead stream. A live
+                // sensor's frames always differ (noise), so this never mis-fires on
+                // a real camera, even on a static scene.
+                let changed = g.as_ref().map_or(true, |(prev, _)| prev.as_slice() != bytes);
+                if changed {
+                    *g = Some((bytes.to_vec(), std::time::Instant::now()));
+                }
             }
         }
         free(lv.p_image_data);
@@ -599,6 +623,11 @@ enum Command {
     /// Fire-and-forget: initialize the SDK in the background (pre-warm) so the
     /// first real command doesn't pay the ~10 s InitializeSDK cost inline.
     Warmup,
+    /// Fire-and-forget: no Nikon is present on the USB bus. If a session is still
+    /// held, the body was unplugged — tear it down so it stops reporting connected.
+    /// Sent by `list_devices` when `nikon_usb_present()` is false (cable pulled),
+    /// covering the case where no live view was running to trip the stall detector.
+    UsbGone,
     /// Graceful shutdown: tear the SDK down (stop live view, disconnect, free) on
     /// the sdk thread, then ack so the caller can exit without leaving the body in
     /// an open PTP session. Driven by `NikonZs2Backend::shutdown`.
@@ -688,6 +717,10 @@ impl CameraBackend for NikonZs2Backend {
         // Canon also plugged in). Skip it entirely unless a Nikon-vendor USB device
         // is actually present — keeps /cameras fast when no Nikon is connected.
         if !nikon_usb_present() {
+            // No Nikon on the bus. If the sdk thread still holds a session, the body
+            // was unplugged — ask it to drop the session so it stops reporting
+            // connected. Fire-and-forget; a no-op when there is no session.
+            let _ = self.tx.send(Command::UsbGone);
             return Ok(Vec::new());
         }
         // A Nikon is present. If the SDK isn't initialized yet, kick off a one-shot
@@ -810,6 +843,10 @@ struct Session {
     /// Per-capability operation bits (`eNkMAIDCapOperations`) captured from the
     /// `ConnectDevice` table. Used by `cap_is_settable` to know what is writable.
     cap_ops: HashMap<u32, u32>,
+    /// Consecutive live-view polls that produced no fresh frame. Reset on every
+    /// delivered frame; once it crosses [`LV_STALL_LIMIT`] the body is presumed
+    /// gone (unplugged / powered off) and the session is torn down.
+    lv_stall: u32,
 }
 
 /// Parses the `ConnectDevice` capability table into a `cap_id -> ul_operations`
@@ -940,6 +977,23 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, ready: Arc<AtomicBool>) {
             // Background pre-warm: initialize the SDK (no reply expected).
             Ok(Command::Warmup) => {
                 let _ = ensure_sdk(&mut sdk);
+            }
+            // The Nikon left the USB bus while we still held a session (cable
+            // pulled). Drop the stale session so it stops reporting connected, and
+            // clear the cache so the next list re-enumerates. No reply expected.
+            Ok(Command::UsbGone) => {
+                if session.is_some() {
+                    if let Some(s) = ensure_sdk(&mut sdk) {
+                        let _ = drop_session(s, &mut session);
+                    } else {
+                        session = None;
+                        *LATEST_LV_FRAME.lock().unwrap() = None;
+                        *LV_ZOOM_POS.lock().unwrap() = None;
+                    }
+                    cached.clear();
+                    last_enum = None;
+                    eprintln!("[nikon] body left the USB bus; dropped stale session");
+                }
             }
             // Graceful shutdown: tear the SDK down here (SDK calls are only valid on
             // this thread), ack, then exit the loop so the process can quit without
@@ -1238,6 +1292,7 @@ fn connect_impl(
         native_id: native_id.to_string(),
         live_view_running: false,
         cap_ops,
+        lv_stall: 0,
     });
     Ok(())
 }
@@ -1255,19 +1310,28 @@ fn disconnect_impl(
         return Err(CameraError::DeviceNotFound(native_id.to_string()));
     }
 
-    // Always stop live view before disconnecting (not just when our flag says it
-    // is running): a StartLiveView that failed mid-recovery can leave the SDK with
-    // live view on, which would make the next session's StartLiveView fail.
-    // StopLiveView when nothing is running is harmless (AlreadyStopped).
+    let err = drop_session(sdk, session);
+    if err != RESULT_NO_ERROR {
+        return Err(CameraError::SdkError(err as u32));
+    }
+    Ok(())
+}
+
+/// Tears down the current session and resets live-view state, returning the SDK's
+/// `DisconnectDevice` result. Shared by the explicit `disconnect` and by the
+/// unplug / live-view-stall auto-detection (which ignore the returned code).
+///
+/// Always stops live view first (not just when the flag says it is running): a
+/// `StartLiveView` that failed mid-recovery can leave the SDK with live view on,
+/// which would make the next session's `StartLiveView` fail. `StopLiveView` when
+/// nothing is running is harmless (`AlreadyStopped`).
+fn drop_session(sdk: &Sdk, session: &mut Option<Session>) -> i32 {
     unsafe { (sdk.stop_live_view)(std::ptr::null_mut(), std::ptr::null_mut()) };
     let err = unsafe { (sdk.disconnect_device)() };
     *session = None;
     *LATEST_LV_FRAME.lock().unwrap() = None;
     *LV_ZOOM_POS.lock().unwrap() = None;
-    if err != RESULT_NO_ERROR {
-        return Err(CameraError::SdkError(err as u32));
-    }
-    Ok(())
+    err
 }
 
 fn require_connected<'a>(
@@ -1300,12 +1364,39 @@ fn get_live_view_frame_impl(
         }
     }
 
-    if let Some(frame) = LATEST_LV_FRAME.lock().unwrap().clone() {
-        Ok(frame)
-    } else {
-        // Not ready yet — mirror the Canon/remote "object not ready" code so the
-        // route layer keeps polling.
-        Err(CameraError::SdkError(0x0000_A102))
+    match LATEST_LV_FRAME.lock().unwrap().clone() {
+        // A frame arrived recently — serve it and reset the stall counter.
+        Some((frame, at)) if at.elapsed() <= LV_FRAME_STALE_AFTER => {
+            if let Some(s) = session.as_mut() {
+                s.lv_stall = 0;
+            }
+            Ok(frame)
+        }
+        // Either no frame yet, or the last one is stale (SDK stopped pushing).
+        _ => {
+            // A brief gap is normal; report "object not ready" so the route layer
+            // keeps polling. But a sustained gap means the body stopped delivering
+            // — unplugged or powered off. Once the stall crosses the limit, tear
+            // the session down so it stops reporting connected, and return a real
+            // error so the live-view stream ends instead of freezing on the last
+            // frame.
+            let stalls = session
+                .as_mut()
+                .map(|s| {
+                    s.lv_stall += 1;
+                    s.lv_stall
+                })
+                .unwrap_or(0);
+            if stalls >= LV_STALL_LIMIT {
+                eprintln!(
+                    "[nikon] live view for {native_id} produced no frame for {stalls} polls; \
+                     body appears gone, dropping session"
+                );
+                drop_session(sdk, session);
+                return Err(CameraError::NotConnected);
+            }
+            Err(CameraError::SdkError(0x0000_A102))
+        }
     }
 }
 

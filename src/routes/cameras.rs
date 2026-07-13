@@ -468,6 +468,13 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                         nosignal_frame.clone()
                     };
                     let _ = tx.send(terminal);
+                    // Follow the terminal placeholder with a closing boundary. A
+                    // multipart/x-mixed-replace part is only rendered by the browser
+                    // once the NEXT boundary arrives; without this trailing marker
+                    // the final placeholder never displays and the client keeps
+                    // showing the previous (frozen) frame. This is the last thing
+                    // sent before the channel closes and the stream ends.
+                    let _ = tx.send(Arc::new(Bytes::from_static(b"--frame--\r\n")));
                 }
 
                 // Remove the sender only if it is still ours. A reconnect may have
