@@ -1189,11 +1189,7 @@ fn deploy_config_files() {
 /// SDK's slow `EnumDevices` when no Nikon body is present. If the USB scan fails,
 /// returns `true` so we fall back to asking the SDK.
 fn nikon_usb_present() -> bool {
-    use nusb::MaybeFuture;
-    match nusb::list_devices().wait() {
-        Ok(devices) => devices.into_iter().any(|d| d.vendor_id() == USB_VENDOR_NIKON),
-        Err(_) => true,
-    }
+    crate::backends::lazy::usb_vendor_present(&[USB_VENDOR_NIKON])
 }
 
 // ---------------------------------------------------------------------------

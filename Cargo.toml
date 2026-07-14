@@ -13,7 +13,9 @@ path = "src/main.rs"
 
 [features]
 default = []
-backend-canon = []
+# nusb gates SDK init on USB-vendor presence (see src/backends/lazy.rs), so the
+# heavy EDSDK is only loaded when a Canon body is actually plugged in.
+backend-canon = ["dep:nusb"]
 # Nikon Z series 2 bodies via the Nikon Remote SDK (MAID3 CS Layer). macOS +
 # Windows; the CS-Layer module is loaded at runtime (dlopen'd CFBundle on macOS,
 # LoadLibrary'd ControlServiceLayer.dll on Windows — see src/backends/nikon_zs2/README.md).
