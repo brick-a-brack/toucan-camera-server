@@ -34,9 +34,9 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 - `FromRef<AppState> for BackendState` is implemented so handlers that only need backends can extract `State<BackendState>` directly.
 - Backends are registered at startup in `build_backends()` in `lib.rs` (returns `BuiltBackends`, which also carries the peer registry when `backend-remote` is on).
 - If a backend fails to initialize (e.g. SDK DLL not found), it is skipped with an error log — the server starts anyway.
-- Each backend is gated behind a Cargo feature flag: `backend-canon`, `backend-gphoto2`, `backend-webcam-macos`, `backend-webcam-windows`, `backend-camera2-android`, `backend-remote`.
+- Each backend is gated behind a Cargo feature flag: `backend-canon`, `backend-sony`, `backend-gphoto2`, `backend-webcam-macos`, `backend-webcam-windows`, `backend-camera2-android`, `backend-remote`.
 - Backend code lives in `src/backends/<name>/mod.rs` (`#[cfg(feature = "backend-<name>")]`).
-- Active backends: `backend-canon` (Windows / macOS / Linux), `backend-gphoto2` (macOS / Linux), `backend-webcam-windows` (Windows), `backend-webcam-macos` (macOS), `backend-camera2-android` (Android), `backend-remote` (all platforms).
+- Active backends: `backend-canon` (Windows / macOS / Linux), `backend-sony` (Windows / macOS / Linux), `backend-gphoto2` (macOS / Linux), `backend-webcam-windows` (Windows), `backend-webcam-macos` (macOS), `backend-camera2-android` (Android), `backend-remote` (all platforms).
 - `backend-canon` and `backend-gphoto2` can be built together (release builds do, on macOS/Linux): EDSDK owns Canon bodies, gphoto2 hides them and covers other vendors — see the gphoto2 backend section.
 
 ### Remote backend
@@ -49,6 +49,16 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 - **Peers** are managed via `/peers` routes and held in an in-memory `PeerRegistry` (`Arc<RwLock<Vec<Peer>>>`) shared between the backend and the routes via `AppState.peers` (no on-disk persistence). Each peer has an id, normalized URL, and optional bearer token sent on every proxied request. The token is returned by the API (the server is local, so the UI can display it).
 - **Add-time validation**: `POST /peers` calls `validate_peer` (hits the peer's `/health` with the given token) before registering. A peer that is unreachable, rejects the token, or is not a toucan-camera-server is refused with 502 and never stored.
 - Code: `src/backends/remote/mod.rs` (backend + MJPEG relay) and `src/backends/remote/peers.rs` (registry).
+
+### Sony backend (Camera Remote SDK / CrSDK)
+- Source: `src/backends/sony/bridge.cpp` (+ `bridge.h`, a flat C shim over the C++ SDK) and `src/backends/sony/mod.rs` (Rust actor over `std::sync::mpsc`, like Canon). `backend_id()` is `"sony"`, gated behind `backend-sony`, built for Windows / macOS / Linux.
+- **Why a C++ bridge**: the CrSDK is C++ with abstract classes (`ICrCameraObjectInfo`, `IDeviceCallback`) and asynchronous callbacks on SDK-owned threads. `bridge.cpp` wraps one session as a `SonyCamera : IDeviceCallback` and exposes a flat, synchronous C API (`sn_*`): connect blocks until `OnConnected`, capture blocks until `OnCompleteDownload` (condition variables). All `sn_*` calls run on the single `sony-sdk` actor thread; the SDK's callback threads only touch a session's mutex/condvar.
+- **Header gotcha**: the `Cr` integer/char typedefs (`CrChar`, `CrInt8u`, `CrInt32`, `CrInt32u`, …) live at **global** scope (`CrTypes.h` has no namespace); only `CrDeviceHandle`, `CrError`, the enums and the classes are in `SCRSDK`. On Windows the DLL is built UNICODE so `CrChar` is `wchar_t` — build.rs defines `UNICODE`/`_UNICODE` and the bridge converts UTF-8 ↔ wide.
+- **Values cross the FFI raw**; labels are decoded in `mod.rs` (Canon-style tables): FNumber = f×100, ShutterSpeed = numerator<<16 | denominator (0 = Bulb), ISO = bits 0-23 value / 24-27 mode / 28-31 ext (0xFFFFFF = AUTO), ExposureBiasCompensation = signed EV×1000, plus WhiteBalance / FocusMode / ImageQuality enum tables. Exposed codes: FNumber `0x0100`, ExposureBiasCompensation `0x0101`, ShutterSpeed `0x0103`, IsoSensitivity `0x0104`, StillImageQuality `0x0107`, WhiteBalance `0x0108`, FocusMode `0x0109`. **Verify codes/encodings in `external/SONY/CrSDK/include/CRSDK/CrDeviceProperty.h`.** Params with fewer than two options are hidden; read-only props are marked `disabled`.
+- **Capture** (JPEG-only): at connect the bridge sets `StillImageStoreDestination = HostPC+MemoryCard`, calls `SetSaveInfo` to a temp dir, and enables live view. `sn_capture` sends `Release` Down → 35 ms → Up, waits for `OnCompleteDownload`, reads the saved JPEG and deletes it. Live view uses `GetLiveViewImageInfo` + `GetLiveViewImage`; "not ready" maps to `SdkError(0x0000_A102)`.
+- **Dedup**: `dedup_priority()` = 10 and each device emits `dedup_key(0x054c, model)` (Sony USB vendor), so a Sony body also seen by gphoto2 is dropped in favour of the SDK.
+- **Camera requirement**: the body must be in **PC Remote** USB connection mode to enumerate.
+- **SDK vendoring** (git-ignored `external/`): `external/SONY/CrSDK/{include, windows/x64, macos, linux/x64}` — headers + `Cr_Core` + `monitor_protocol*` + `CrAdapter/`. build.rs compiles the bridge (C++17), links `Cr_Core`, and copies the runtime libs + `CrAdapter/` next to the binary (`$ORIGIN` on Linux, `@loader_path` on macOS). A missing SDK only warns. See `src/backends/sony/README.md`.
 
 ### Canon SDK thread
 - The EDSDK relies on Windows messages internally and does not work on tokio worker threads.
@@ -209,6 +219,11 @@ src/
     canon/
       mod.rs          — FFI bindings + impl CameraBackend for CanonBackend
                         (actor pattern, SDK thread, code→label decode tables)
+    sony/
+      mod.rs          — Sony CrSDK backend (actor pattern): FFI to the C++ bridge,
+                        property code↔ParameterType mapping, label decode tables
+      bridge.cpp      — flat C shim over the async C++ CrSDK (IDeviceCallback,
+                        blocking connect/capture), bridge.h + README.md
     gphoto2/
       mod.rs          — libgphoto2 backend (PTP/USB cameras): param curation,
                         LC_ALL=C labels, keep-alive thread, Canon deferral to EDSDK

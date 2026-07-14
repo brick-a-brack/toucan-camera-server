@@ -92,6 +92,18 @@ pub fn build_backends() -> BuiltBackends {
         map.insert(b.backend_id().to_string(), b);
     }
 
+    #[cfg(all(feature = "backend-sony", any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        // Sony USB vendor id.
+        let b: Arc<dyn camera::CameraBackend> = Arc::new(backends::lazy::LazyBackend::new(
+            "sony",
+            &[0x054C],
+            10,
+            || Ok(Arc::new(backends::sony::SonyBackend::new()?)),
+        ));
+        map.insert(b.backend_id().to_string(), b);
+    }
+
     #[cfg(all(feature = "backend-gphoto2", any(target_os = "linux", target_os = "macos")))]
     match backends::gphoto2::GPhoto2Backend::new() {
         Ok(b) => {
