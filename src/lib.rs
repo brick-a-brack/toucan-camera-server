@@ -63,25 +63,33 @@ pub fn build_backends() -> BuiltBackends {
         Err(e) => eprintln!("[error] Remote backend failed to initialize: {e}"),
     }
 
-    // All hardware backends run in-process. (EDSDK and the Nikon SDK coexist on
-    // macOS thanks to build.rs renaming the Nikon driver's clashing ObjC PTP
-    // classes.)
+    // Single-vendor SDK backends are wrapped in `LazyBackend`: the heavy SDK/DLL and
+    // its OS thread are only created once a USB device of that vendor is detected, so
+    // an unused brand costs nothing and can't interfere on the bus. (EDSDK and the
+    // Nikon SDK coexist on macOS thanks to build.rs renaming the Nikon driver's
+    // clashing ObjC PTP classes.)
     #[cfg(feature = "backend-canon")]
-    match backends::canon::CanonBackend::new() {
-        Ok(b) => {
-            let b: Arc<dyn camera::CameraBackend> = Arc::new(b);
-            map.insert(b.backend_id().to_string(), b);
-        }
-        Err(e) => eprintln!("[error] Canon backend failed to initialize: {e}"),
+    {
+        // Canon USB vendor id.
+        let b: Arc<dyn camera::CameraBackend> = Arc::new(backends::lazy::LazyBackend::new(
+            "canon",
+            &[0x04A9],
+            10,
+            || Ok(Arc::new(backends::canon::CanonBackend::new()?)),
+        ));
+        map.insert(b.backend_id().to_string(), b);
     }
 
     #[cfg(all(feature = "backend-nikon-zs2", any(target_os = "macos", target_os = "windows")))]
-    match backends::nikon_zs2::NikonZs2Backend::new() {
-        Ok(b) => {
-            let b: Arc<dyn camera::CameraBackend> = Arc::new(b);
-            map.insert(b.backend_id().to_string(), b);
-        }
-        Err(e) => eprintln!("[error] Nikon Z series 2 backend failed to initialize: {e}"),
+    {
+        // Nikon USB vendor id.
+        let b: Arc<dyn camera::CameraBackend> = Arc::new(backends::lazy::LazyBackend::new(
+            "nikon-zs2",
+            &[0x04B0],
+            10,
+            || Ok(Arc::new(backends::nikon_zs2::NikonZs2Backend::new()?)),
+        ));
+        map.insert(b.backend_id().to_string(), b);
     }
 
     #[cfg(all(feature = "backend-sony", any(target_os = "macos", target_os = "windows", target_os = "linux")))]

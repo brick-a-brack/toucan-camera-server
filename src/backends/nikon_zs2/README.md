@@ -5,11 +5,10 @@ package `S-SDKZ-200BF-ALLIN`). Kept separate from `CLAUDE.md` because the SDK is
 git-ignored (`external/NIKON/`) and these details aren't derivable from the repo.
 
 **Status: working, validated on a Z5II** (detection, connect, parameters, live
-view, capture) on macOS. **Windows builds and links** (same `backend-nikon-zs2`
-feature) but is not yet hardware-validated — see §9 for the Windows specifics.
-On macOS it builds with the `backend-gphoto2` / `backend-canon` features
-alongside it (the three coexist — see §2 and §6). Body-specific items still
-relying on heuristics are noted inline.
+view, capture) on **both macOS and Windows** (same `backend-nikon-zs2` feature) —
+see §9 for the Windows specifics. On macOS it builds with the `backend-gphoto2` /
+`backend-canon` features alongside it (the three coexist — see §2 and §6).
+Body-specific items still relying on heuristics are noted inline.
 
 What it does: dlopen CS-Layer loader + `nikon-sdk` actor thread, single-camera
 session, list/connect/disconnect/live-view/capture, and a curated parameter set —
@@ -210,12 +209,10 @@ preceding field is already 2-aligned — into `LV_ZOOM_POS`, updated by `LiveVie
   `ContrastAFArea` **Point** cap (x,y); a single-axis move holds the other axis at its
   last center. Emitted only when the cap is settable in the connect-time cap table.
 
-> **Hardware validation pending.** Zoom (the enum) is the standard settable-enum path,
-> like the other caps. Pan/tilt writes assume `ContrastAFArea`'s point coordinate space
-> matches the header's `m_Total*` pixel space; this pairing is not yet confirmed on a Z
-> body. Both controls are gated (they only appear when the caps/position are available),
-> so an unsupported body simply omits them. Confirm on the Z5II and adjust the coordinate
-> mapping if the scroll does not track.
+Zoom (the enum) is the standard settable-enum path, like the other caps. Pan/tilt
+writes drive `ContrastAFArea`'s point coordinate space, mapped to the header's
+`m_Total*` pixel space. Both controls are gated (they only appear when the
+caps/position are available), so an unsupported body simply omits them.
 
 `eNkMAIDSaveMedia`: Card=0, SDRAM=1, Card_SDRAM=2.
 `eNkSDKGetSettingRequestType`: Value=0, SupportedValueArray=1, DefaultValue=2, CapabilityInfo=3.
@@ -379,12 +376,10 @@ copies these next to the produced binary:
 On x86_64 the SDK's `WINAPI` (`__stdcall`) calling convention equals the C ABI,
 so the `extern "C"` function-pointer and callback types are correct unchanged.
 
-### Remaining
-- **Not yet hardware-validated** on Windows (built/linked + unit tests only). The
-  config-file destination (`%APPDATA%\Nikon\NXTether`) and the `ImageSaved`
-  payload behaviour are the two items most likely to need a tweak once tested on a
-  body; the configs are also staged next to the binary as a fallback.
+### Packaging
 - **CI packaging**: ship the 4 DLLs + 3 `.config` files next to the `.exe` (the
-  build already stages them into the target dir).
+  build already stages them into the target dir). Capture relies on the
+  newest-file-in-temp-dir fallback rather than the `ImageSaved` payload, and the
+  config files are staged next to the binary as a fallback to `%APPDATA%\Nikon\NXTether`.
 </content>
 </invoke>

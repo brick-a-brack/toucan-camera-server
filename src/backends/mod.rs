@@ -1,3 +1,9 @@
+/// Lazy, USB-vendor-gated wrapper shared by the single-vendor SDK backends
+/// (Canon, Nikon, …): the real backend is only instantiated once its brand is
+/// detected on the bus. See `lazy.rs`.
+#[cfg(any(feature = "backend-canon", feature = "backend-nikon-zs2"))]
+pub mod lazy;
+
 #[cfg(all(feature = "backend-canon", any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 pub mod canon;
 

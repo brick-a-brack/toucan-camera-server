@@ -75,7 +75,7 @@ Feel free to make pull-requests or report issues 😉
 | ---------------------------- | ------- | ----- | ----- | ------- |
 | Webcams / Cameras            | 🟢¹     | 🟢²   | 🟢³   | 🟢⁴     |
 | Canon EOS (EDSDK)            | 🟢      | 🟢    | 🟢    | 🔴      |
-| Nikon Z series 2             | 🟢      | 🟢    | 🔴    | 🔴      |
+| Nikon Z series 2⁷            | 🟢      | 🟢    | 🔴    | 🔴      |
 | Various cameras (libgphoto2) | 🔴      | 🟢⁶   | 🟢⁶   | 🔴      |
 | Remote (other instances)     | 🟢⁵     | 🟢⁵   | 🟢⁵   | 🟢⁵     |
 
@@ -88,6 +88,9 @@ Feel free to make pull-requests or report issues 😉
 3. Using V4L2
 4. Using camera2
 5. Relayed over HTTP — see [Remote cameras](#remote-cameras)
-6. Using libgphoto2 — Nikon, Sony, Fuji and many other PTP/USB cameras.
+6. Using libgphoto2 — Sony, Fuji and many other PTP/USB cameras (older Nikon bodies too).
+7. Using the Nikon Remote SDK — **Z series 2 bodies only** (Z9, Z8, Z6III, Z7II, Z6II, Z7, Z6, Z5II, Z5, Zf, Z50II, Z50, Z30, Zfc, ZR). Older Nikon cameras fall back to libgphoto2 on macOS / Linux.
 
-> All native dependencies (Canon EDSDK, libgphoto2 and its camera drivers, …) are packaged inside the release archives — just download, unzip and run, nothing else to install.
+> All native dependencies (Canon EDSDK, Nikon Remote SDK, libgphoto2 and its camera drivers, …) are packaged inside the release archives — just download, unzip and run, nothing else to install.
+
+> ⚠️ **One DSLR at a time.** Connecting a Nikon and a Canon body (or several DSLRs) to the same machine simultaneously can cause cross-SDK interference: each vendor SDK probes the USB/PTP bus and may disturb the other's session, leading to slow enumeration, dropped live views, or unstable connections. For reliable operation, keep a single DSLR connected at a time. Webcams are unaffected.

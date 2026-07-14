@@ -237,6 +237,53 @@ pub async fn disconnect_camera(
 const NOSIGNAL_JPEG: &[u8] = include_bytes!("../../static/assets/nosignal.jpg");
 const ENDOFSTREAM_JPEG: &[u8] = include_bytes!("../../static/assets/endofstream.jpg");
 
+/// Read a JPEG's pixel dimensions from its header without decoding the pixels.
+fn jpeg_dimensions(jpeg: &[u8]) -> Option<(u32, u32)> {
+    image::ImageReader::with_format(std::io::Cursor::new(jpeg), image::ImageFormat::Jpeg)
+        .into_dimensions()
+        .ok()
+}
+
+/// Composite the "end of stream" art onto a black canvas of `width`×`height`
+/// (the last real frame's resolution) so the terminal placeholder keeps the
+/// exact aspect ratio of the live stream instead of snapping to the art's own
+/// 16:9. The art is scaled to *contain* (fit fully inside, preserving its
+/// aspect ratio), centered, and the remaining area is left black — letterbox or
+/// pillarbox padding as needed. Returns re-encoded JPEG bytes, or `None` if
+/// decoding/encoding fails (caller falls back to the raw art).
+fn compose_endofstream(width: u32, height: u32) -> Option<Vec<u8>> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let art = image::load_from_memory_with_format(ENDOFSTREAM_JPEG, image::ImageFormat::Jpeg)
+        .ok()?
+        .to_rgb8();
+    let (aw, ah) = (art.width(), art.height());
+    if aw == 0 || ah == 0 {
+        return None;
+    }
+
+    // "contain" scale factor: fit the art fully within the canvas.
+    let scale = f64::min(width as f64 / aw as f64, height as f64 / ah as f64);
+    let nw = ((aw as f64 * scale).round() as u32).clamp(1, width);
+    let nh = ((ah as f64 * scale).round() as u32).clamp(1, height);
+
+    let resized =
+        image::imageops::resize(&art, nw, nh, image::imageops::FilterType::Lanczos3);
+
+    // Black canvas, art centered.
+    let mut canvas = image::RgbImage::from_pixel(width, height, image::Rgb([0, 0, 0]));
+    let ox = ((width - nw) / 2) as i64;
+    let oy = ((height - nh) / 2) as i64;
+    image::imageops::overlay(&mut canvas, &resized, ox, oy);
+
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 85)
+        .encode_image(&image::DynamicImage::ImageRgb8(canvas))
+        .ok()?;
+    Some(out)
+}
+
 /// Wrap raw JPEG bytes in a `multipart/x-mixed-replace` part (boundary `frame`).
 fn multipart_frame(jpeg: &[u8]) -> Bytes {
     let mut buf = format!(
@@ -463,11 +510,29 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                 // subscribers after `tx` is dropped, so they receive it.
                 if tx.receiver_count() > 0 {
                     let terminal = if had_signal {
-                        endofstream_frame.clone()
+                        // Composite the end-of-stream art onto a canvas matching
+                        // the last real frame's resolution, so the placeholder
+                        // keeps the stream's aspect ratio (black padding fills
+                        // the difference) instead of snapping to the art's 16:9.
+                        // Falls back to the raw art if we have no last frame or
+                        // compositing fails.
+                        last_jpeg
+                            .as_ref()
+                            .and_then(|j| jpeg_dimensions(j))
+                            .and_then(|(w, h)| compose_endofstream(w, h))
+                            .map(|bytes| Arc::new(multipart_frame(&bytes)))
+                            .unwrap_or_else(|| endofstream_frame.clone())
                     } else {
                         nosignal_frame.clone()
                     };
                     let _ = tx.send(terminal);
+                    // Follow the terminal placeholder with a closing boundary. A
+                    // multipart/x-mixed-replace part is only rendered by the browser
+                    // once the NEXT boundary arrives; without this trailing marker
+                    // the final placeholder never displays and the client keeps
+                    // showing the previous (frozen) frame. This is the last thing
+                    // sent before the channel closes and the stream ends.
+                    let _ = tx.send(Arc::new(Bytes::from_static(b"--frame--\r\n")));
                 }
 
                 // Remove the sender only if it is still ours. A reconnect may have
@@ -729,5 +794,32 @@ mod dedup_tests {
         ]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, "a");
+    }
+}
+
+#[cfg(test)]
+mod endofstream_tests {
+    use super::*;
+
+    #[test]
+    fn composited_placeholder_matches_last_frame_resolution() {
+        // A non-16:9 frame (e.g. a 3:2 DSLR preview): the placeholder must adopt
+        // the exact canvas size, padding to fit the 16:9 art.
+        let (w, h) = (1200, 800);
+        let jpeg = compose_endofstream(w, h).expect("compositing should succeed");
+        let (ow, oh) = jpeg_dimensions(&jpeg).expect("output should be a valid JPEG");
+        assert_eq!((ow, oh), (w, h));
+    }
+
+    #[test]
+    fn zero_dimensions_are_rejected() {
+        assert!(compose_endofstream(0, 720).is_none());
+        assert!(compose_endofstream(1280, 0).is_none());
+    }
+
+    #[test]
+    fn embedded_art_dimensions_are_readable() {
+        // Guards the include_bytes! asset staying a decodable JPEG.
+        assert!(jpeg_dimensions(ENDOFSTREAM_JPEG).is_some());
     }
 }
