@@ -8,6 +8,8 @@ fn main() {
     println!("cargo:rerun-if-changed=src/backends/webcam_macos/bridge.h");
     println!("cargo:rerun-if-changed=src/backends/camera2_android/bridge.c");
     println!("cargo:rerun-if-changed=src/backends/camera2_android/bridge.h");
+    println!("cargo:rerun-if-changed=src/backends/sony/bridge.cpp");
+    println!("cargo:rerun-if-changed=src/backends/sony/bridge.h");
     println!("cargo:rerun-if-changed=logo/logo.ico");
 
     let target = std::env::var("TARGET").unwrap_or_default();
@@ -45,6 +47,13 @@ fn main() {
         } else if target.contains("windows") {
             copy_nikon_runtime_windows(&manifest_dir);
         }
+    }
+
+    if std::env::var_os("CARGO_FEATURE_BACKEND_SONY").is_some()
+        && (target.contains("windows") || target.contains("apple") || target.contains("linux"))
+    {
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
+        build_sony(&manifest_dir, &target);
     }
 
     if std::env::var_os("CARGO_FEATURE_BACKEND_WEBCAM_MACOS").is_some()
@@ -128,6 +137,121 @@ fn main() {
         println!("cargo:rustc-link-lib=android");
         println!("cargo:rustc-link-lib=log");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Sony Camera Remote SDK (CrSDK)
+//
+// The SDK is C++ with async callbacks, wrapped by src/backends/sony/bridge.cpp
+// (a flat C shim). We compile that shim as C++, link Cr_Core, and copy the SDK's
+// runtime libraries + the CrAdapter/ plugin dir next to the produced binary so
+// Cr_Core finds its transport adapters at runtime (like the Canon DLL copy).
+//
+// Vendored layout (git-ignored, see src/backends/sony/README.md):
+//   external/SONY/CrSDK/include/CRSDK/*.h
+//   external/SONY/CrSDK/windows/x64/{Cr_Core.{lib,dll}, monitor_protocol*.dll, CrAdapter/}
+//   external/SONY/CrSDK/macos/{libCr_Core.dylib, libmonitor_protocol*.dylib, CrAdapter/}
+//   external/SONY/CrSDK/linux/x64/{libCr_Core.so, libmonitor_protocol*.so, CrAdapter/}
+//
+// Best-effort: a missing vendored SDK only warns, so non-Sony builds keep working.
+// ---------------------------------------------------------------------------
+
+fn build_sony(manifest_dir: &str, target: &str) {
+    let include = format!("{manifest_dir}/external/SONY/CrSDK/include");
+    let libdir = sony_lib_dir(manifest_dir, target);
+
+    // Compile the C++ bridge. On Windows the SDK DLL is built UNICODE, so CrChar
+    // is wchar_t — define UNICODE to match the ABI of the exported functions.
+    let mut build = cc::Build::new();
+    build
+        .cpp(true)
+        .std("c++17")
+        .file("src/backends/sony/bridge.cpp")
+        .include("src/backends/sony")
+        .include(&include);
+    if target.contains("windows") {
+        build.define("UNICODE", None);
+        build.define("_UNICODE", None);
+        // The bridge uses _wfopen/_wremove for Unicode paths.
+        build.define("_CRT_SECURE_NO_WARNINGS", None);
+    }
+    build.compile("toucan_sony_bridge");
+
+    if !Path::new(&libdir).exists() {
+        println!(
+            "cargo:warning=Sony CrSDK not found at {libdir} — see src/backends/sony/README.md (vendor the SDK)"
+        );
+        return;
+    }
+
+    // Link Cr_Core (Cr_Core.lib on Windows, libCr_Core.{dylib,so} elsewhere).
+    println!("cargo:rustc-link-search=native={libdir}");
+    println!("cargo:rustc-link-lib=Cr_Core");
+
+    copy_sony_runtime(&libdir, target);
+
+    // Cr_Core and its CrAdapter plugins sit next to the binary; let the loader find
+    // them there at runtime.
+    if target.contains("linux") {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+    } else if target.contains("apple") {
+        println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path");
+    }
+}
+
+fn sony_lib_dir(manifest_dir: &str, target: &str) -> String {
+    let base = format!("{manifest_dir}/external/SONY/CrSDK");
+    if target.contains("windows") {
+        format!("{base}/windows/x64")
+    } else if target.contains("apple") {
+        format!("{base}/macos")
+    } else {
+        // Linux — only the x86_64 SDK is vendored by default.
+        format!("{base}/linux/x64")
+    }
+}
+
+/// Copies Cr_Core + the monitor_protocol libs and the CrAdapter/ plugin dir next
+/// to the produced binary (skipping the Windows import lib). Best-effort.
+fn copy_sony_runtime(libdir: &str, _target: &str) {
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    let profile_dir = Path::new(&out_dir)
+        .ancestors()
+        .nth(3)
+        .expect("unexpected OUT_DIR structure")
+        .to_path_buf();
+
+    let src = Path::new(libdir);
+    let entries = match std::fs::read_dir(src) {
+        Ok(e) => e,
+        Err(e) => {
+            println!("cargo:warning=Sony runtime copy: cannot read {libdir}: {e}");
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        if path.is_dir() {
+            // CrAdapter/ (transport plugins) — copy the whole tree.
+            copy_tree(&path, &profile_dir.join(&name));
+        } else {
+            // Skip the import library; it is only needed at link time.
+            if path.extension().and_then(|e| e.to_str()) == Some("lib") {
+                continue;
+            }
+            let dst = profile_dir.join(&name);
+            let _ = std::fs::remove_file(&dst);
+            if let Err(e) = std::fs::copy(&path, &dst) {
+                println!("cargo:warning=Sony runtime copy {name:?} failed: {e}");
+            }
+        }
+    }
+    println!(
+        "cargo:warning=Sony CrSDK runtime staged in {}",
+        profile_dir.display()
+    );
 }
 
 fn link_canon_sdk(manifest_dir: &str) {
