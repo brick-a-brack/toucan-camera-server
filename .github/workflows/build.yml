@@ -5,9 +5,7 @@ on:
     branches:
       - master
       - dev
-      - feature/libgphoto2
-      - feature/nikonZS2
-      - feature/gphoto2-update
+      - feature/sony-support
   workflow_dispatch:
 
 env:
@@ -27,6 +25,15 @@ env:
   # libgphoto2 is compiled from source (the OS packages are often outdated).
   # Pin a branch, tag, or full commit SHA of github.com/gphoto/libgphoto2.
   LIBGPHOTO2_REF: "7fc007d0ba6b52b8608da7b46920ae2416a94358"
+  # Sony Camera Remote SDK (CrSDK). Unlike the Canon/Nikon runtimes (loaded at run
+  # time), Cr_Core is LINKED at build time, so backend-sony cannot build without it
+  # — this URL is REQUIRED (the Sony staging step fails hard if empty). The archive
+  # bundles Sony's per-platform SDK packages verbatim, one zip each (names as
+  # shipped, see external/SONY/): CrSDK_*_Win64.zip / _Mac.zip / _Linux64PC.zip.
+  # scripts/stage-sony-crsdk.sh unpacks the right one into external/SONY/CrSDK/
+  # (headers + Cr_Core / monitor_protocol libs + CrAdapter/ plugins).
+  # TODO: set to the hosted Sony CrSDK archive URL (or wire a secret).
+  SONY_CRSDK_URL: "https://uploads.brickfilms.com/files/1/a9115202-sonysdk.zip"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -140,6 +147,18 @@ jobs:
           done
           echo "Nikon macOS runtime staged into external/NIKON/runtime"
 
+      - name: Stage Sony Camera Remote SDK
+        # Cr_Core is linked at build time, so this is REQUIRED for backend-sony —
+        # the step fails hard if SONY_CRSDK_URL is empty. The macOS SDK dylibs are
+        # universal (x86_64 + arm64), so both slices of the lipo build link fine.
+        run: |
+          if [ -z "${{ env.SONY_CRSDK_URL }}" ]; then
+            echo "ERROR: SONY_CRSDK_URL not set — required for backend-sony (Cr_Core is linked at build time)."
+            exit 1
+          fi
+          curl -fsSL "${{ env.SONY_CRSDK_URL }}" -o sony_crsdk.zip
+          bash scripts/stage-sony-crsdk.sh sony_crsdk.zip mac
+
       - name: Build x86_64
         env:
           PKG_CONFIG_ALLOW_CROSS: "1"
@@ -149,14 +168,14 @@ jobs:
           export PKG_CONFIG_PATH="$HOME/gphoto2-x86/lib/pkgconfig:/usr/local/lib/pkgconfig"
           cargo build --release \
             --target x86_64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-remote
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-sony,backend-remote
 
       - name: Build arm64
         run: |
           export PKG_CONFIG_PATH="$HOME/gphoto2-arm/lib/pkgconfig:/opt/homebrew/lib/pkgconfig"
           cargo build --release \
             --target aarch64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-remote
+            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-sony,backend-remote
 
       - name: Create universal binary with lipo
         run: |
@@ -205,6 +224,19 @@ jobs:
               [ -f "$NIKON_REL/$cfg" ] && cp "$NIKON_REL/$cfg" dist/toucan-camera-server-macos/
             done
             echo "Nikon runtime bundled into the macOS artifact"
+          fi
+
+          # Sony CrSDK runtime — Cr_Core + monitor_protocol dylibs + CrAdapter/
+          # transport plugins staged next to the per-arch binary by build.rs. The
+          # dylibs are universal, so copy from one arch; the binary resolves them
+          # via @loader_path (rpath added by build.rs).
+          SONY_REL="target/aarch64-apple-darwin/release"
+          for lib in libCr_Core.dylib libmonitor_protocol.dylib libmonitor_protocol_pf.dylib; do
+            [ -f "$SONY_REL/$lib" ] && cp "$SONY_REL/$lib" dist/toucan-camera-server-macos/
+          done
+          if [ -d "$SONY_REL/CrAdapter" ]; then
+            cp -R "$SONY_REL/CrAdapter" dist/toucan-camera-server-macos/
+            echo "Sony CrSDK runtime bundled into the macOS artifact"
           fi
 
           cd dist/toucan-camera-server-macos
@@ -257,11 +289,24 @@ jobs:
           Copy-Item "$binSrc\*" $dest -Recurse -Force
           Write-Host "Nikon Windows runtime staged into $dest"
 
+      - name: Stage Sony Camera Remote SDK
+        # Cr_Core.lib is linked at build time, so this is REQUIRED for backend-sony.
+        # Run under bash (Git for Windows ships unzip/curl) so the shared staging
+        # script works the same as on macOS / Linux.
+        shell: bash
+        run: |
+          if [ -z "${{ env.SONY_CRSDK_URL }}" ]; then
+            echo "ERROR: SONY_CRSDK_URL not set — required for backend-sony (Cr_Core is linked at build time)."
+            exit 1
+          fi
+          curl -fsSL "${{ env.SONY_CRSDK_URL }}" -o sony_crsdk.zip
+          bash scripts/stage-sony-crsdk.sh sony_crsdk.zip win64
+
       - name: Build x86_64
         run: |
           cargo build --release `
             --target x86_64-pc-windows-msvc `
-            --features backend-webcam-windows,backend-canon,backend-nikon-zs2,backend-remote
+            --features backend-webcam-windows,backend-canon,backend-nikon-zs2,backend-sony,backend-remote
 
       - name: Package into zip
         shell: pwsh
@@ -293,6 +338,22 @@ jobs:
             if (Test-Path $src) {
               Copy-Item $src $out
             }
+          }
+
+          # Sony CrSDK runtime — Cr_Core + monitor_protocol DLLs + the CrAdapter/
+          # transport plugins staged next to the binary by build.rs (the import lib
+          # Cr_Core.lib is intentionally not shipped). Only present if the Sony SDK
+          # was staged.
+          $sony = @("Cr_Core.dll", "monitor_protocol.dll", "monitor_protocol_pf.dll")
+          foreach ($f in $sony) {
+            $src = "target\x86_64-pc-windows-msvc\release\$f"
+            if (Test-Path $src) {
+              Copy-Item $src $out
+            }
+          }
+          $sonyAdapter = "target\x86_64-pc-windows-msvc\release\CrAdapter"
+          if (Test-Path $sonyAdapter) {
+            Copy-Item $sonyAdapter $out -Recurse -Force
           }
 
           Compress-Archive -Path "$out\*" -DestinationPath "dist\toucan-camera-server-windows.zip"
@@ -336,7 +397,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config unzip libusb-1.0-0 patchelf \
             git autoconf automake libtool libtool-bin gettext autopoint \
-            libusb-1.0-0-dev libexif-dev libltdl-dev
+            libusb-1.0-0-dev libexif-dev libltdl-dev \
+            libxml2
 
       - name: Install Canon EDSDK
         run: |
@@ -352,6 +414,16 @@ jobs:
         run: |
           bash scripts/build-libgphoto2.sh "$LIBGPHOTO2_REF" "$HOME/gphoto2"
 
+      - name: Stage Sony Camera Remote SDK
+        # libCr_Core.so is linked at build time, so this is REQUIRED for backend-sony.
+        run: |
+          if [ -z "${{ env.SONY_CRSDK_URL }}" ]; then
+            echo "ERROR: SONY_CRSDK_URL not set — required for backend-sony (Cr_Core is linked at build time)."
+            exit 1
+          fi
+          curl -fsSL "${{ env.SONY_CRSDK_URL }}" -o sony_crsdk.zip
+          bash scripts/stage-sony-crsdk.sh sony_crsdk.zip linux64pc
+
       - name: Build x86_64
         run: |
           # Link against the from-source libgphoto2. LD_LIBRARY_PATH lets build.rs's
@@ -360,7 +432,7 @@ jobs:
           export LD_LIBRARY_PATH="$HOME/gphoto2/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           cargo build --release \
             --target x86_64-unknown-linux-gnu \
-            --features backend-canon,backend-gphoto2,backend-webcam-linux,backend-remote
+            --features backend-canon,backend-gphoto2,backend-webcam-linux,backend-sony,backend-remote
 
       - name: Package
         run: |
@@ -379,13 +451,23 @@ jobs:
             done < "$REL/gphoto2-bundle.manifest"
             cp -R "$REL/camlibs" "$REL/iolibs" "$OUT/" 2>/dev/null || true
           fi
+          # Sony CrSDK runtime — libCr_Core.so (linked, rpath=$ORIGIN) + the dlopen'd
+          # monitor_protocol libs and CrAdapter/ transport plugins, all staged next
+          # to the binary by build.rs. Copied before the ldd check so libCr_Core.so
+          # resolves via $ORIGIN. libCr_Core.so's only non-glibc NEEDED is
+          # libxml2.so.2 (installed above); monitor_protocol is dlopen'd, so it is
+          # not part of the binary's ldd graph.
+          for lib in libCr_Core.so libmonitor_protocol.so libmonitor_protocol_pf.so; do
+            [ -f "$REL/$lib" ] && cp "$REL/$lib" "$OUT/"
+          done
+          [ -d "$REL/CrAdapter" ] && cp -R "$REL/CrAdapter" "$OUT/"
           # Webcam permissions setup — udev rule + install script.
           # End-user runs ./install.sh once after extraction (uses sudo).
           cp packaging/linux/99-toucan-camera.rules "$OUT/"
           cp packaging/linux/install.sh "$OUT/"
           chmod +x "$OUT/install.sh"
           # Sanity checks against the bundled layout:
-          #  1. The binary must resolve libEDSDK.so via rpath=$ORIGIN.
+          #  1. The binary must resolve libEDSDK.so and libCr_Core.so via rpath=$ORIGIN.
           #  2. No dependency in the full transitive graph may be missing.
           cd "$OUT"
           ldd ./toucan-camera-server > /tmp/ldd.txt
@@ -394,6 +476,10 @@ jobs:
             || { echo "ERROR: libEDSDK.so not in dependency list"; exit 1; }
           grep -F 'libEDSDK.so => not found' /tmp/ldd.txt \
             && { echo "ERROR: libEDSDK.so present but unresolved (rpath broken)"; exit 1; }
+          grep -F 'libCr_Core.so' /tmp/ldd.txt > /dev/null \
+            || { echo "ERROR: libCr_Core.so not in dependency list"; exit 1; }
+          grep -F 'libCr_Core.so => not found' /tmp/ldd.txt \
+            && { echo "ERROR: libCr_Core.so present but unresolved (rpath broken)"; exit 1; }
           if grep -F 'not found' /tmp/ldd.txt; then
             echo "ERROR: at least one transitive dependency missing"; exit 1
           fi

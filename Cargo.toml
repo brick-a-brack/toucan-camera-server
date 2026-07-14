@@ -27,9 +27,10 @@ backend-nikon-zs2 = ["dep:nusb"]
 # The SDK is C++ with async callbacks, driven through a C++ shim (bridge.cpp)
 # compiled by build.rs; Cr_Core is linked and its runtime libs + CrAdapter/ are
 # copied next to the binary. Vendor the SDK under external/SONY/CrSDK/ (see
-# src/backends/sony/README.md).
-backend-sony = []
-backend-webcam-linux = ["dep:v4l", "dep:image"]
+# src/backends/sony/README.md). nusb gates SDK init on USB-vendor presence (see
+# src/backends/lazy.rs), so the CrSDK is only loaded when a Sony body is plugged in.
+backend-sony = ["dep:nusb"]
+backend-webcam-linux = ["dep:v4l"]
 # nusb resolves the real USB vendor of a libgphoto2 device, so gphoto2 can dedup
 # cameras owned by a dedicated SDK backend (Canon/Nikon) by USB vendor, not name.
 backend-gphoto2 = ["dep:gphoto2", "dep:nusb"]

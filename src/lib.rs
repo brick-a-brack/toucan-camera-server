@@ -93,12 +93,15 @@ pub fn build_backends() -> BuiltBackends {
     }
 
     #[cfg(all(feature = "backend-sony", any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    match backends::sony::SonyBackend::new() {
-        Ok(b) => {
-            let b: Arc<dyn camera::CameraBackend> = Arc::new(b);
-            map.insert(b.backend_id().to_string(), b);
-        }
-        Err(e) => eprintln!("[error] Sony backend failed to initialize: {e}"),
+    {
+        // Sony USB vendor id.
+        let b: Arc<dyn camera::CameraBackend> = Arc::new(backends::lazy::LazyBackend::new(
+            "sony",
+            &[0x054C],
+            10,
+            || Ok(Arc::new(backends::sony::SonyBackend::new()?)),
+        ));
+        map.insert(b.backend_id().to_string(), b);
     }
 
     #[cfg(all(feature = "backend-gphoto2", any(target_os = "linux", target_os = "macos")))]
