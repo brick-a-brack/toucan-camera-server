@@ -54,19 +54,6 @@ static std::string to_utf8(const tchar* s) {
 #endif
 }
 
-static tstring from_utf8(const std::string& s) {
-#ifdef _WIN32
-    if (s.empty()) return tstring();
-    int len = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
-    if (len <= 0) return tstring();
-    tstring out(static_cast<size_t>(len - 1), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, out.data(), len);
-    return out;
-#else
-    return s;
-#endif
-}
-
 static void copy_cstr(char* dst, size_t cap, const std::string& src) {
     if (cap == 0) return;
     size_t n = src.size() < cap - 1 ? src.size() : cap - 1;
@@ -154,6 +141,10 @@ static uint32_t element_width(uint32_t value_type) {
 
 class SonyCamera : public SDK::IDeviceCallback {
 public:
+    // IDeviceCallback's destructor is not virtual; sessions are always deleted
+    // through a SonyCamera*, so declare one here to make the deletion well-defined.
+    virtual ~SonyCamera() = default;
+
     SDK::CrDeviceHandle handle = 0;
     SDK::ICrEnumCameraObjectInfo* enum_list = nullptr; // kept alive so `info` stays valid
 
@@ -164,18 +155,53 @@ public:
     bool download_done = false;
     tstring download_path;
 
+    // The SDK can drop the device at any time (OnDisconnected). Every entry point
+    // checks this: once the body is gone its handle is dead, and the SDK answers
+    // CrError_Api_InvalidCalled to everything — which read as "not ready yet" and
+    // had live view polling a corpse instead of reporting the device as lost.
+    std::atomic<bool> gone{false};
+
+    // The device is only usable once the SDK has finished its initial property
+    // sync, which it signals with the first OnPropertyChanged. Writing properties
+    // before that races the adaptor's own setup.
+    bool props_ready = false;
+
+    // Live view polls at ~30 Hz; only the first SDK refusal of a session is logged.
+    std::atomic<bool> lv_logged{false};
+
+    // Last OnWarning code. A refused shutter is reported here (and only here):
+    // the release command itself still returns CrError_None.
+    std::atomic<unsigned> last_warning{0};
+
+    // Last OnError code, for the same reason: a connect that never completes only
+    // explains itself through this callback.
+    std::atomic<unsigned> last_error{0};
+
+    void log_lv_once(const char* what, SDK::CrError err) {
+        if (lv_logged.exchange(true)) return;
+        std::fprintf(stderr, "[sony] live view refused by the SDK: %s -> 0x%08X\n",
+                     what, static_cast<unsigned>(err));
+    }
+
     // --- IDeviceCallback ---
     void OnConnected(SDK::DeviceConnectionVersioin) override {
         std::lock_guard<std::mutex> lk(mtx);
         connected = true;
         cv.notify_all();
     }
-    void OnDisconnected(CrInt32u) override {
+    void OnDisconnected(CrInt32u error) override {
+        // error == 0 is the callback for our own sn_disconnect — routine, not news.
+        if (error != 0) {
+            std::fprintf(stderr, "[sony] device dropped by the SDK -> 0x%08X\n",
+                         static_cast<unsigned>(error));
+        }
+        gone.store(true);
         std::lock_guard<std::mutex> lk(mtx);
         connected = false;
         cv.notify_all();
     }
-    void OnError(CrInt32u) override {
+    void OnError(CrInt32u error) override {
+        last_error.store(static_cast<unsigned>(error));
         std::lock_guard<std::mutex> lk(mtx);
         if (!connected) conn_failed = true; // surface connect-time failures
         cv.notify_all();
@@ -187,8 +213,17 @@ public:
         cv.notify_all();
     }
     void OnNotifyPostViewImage(tchar*, CrInt32u) override {}
-    void OnWarning(CrInt32u) override {}
-    void OnPropertyChanged() override {}
+    // Warnings are routine (every capture emits CautionDisplay when no card is in,
+    // and CrNotify_Captured_Event on exposure). Keep the last one instead of
+    // logging each: it is what explains a shutter that never fired.
+    void OnWarning(CrInt32u warning) override {
+        last_warning.store(static_cast<unsigned>(warning));
+    }
+    void OnPropertyChanged() override {
+        std::lock_guard<std::mutex> lk(mtx);
+        props_ready = true;
+        cv.notify_all();
+    }
     void OnLvPropertyChanged() override {}
 };
 
@@ -298,12 +333,18 @@ int sn_list_devices(SnDeviceInfo* out, int capacity) {
     return n;
 }
 
-void* sn_connect(const char* native_id) {
-    if (sn_init() != SN_OK) return nullptr;
+void* sn_connect(const char* native_id, uint32_t* err) {
+    auto fail = [&](uint32_t code) -> void* {
+        if (err) *err = code;
+        return nullptr;
+    };
+
+    if (sn_init() != SN_OK) return fail(SN_CONNECT_NOT_FOUND);
 
     SDK::ICrEnumCameraObjectInfo* list = nullptr;
-    if (SDK::EnumCameraObjects(&list) != SDK::CrError_None || !list) {
-        return nullptr;
+    SDK::CrError enum_err = SDK::EnumCameraObjects(&list);
+    if (enum_err != SDK::CrError_None || !list) {
+        return fail(static_cast<uint32_t>(enum_err));
     }
 
     const SDK::ICrCameraObjectInfo* match = nullptr;
@@ -316,19 +357,22 @@ void* sn_connect(const char* native_id) {
             break;
         }
     }
-    if (!match) { list->Release(); return nullptr; }
+    if (!match) {
+        list->Release();
+        return fail(SN_CONNECT_NOT_FOUND);
+    }
 
     SonyCamera* cam = new SonyCamera();
     cam->enum_list = list; // keep the list (and `match`) alive for the session
 
     // Connect defaults to CrSdkControlMode_Remote + reconnect ON. The call returns
     // immediately; the session is ready only once OnConnected fires.
-    SDK::CrError err = SDK::Connect(
+    SDK::CrError conn_err = SDK::Connect(
         const_cast<SDK::ICrCameraObjectInfo*>(match), cam, &cam->handle);
-    if (err != SDK::CrError_None) {
+    if (conn_err != SDK::CrError_None) {
         list->Release();
         delete cam;
-        return nullptr;
+        return fail(static_cast<uint32_t>(conn_err));
     }
 
     {
@@ -336,25 +380,66 @@ void* sn_connect(const char* native_id) {
         cam->cv.wait_for(lk, std::chrono::seconds(15),
                          [&] { return cam->connected || cam->conn_failed; });
         if (!cam->connected) {
+            // The body is on the bus but never completed the handshake. It reports
+            // why through OnError (CrError_Connect_TimeOut 0x8208 when it still
+            // believes an earlier PC Remote session is open).
+            uint32_t why = cam->last_error.load();
             lk.unlock();
             SDK::ReleaseDevice(cam->handle);
             list->Release();
             delete cam;
-            return nullptr;
+            return fail(why ? why : static_cast<uint32_t>(SDK::CrError_Connect_TimeOut));
         }
     }
 
-    // Route stills to the PC (and card) so capture downloads reliably, point the
-    // SDK at our temp dir, and enable the live-view stream.
-    set_property(cam->handle, SDK::CrDeviceProperty_StillImageStoreDestination,
-                 SDK::CrStillImageStoreDestination_HostPCAndMemoryCard);
+    // OnConnected only means the transport is up: the SDK is still pulling the
+    // device's property set behind our back, and it signals the end of that sync
+    // with the first OnPropertyChanged. Writing properties before then races the
+    // adaptor's own setup, which is what killed the session (OnError /
+    // OnDisconnected 0x8702 = CrError_Adaptor_GetInfo) on the very first write.
+    {
+        std::unique_lock<std::mutex> lk(cam->mtx);
+        cam->cv.wait_for(lk, std::chrono::seconds(5),
+                         [&] { return cam->props_ready || !cam->connected; });
+    }
+    if (cam->gone.load()) {
+        uint32_t why = cam->last_error.load();
+        SDK::ReleaseDevice(cam->handle);
+        list->Release();
+        delete cam;
+        return fail(why ? why : static_cast<uint32_t>(SDK::CrError_Connect_TimeOut));
+    }
+
+    // Route stills to the PC only. HostPC+MemoryCard makes the body refuse to fire
+    // when no card is inserted (it raises CrWarning_CautionDisplay and downloads
+    // nothing), and we hand the JPEG straight back over HTTP anyway — the card copy
+    // was never part of what the API promises. Each setup step is reported: a body
+    // that refuses one of them is worth knowing about, none is fatal on its own.
+    SDK::CrError dest_err = set_property(cam->handle,
+                                         SDK::CrDeviceProperty_StillImageStoreDestination,
+                                         SDK::CrStillImageStoreDestination_HostPC);
     tstring prefix; // empty → SDK default
-    SDK::SetSaveInfo(cam->handle, const_cast<tchar*>(g_tempdir.c_str()),
-                     const_cast<tchar*>(prefix.c_str()), SDK::CrSETSAVEINFO_AUTO_NUMBER);
-    SDK::SetDeviceSetting(cam->handle, SDK::Setting_Key_EnableLiveView,
-                          SDK::CrDeviceSetting_Enable);
+    SDK::CrError save_err = SDK::SetSaveInfo(cam->handle, const_cast<tchar*>(g_tempdir.c_str()),
+                                             const_cast<tchar*>(prefix.c_str()),
+                                             SDK::CrSETSAVEINFO_AUTO_NUMBER);
+    SDK::CrError lv_set = SDK::SetDeviceSetting(cam->handle, SDK::Setting_Key_EnableLiveView,
+                                                SDK::CrDeviceSetting_Enable);
+    if (dest_err != SDK::CrError_None || save_err != SDK::CrError_None
+        || lv_set != SDK::CrError_None) {
+        std::fprintf(stderr,
+                     "[sony] setup refused by the body: StillImageStoreDestination->0x%08X "
+                     "SetSaveInfo->0x%08X EnableLiveView->0x%08X\n",
+                     static_cast<unsigned>(dest_err), static_cast<unsigned>(save_err),
+                     static_cast<unsigned>(lv_set));
+    }
 
     return cam;
+}
+
+int sn_is_alive(void* handle) {
+    SonyCamera* cam = static_cast<SonyCamera*>(handle);
+    if (!cam) return 0;
+    return cam->gone.load() ? 0 : 1;
 }
 
 void sn_disconnect(void* handle) {
@@ -453,11 +538,20 @@ int sn_set_iso_auto(void* handle, int enable) {
 int sn_get_live_view(void* handle, uint8_t** out, uint32_t* size) {
     SonyCamera* cam = static_cast<SonyCamera*>(handle);
     if (!cam) return SN_ERR;
+    // A dropped device is not "not ready": report it so the stream ends instead of
+    // polling a dead handle for ever.
+    if (cam->gone.load()) return SN_ERR;
 
+    // Every failure below collapses to SN_NOT_READY (the route polls and retries),
+    // so log the first reason per session: without it a live view that never starts
+    // is indistinguishable from one that is merely warming up.
     SDK::CrImageInfo info;
-    if (SDK::GetLiveViewImageInfo(cam->handle, &info) != SDK::CrError_None) {
+    SDK::CrError err = SDK::GetLiveViewImageInfo(cam->handle, &info);
+    if (err != SDK::CrError_None) {
+        cam->log_lv_once("GetLiveViewImageInfo", err);
         return SN_NOT_READY;
     }
+    // An empty buffer is the stream warming up, not a failure — stay quiet.
     uint32_t buf_size = info.GetBufferSize();
     if (buf_size < 1) return SN_NOT_READY;
 
@@ -465,7 +559,9 @@ int sn_get_live_view(void* handle, uint8_t** out, uint32_t* size) {
     SDK::CrImageDataBlock img;
     img.SetSize(buf_size);
     img.SetData(buffer.data());
-    if (SDK::GetLiveViewImage(cam->handle, &img) != SDK::CrError_None) {
+    err = SDK::GetLiveViewImage(cam->handle, &img);
+    if (err != SDK::CrError_None) {
+        cam->log_lv_once("GetLiveViewImage", err);
         return SN_NOT_READY;
     }
     uint32_t img_size = img.GetImageSize();
@@ -482,14 +578,16 @@ int sn_get_live_view(void* handle, uint8_t** out, uint32_t* size) {
 int sn_capture(void* handle, uint8_t** out, uint32_t* size) {
     SonyCamera* cam = static_cast<SonyCamera*>(handle);
     if (!cam) return SN_ERR;
+    if (cam->gone.load()) return SN_ERR;
 
     {
         std::lock_guard<std::mutex> lk(cam->mtx);
         cam->download_done = false;
         cam->download_path.clear();
     }
+    cam->last_warning.store(0);
 
-    // Half-press + full-press shutter, then release.
+    // Press and release the shutter.
     SDK::SendCommand(cam->handle, SDK::CrCommandId_Release, SDK::CrCommandParam_Down);
     std::this_thread::sleep_for(std::chrono::milliseconds(35));
     SDK::SendCommand(cam->handle, SDK::CrCommandId_Release, SDK::CrCommandParam_Up);
@@ -499,11 +597,21 @@ int sn_capture(void* handle, uint8_t** out, uint32_t* size) {
         std::unique_lock<std::mutex> lk(cam->mtx);
         if (!cam->cv.wait_for(lk, std::chrono::seconds(20),
                               [&] { return cam->download_done; })) {
-            return SN_ERR; // timed out waiting for the download
+            // The shutter never fired, or the body kept the file. The camera only
+            // ever says why through OnWarning (0x0002008C = CrWarning_CautionDisplay
+            // — read the caution shown on the body: no card, AF failed, …).
+            std::fprintf(stderr,
+                         "[sony] capture: no download within 20 s "
+                         "(last warning 0x%08X)\n",
+                         cam->last_warning.load());
+            return SN_ERR;
         }
         path = cam->download_path;
     }
-    if (path.empty()) return SN_ERR;
+    if (path.empty()) {
+        std::fprintf(stderr, "[sony] capture: download reported with an empty path\n");
+        return SN_ERR;
+    }
 
     bool ok = read_whole_file(path, out, size);
     delete_file(path);

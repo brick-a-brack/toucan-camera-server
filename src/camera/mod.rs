@@ -220,7 +220,7 @@ pub struct ParameterOption {
 /// - `range`        — continuous numeric value (slider); `current`, `min`, `max`, `step` are integers.
 /// - `select`       — arbitrary discrete choices; `current` matches one `option.value`.
 /// - `range_select` — ordered discrete values with numeric progression (ISO, aperture);
-///                    rendered as a select but values are semantically ordered.
+///   rendered as a select but values are semantically ordered.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CameraParameter {

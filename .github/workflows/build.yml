@@ -435,13 +435,21 @@ jobs:
           # Sony CrSDK runtime — libCr_Core.so (linked, rpath=$ORIGIN) + the dlopen'd
           # monitor_protocol libs and CrAdapter/ transport plugins, all staged next
           # to the binary by build.rs. Copied before the ldd check so libCr_Core.so
-          # resolves via $ORIGIN. libCr_Core.so's only non-glibc NEEDED is
-          # libxml2.so.2 (installed above); monitor_protocol is dlopen'd, so it is
-          # not part of the binary's ldd graph.
+          # resolves via $ORIGIN. monitor_protocol is dlopen'd, so it is not part of
+          # the binary's ldd graph.
           for lib in libCr_Core.so libmonitor_protocol.so libmonitor_protocol_pf.so; do
             [ -f "$REL/$lib" ] && cp "$REL/$lib" "$OUT/"
           done
           [ -d "$REL/CrAdapter" ] && cp -R "$REL/CrAdapter" "$OUT/"
+          # libCr_Core.so's only non-glibc NEEDED is libxml2.so.2. Ship it rather
+          # than rely on the host: distributions have started moving to libxml2 2.15
+          # (soname libxml2.so.16) and no longer package the .so.2 at all (Ubuntu
+          # 26.04), where the binary would die at load with "libxml2.so.2: cannot
+          # open shared object file". libCr_Core.so has RUNPATH=$ORIGIN, so a copy
+          # next to it resolves. MIT-licensed, redistribution is fine.
+          XML2="$(ldconfig -p | awk '/libxml2\.so\.2 \(libc6,x86-64\)/ {print $NF; exit}')"
+          [ -n "$XML2" ] || { echo "ERROR: libxml2.so.2 not found on the runner"; exit 1; }
+          cp -L "$XML2" "$OUT/libxml2.so.2"
           # Webcam permissions setup — udev rule + install script.
           # End-user runs ./install.sh once after extraction (uses sudo).
           cp packaging/linux/99-toucan-camera.rules "$OUT/"
@@ -461,6 +469,14 @@ jobs:
             || { echo "ERROR: libCr_Core.so not in dependency list"; exit 1; }
           grep -F 'libCr_Core.so => not found' /tmp/ldd.txt \
             && { echo "ERROR: libCr_Core.so present but unresolved (rpath broken)"; exit 1; }
+          #  3. libxml2.so.2 must resolve to OUR bundled copy, not the runner's
+          #     system one — otherwise the artifact silently depends on a lib that
+          #     recent distros no longer ship (see the packaging step).
+          XML2_RESOLVED="$(awk '/libxml2\.so\.2 =>/ {print $3}' /tmp/ldd.txt)"
+          case "$XML2_RESOLVED" in
+            "$PWD"/libxml2.so.2) ;;
+            *) echo "ERROR: libxml2.so.2 resolves to '$XML2_RESOLVED', not the bundled copy"; exit 1 ;;
+          esac
           if grep -F 'not found' /tmp/ldd.txt; then
             echo "ERROR: at least one transitive dependency missing"; exit 1
           fi

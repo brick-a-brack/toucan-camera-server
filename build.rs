@@ -123,7 +123,7 @@ fn main() {
             .file("src/backends/camera2_android/bridge.c")
             .include("src/backends/camera2_android")
             .compiler(&clang)
-            .flag(&format!("--sysroot={sysroot}"))
+            .flag(format!("--sysroot={sysroot}"))
             .flag("-std=c11")
             .flag("-Wall")
             .compile("camera2_android_bridge");
@@ -167,13 +167,19 @@ fn build_sony(manifest_dir: &str, target: &str) {
         .cpp(true)
         .std("c++17")
         .file("src/backends/sony/bridge.cpp")
-        .include("src/backends/sony")
-        .include(&include);
-    if target.contains("windows") {
+        .include("src/backends/sony");
+    if target.contains("msvc") {
+        build.include(&include);
         build.define("UNICODE", None);
         build.define("_UNICODE", None);
         // The bridge uses _wfopen/_wremove for Unicode paths.
         build.define("_CRT_SECURE_NO_WARNINGS", None);
+    } else {
+        // Pull the vendored SDK headers in as *system* headers: they are Sony's,
+        // we cannot fix them, and under cc's default -Wall -Wextra they emit
+        // dozens of warnings (MSVC-only pragmas, unused callback parameters,
+        // member init order…) that drown out warnings from our own bridge.
+        build.flag("-isystem").flag(&include);
     }
     build.compile("toucan_sony_bridge");
 
@@ -213,7 +219,7 @@ fn sony_lib_dir(manifest_dir: &str, target: &str) -> String {
 
 /// Copies Cr_Core + the monitor_protocol libs and the CrAdapter/ plugin dir next
 /// to the produced binary (skipping the Windows import lib). Best-effort.
-fn copy_sony_runtime(libdir: &str, _target: &str) {
+fn copy_sony_runtime(libdir: &str, target: &str) {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let profile_dir = Path::new(&out_dir)
         .ancestors()
@@ -245,13 +251,23 @@ fn copy_sony_runtime(libdir: &str, _target: &str) {
             let _ = std::fs::remove_file(&dst);
             if let Err(e) = std::fs::copy(&path, &dst) {
                 println!("cargo:warning=Sony runtime copy {name:?} failed: {e}");
+                continue;
+            }
+            // Sony ships libmonitor_protocol.so — the live-view transport, dlopen'd
+            // by Cr_Core — with no rpath at all, while it NEEDs its sibling
+            // libmonitor_protocol_pf.so. The loader does not fall back to the
+            // executable's rpath for a dlopen'd library's own dependencies (rustc
+            // emits DT_RUNPATH, which does not propagate down the chain), so the
+            // load silently fails and live view never produces a frame. Give every
+            // copied lib an $ORIGIN rpath so siblings resolve.
+            if target.contains("linux") {
+                patch_rpath(&dst, "$ORIGIN");
             }
         }
     }
-    println!(
-        "cargo:warning=Sony CrSDK runtime staged in {}",
-        profile_dir.display()
-    );
+    // Plain build-script output (visible with `cargo build -vv`): a successful
+    // staging is not a warning, and emitting it as one made every build noisy.
+    println!("Sony CrSDK runtime staged in {}", profile_dir.display());
 }
 
 fn link_canon_sdk(manifest_dir: &str) {

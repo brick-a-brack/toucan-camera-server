@@ -37,6 +37,9 @@ extern "C" {
 #define SN_ERR            (-1)
 #define SN_NOT_READY        2   /* live view frame not available yet */
 
+/* sn_connect: the camera is not on the bus (no CrError covers this). */
+#define SN_CONNECT_NOT_FOUND 0xFFFFFFFFu
+
 typedef struct SnDeviceInfo {
     char model[SN_MAX_MODEL];   /* e.g. "ILCE-7M4" */
     char id[SN_MAX_ID];         /* native id: hex of the SDK device id bytes */
@@ -60,11 +63,18 @@ void sn_release(void);
 /* Enumerate connected cameras. Returns count (>=0) or SN_ERR. */
 int  sn_list_devices(SnDeviceInfo* out, int capacity);
 
-/* Open a session and block until connected. Returns an opaque handle or NULL. */
-void* sn_connect(const char* native_id);
+/* Open a session and block until connected. Returns an opaque handle, or NULL on
+ * failure — in which case *err (if non-NULL) carries the CrError explaining why:
+ * SN_CONNECT_NOT_FOUND when the body is not on the bus, CrError_Connect_TimeOut
+ * (0x8208) when it is there but refuses the session, etc. */
+void* sn_connect(const char* native_id, uint32_t* err);
 
 /* Close a session and free the handle. */
 void  sn_disconnect(void* cam);
+
+/* 1 while the session is usable, 0 once the SDK reported the device gone
+ * (OnDisconnected). A dead handle answers CrError_Api_InvalidCalled to every call. */
+int   sn_is_alive(void* cam);
 
 /* Fill `out` with the device's properties. Returns count (>=0) or SN_ERR. */
 int  sn_get_parameters(void* cam, SnParam* out, int capacity);

@@ -60,8 +60,9 @@ extern "C" {
     fn sn_init() -> c_int;
     fn sn_release();
     fn sn_list_devices(out: *mut SnDeviceInfo, capacity: c_int) -> c_int;
-    fn sn_connect(native_id: *const c_char) -> *mut c_void;
+    fn sn_connect(native_id: *const c_char, err: *mut u32) -> *mut c_void;
     fn sn_disconnect(cam: *mut c_void);
+    fn sn_is_alive(cam: *mut c_void) -> c_int;
     fn sn_get_parameters(cam: *mut c_void, out: *mut SnParam, capacity: c_int) -> c_int;
     fn sn_set_parameter(cam: *mut c_void, code: u32, value: u64) -> c_int;
     fn sn_set_iso_auto(cam: *mut c_void, enable: c_int) -> c_int;
@@ -527,7 +528,7 @@ fn actor_thread(
     loop {
         match rx.recv_timeout(REFRESH) {
             Ok(Command::IsConnected { device_id, reply }) => {
-                let _ = reply.send(sessions.contains_key(&device_id));
+                let _ = reply.send(prune_dead_session(&device_id, &mut sessions, &cache));
             }
             Ok(Command::Connect { device_id, reply }) => {
                 let result = connect_impl(&device_id, &mut sessions);
@@ -577,6 +578,29 @@ fn actor_thread(
 
     sessions.clear();
     unsafe { sn_release() };
+}
+
+/// True while the device still has a live session. The SDK can drop a body at any
+/// time (OnDisconnected); its handle then answers CrError_Api_InvalidCalled to
+/// everything, so a session we keep around would make the camera look connected
+/// while every call against it fails. Drop it instead, and let the client reconnect.
+fn prune_dead_session(
+    device_id: &str,
+    sessions: &mut HashMap<String, SessionHandle>,
+    cache: &Arc<Mutex<Vec<DeviceInfo>>>,
+) -> bool {
+    match sessions.get(device_id) {
+        None => false,
+        Some(session) => {
+            if unsafe { sn_is_alive(session.0) } != 0 {
+                return true;
+            }
+            eprintln!("[sony] device {device_id} was dropped by the SDK — closing session");
+            sessions.remove(device_id);
+            set_cached_connected(cache, device_id, false);
+            false
+        }
+    }
 }
 
 /// Re-enumerates and replaces the shared device cache (runs on the SDK thread).
@@ -643,12 +667,33 @@ fn connect_impl(
         return Ok(()); // idempotent
     }
     let c_id = CString::new(device_id).map_err(|_| CameraError::InvalidDeviceId)?;
-    let handle = unsafe { sn_connect(c_id.as_ptr()) };
+    let mut err: u32 = 0;
+    let handle = unsafe { sn_connect(c_id.as_ptr(), &mut err) };
     if handle.is_null() {
-        return Err(CameraError::DeviceNotFound(device_id.to_string()));
+        return Err(connect_error(device_id, err));
     }
     sessions.insert(device_id.to_string(), SessionHandle(handle));
     Ok(())
+}
+
+/// CrError_Connect_TimeOut: the body is on the USB bus but never completes the
+/// handshake. It gets into that state when a previous PC Remote session was not
+/// closed (the server was killed rather than stopped), and it stays there until the
+/// camera is power-cycled — no amount of retrying clears it. Say so: reporting this
+/// as "device not found" sends people looking for a camera that is plugged in and
+/// visibly on.
+fn connect_error(device_id: &str, err: u32) -> CameraError {
+    const CONNECT_TIMEOUT: u32 = 0x0000_8208;
+    const NOT_FOUND: u32 = 0xFFFF_FFFF;
+    match err {
+        CONNECT_TIMEOUT => CameraError::Backend(
+            "the camera did not answer: it is still holding an earlier PC Remote \
+             session. Turn it off and on again (or unplug and replug it)."
+                .to_string(),
+        ),
+        NOT_FOUND | 0 => CameraError::DeviceNotFound(device_id.to_string()),
+        code => CameraError::SdkError(code),
+    }
 }
 
 fn disconnect_impl(
