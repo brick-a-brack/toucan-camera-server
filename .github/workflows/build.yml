@@ -148,16 +148,10 @@ jobs:
           echo "Nikon macOS runtime staged into external/NIKON/runtime"
 
       - name: Stage Sony Camera Remote SDK
-        # Cr_Core is linked at build time, so this is REQUIRED for backend-sony —
-        # the step fails hard if SONY_CRSDK_URL is empty. The macOS SDK dylibs are
-        # universal (x86_64 + arm64), so both slices of the lipo build link fine.
-        run: |
-          if [ -z "${{ env.SONY_CRSDK_URL }}" ]; then
-            echo "ERROR: SONY_CRSDK_URL not set — required for backend-sony (Cr_Core is linked at build time)."
-            exit 1
-          fi
-          curl -fsSL "${{ env.SONY_CRSDK_URL }}" -o sony_crsdk.zip
-          bash scripts/stage-sony-crsdk.sh sony_crsdk.zip mac
+        # REQUIRED: Cr_Core is linked at build time (backend-sony can't build
+        # without it). The macOS SDK dylibs are universal (x86_64 + arm64), so both
+        # slices of the lipo build link fine.
+        run: bash scripts/stage-sony-crsdk.sh "${{ env.SONY_CRSDK_URL }}" mac
 
       - name: Build x86_64
         env:
@@ -290,17 +284,10 @@ jobs:
           Write-Host "Nikon Windows runtime staged into $dest"
 
       - name: Stage Sony Camera Remote SDK
-        # Cr_Core.lib is linked at build time, so this is REQUIRED for backend-sony.
-        # Run under bash (Git for Windows ships unzip/curl) so the shared staging
-        # script works the same as on macOS / Linux.
+        # REQUIRED: Cr_Core.lib is linked at build time. Run under bash (Git for
+        # Windows ships unzip/curl) so the shared staging script works as elsewhere.
         shell: bash
-        run: |
-          if [ -z "${{ env.SONY_CRSDK_URL }}" ]; then
-            echo "ERROR: SONY_CRSDK_URL not set — required for backend-sony (Cr_Core is linked at build time)."
-            exit 1
-          fi
-          curl -fsSL "${{ env.SONY_CRSDK_URL }}" -o sony_crsdk.zip
-          bash scripts/stage-sony-crsdk.sh sony_crsdk.zip win64
+        run: bash scripts/stage-sony-crsdk.sh "${{ env.SONY_CRSDK_URL }}" win64
 
       - name: Build x86_64
         run: |
@@ -415,14 +402,8 @@ jobs:
           bash scripts/build-libgphoto2.sh "$LIBGPHOTO2_REF" "$HOME/gphoto2"
 
       - name: Stage Sony Camera Remote SDK
-        # libCr_Core.so is linked at build time, so this is REQUIRED for backend-sony.
-        run: |
-          if [ -z "${{ env.SONY_CRSDK_URL }}" ]; then
-            echo "ERROR: SONY_CRSDK_URL not set — required for backend-sony (Cr_Core is linked at build time)."
-            exit 1
-          fi
-          curl -fsSL "${{ env.SONY_CRSDK_URL }}" -o sony_crsdk.zip
-          bash scripts/stage-sony-crsdk.sh sony_crsdk.zip linux64pc
+        # REQUIRED: libCr_Core.so is linked at build time.
+        run: bash scripts/stage-sony-crsdk.sh "${{ env.SONY_CRSDK_URL }}" linux64pc
 
       - name: Build x86_64
         run: |

@@ -18,12 +18,22 @@
 # So reaching the libraries means unzipping three layers: outer -> platform ->
 # RemoteCli.
 #
-# Usage: stage-sony-crsdk.sh <outer-zip> <platform>
+# Usage: stage-sony-crsdk.sh <url> <platform>
+#   <url>      hosted CrSDK archive (SONY_CRSDK_URL); empty is a hard error since
+#              Cr_Core is linked at build time (backend-sony can't build without it)
 #   <platform> in: win64 | mac | linux64pc
+#
+# Runs identically on the macOS / Linux / Windows (Git bash) runners, so every job
+# stages the SDK with a single uniform call.
 set -euo pipefail
 
-OUTER_ZIP="$1"
+URL="$1"
 PLATFORM="$2"
+
+if [ -z "$URL" ]; then
+  echo "ERROR: SONY_CRSDK_URL not set — required for backend-sony (Cr_Core is linked at build time)."
+  exit 1
+fi
 
 # Repo root (this script lives in scripts/).
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -39,6 +49,10 @@ esac
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+
+# 0. Fetch the hosted archive.
+OUTER_ZIP="$TMP/sony_crsdk.zip"
+curl -fsSL "$URL" -o "$OUTER_ZIP"
 
 # 1. Outer archive -> the per-platform SDK zips.
 unzip -q -o "$OUTER_ZIP" -d "$TMP/outer"
