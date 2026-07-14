@@ -2341,40 +2341,67 @@ fn read_compression_options(sdk: &Sdk) -> Option<(Vec<String>, u32)> {
 /// serves JPEG, so RAW / RAW+JPEG options are hidden. `current` reflects what
 /// captures will use: the current setting if it is already JPEG, otherwise the
 /// best JPEG option that capture would force.
+///
+/// Nikon lists every JPEG level twice — `JPEG Fine*` (compression that gives
+/// priority to image quality) and `JPEG Fine` (priority to a uniform file size) —
+/// which reads as duplicated options. Only one entry per level is exposed, the
+/// best-ranked one (the starred variant), with the `*` dropped from the label.
 fn read_image_quality(sdk: &Sdk) -> Option<CameraParameter> {
     let (labels, cur) = read_compression_options(sdk)?;
 
-    let mut options = Vec::new();
-    let mut best: Option<((u8, bool), usize)> = None;
-    for (i, label) in labels.iter().enumerate() {
-        if let Some(rank) = jpeg_label_rank(label) {
-            options.push(ParameterOption { value: i.to_string(), label: label.clone() });
-            if best.is_none_or(|(br, _)| rank < br) {
-                best = Some((rank, i));
-            }
-        }
-    }
-    let best_idx = best?.1; // None → no JPEG option, hide the parameter
-    if options.is_empty() {
-        return None;
-    }
+    let kept = jpeg_options(&labels);
+    let best_idx = kept.first()?.0; // empty → no JPEG option, hide the parameter
 
-    let cur_is_jpeg = labels
+    // The body may sit on the variant we dropped (e.g. "JPEG Fine" while the list
+    // exposes "JPEG Fine*"): point `current` at the entry kept for that level so
+    // the UI shows the right quality. Capture leaves an already-JPEG setting
+    // untouched either way, so nothing is silently changed on the camera.
+    let current = labels
         .get(cur as usize)
-        .is_some_and(|l| jpeg_label_rank(l).is_some());
-    let current = if cur_is_jpeg { cur as usize } else { best_idx };
+        .and_then(|l| jpeg_label_rank(l))
+        .and_then(|rank| {
+            kept.iter()
+                .find(|&&(i, _)| jpeg_label_rank(&labels[i]).is_some_and(|r| r.0 == rank.0))
+        })
+        .map_or(best_idx, |&(i, _)| i);
 
     Some(CameraParameter::Select {
         param_type: ParameterType::ImageQuality,
         current: current.to_string(),
-        options,
+        options: kept
+            .into_iter()
+            .map(|(i, label)| ParameterOption { value: i.to_string(), label })
+            .collect(),
         disabled: false,
     })
 }
 
+/// The JPEG-only options to expose, best level first: one entry per quality level
+/// (the best-ranked variant of each, i.e. the starred one) as `(index in `labels`,
+/// display label)`. Empty when the body offers no JPEG-only mode.
+fn jpeg_options(labels: &[String]) -> Vec<(usize, String)> {
+    let mut kept: Vec<((u8, bool), usize)> = Vec::new();
+    for (i, label) in labels.iter().enumerate() {
+        let Some(rank) = jpeg_label_rank(label) else {
+            continue;
+        };
+        match kept.iter_mut().find(|(r, _)| r.0 == rank.0) {
+            Some(slot) if rank < slot.0 => *slot = (rank, i),
+            Some(_) => {}
+            None => kept.push((rank, i)),
+        }
+    }
+    kept.sort_by_key(|&(rank, _)| rank);
+    kept.into_iter()
+        .map(|(_, i)| (i, jpeg_display_label(&labels[i])))
+        .collect()
+}
+
 /// Ranks a `CompressionLevel`/`FileType` option label for JPEG-only capture.
 /// Lower is better. `None` rejects the option (RAW/NEF/TIFF, or RAW+JPEG combos).
-/// Prefers Fine > Normal > Basic, and the non-`*` ("optimal quality") variant.
+/// Prefers Fine > Normal > Basic, and, at equal level, the `*` variant — Nikon
+/// stars the modes whose compression gives priority to image quality; the unstarred
+/// ones give priority to a uniform file size.
 fn jpeg_label_rank(label: &str) -> Option<(u8, bool)> {
     let l = label.trim().to_ascii_uppercase();
     // Must be JPEG-only: combos are listed as "RAW + JPEG …" and start with RAW.
@@ -2390,7 +2417,14 @@ fn jpeg_label_rank(label: &str) -> Option<(u8, bool)> {
     } else {
         3
     };
-    Some((quality, l.ends_with('*')))
+    // `false` sorts first: the starred (quality-priority) variant wins.
+    Some((quality, !l.ends_with('*')))
+}
+
+/// The label shown to clients: the `*` is meaningless once a single variant per
+/// quality level is exposed. "JPEG Fine*" → "JPEG Fine".
+fn jpeg_display_label(label: &str) -> String {
+    label.trim_end().trim_end_matches('*').trim_end().to_string()
 }
 
 /// Reads an image-quality enum cap's options and returns the index of the best
@@ -2751,12 +2785,21 @@ mod tests {
         assert_eq!(v, vec!["A", "BB", "C"]);
     }
 
+    /// The CompressionLevel option list reported by a Z5II, in order.
+    const Z5II_COMPRESSION_LABELS: [&str; 13] = [
+        "RAW + JPEG Fine*", "RAW + JPEG Fine", "RAW + JPEG Normal*", "RAW + JPEG Normal",
+        "RAW + JPEG Basic*", "RAW + JPEG Basic", "RAW", "JPEG Fine*", "JPEG Fine",
+        "JPEG Normal*", "JPEG Normal", "JPEG Basic*", "JPEG Basic",
+    ];
+
     #[test]
     fn jpeg_label_ranking() {
-        assert_eq!(jpeg_label_rank("JPEG Fine"), Some((0, false)));
-        assert_eq!(jpeg_label_rank("JPEG Fine*"), Some((0, true)));
-        assert_eq!(jpeg_label_rank("JPEG Normal"), Some((1, false)));
-        assert_eq!(jpeg_label_rank("JPEG Basic*"), Some((2, true)));
+        // At equal level the starred (quality-priority) variant sorts first.
+        assert_eq!(jpeg_label_rank("JPEG Fine*"), Some((0, false)));
+        assert_eq!(jpeg_label_rank("JPEG Fine"), Some((0, true)));
+        assert_eq!(jpeg_label_rank("JPEG Normal*"), Some((1, false)));
+        assert_eq!(jpeg_label_rank("JPEG Basic"), Some((2, true)));
+        assert!(jpeg_label_rank("JPEG Fine*") < jpeg_label_rank("JPEG Fine"));
         // RAW-containing options are rejected (capture is JPEG-only).
         assert_eq!(jpeg_label_rank("RAW"), None);
         assert_eq!(jpeg_label_rank("RAW + JPEG Fine*"), None);
@@ -2764,20 +2807,34 @@ mod tests {
 
     #[test]
     fn jpeg_index_picks_best_from_real_z5ii_list() {
-        // The CompressionLevel option list reported by a Z5II (in order).
-        let labels = [
-            "RAW + JPEG Fine*", "RAW + JPEG Fine", "RAW + JPEG Normal*", "RAW + JPEG Normal",
-            "RAW + JPEG Basic*", "RAW + JPEG Basic", "RAW", "JPEG Fine*", "JPEG Fine",
-            "JPEG Normal*", "JPEG Normal", "JPEG Basic*", "JPEG Basic",
-        ];
-        let best = labels
+        let best = Z5II_COMPRESSION_LABELS
             .iter()
             .enumerate()
             .filter_map(|(i, l)| jpeg_label_rank(l).map(|r| (r, i)))
             .min_by_key(|(r, _)| *r)
             .map(|(_, i)| i);
-        // "JPEG Fine" (optimal quality, no '*') at index 8.
-        assert_eq!(best, Some(8));
+        // "JPEG Fine*" (quality-priority compression) at index 7.
+        assert_eq!(best, Some(7));
+    }
+
+    /// One entry per quality level (the starred variant), `*` stripped from the label.
+    #[test]
+    fn jpeg_options_are_deduplicated_per_level() {
+        let labels: Vec<String> = Z5II_COMPRESSION_LABELS.iter().map(|l| l.to_string()).collect();
+        assert_eq!(
+            jpeg_options(&labels),
+            vec![
+                (7, "JPEG Fine".to_string()),
+                (9, "JPEG Normal".to_string()),
+                (11, "JPEG Basic".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn jpeg_options_empty_when_body_is_raw_only() {
+        let labels = ["RAW".to_string(), "TIFF (RGB)".to_string()];
+        assert!(jpeg_options(&labels).is_empty());
     }
 
     #[test]

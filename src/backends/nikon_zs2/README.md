@@ -127,6 +127,13 @@ is a RangePtr exposed as a RangeSelect over its discrete steps; `ImageQuality`
 hides RAW / RAW+JPEG options (capture is JPEG-only); the ShutterSpeed list drops
 the non-deterministic Bulb / Time entries (`is_bulb_or_time`).
 
+`CompressionLevel` lists every JPEG level twice: `JPEG Fine*` uses compression that
+gives priority to image quality, `JPEG Fine` gives priority to a uniform file size.
+Exposing both reads as duplicated options, so `jpeg_options` keeps one entry per
+level — the starred (quality-priority) variant — and strips the `*` from the label,
+leaving Fine / Normal / Basic. The same ranking picks the mode `ensure_jpeg_quality`
+forces when the body is set to RAW.
+
 Focus mirrors the same split (Nikon has no AF/MF boolean — MF is one of the
 focus-mode values). The settable focus-mode capability differs by body, so
 `resolve_focus_cap` tries `FOCUS_MODE_CAPS` in order — `AFModeAtLiveView` (0x8310,
