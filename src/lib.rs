@@ -349,13 +349,42 @@ pub async fn run_server() {
     #[cfg(not(windows))]
     {
         axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = tokio::signal::ctrl_c().await;
-            })
+            .with_graceful_shutdown(shutdown_signal())
             .await
             .unwrap();
         shutdown::run();
     }
+}
+
+/// Resolves on Ctrl-C, and guarantees the process actually leaves.
+///
+/// A graceful shutdown waits for the in-flight connections to finish, and the live
+/// view is an endless MJPEG response — a single open stream (a browser tab left on
+/// the UI) never completes, so the wait never ends. Worse, tokio keeps its SIGINT
+/// handler installed, so the follow-up Ctrl-C the user reflexively hits is
+/// swallowed too and the server looks unkillable.
+///
+/// So bound the wait: release the backends and exit on whichever comes first, a
+/// second Ctrl-C or a short grace period. `shutdown::run` is idempotent, so the
+/// normal path calling it again after `serve` returns is harmless.
+#[cfg(not(windows))]
+async fn shutdown_signal() {
+    const GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+    let _ = tokio::signal::ctrl_c().await;
+    eprintln!("[shutdown] Ctrl-C received — closing connections");
+
+    tokio::spawn(async {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => eprintln!("[shutdown] second Ctrl-C — exiting now"),
+            _ = tokio::time::sleep(GRACE) => {
+                eprintln!("[shutdown] connections still open after {}s — exiting", GRACE.as_secs());
+            }
+        }
+        shutdown::run();
+        // 130 is the conventional exit code for a Ctrl-C death.
+        std::process::exit(130);
+    });
 }
 
 // ---------------------------------------------------------------------------

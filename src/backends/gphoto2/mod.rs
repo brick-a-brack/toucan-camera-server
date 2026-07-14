@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -22,6 +22,12 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 pub struct GPhoto2Backend {
     context:   gphoto2::Context,
     connected: Arc<Mutex<HashMap<String, gphoto2::Camera>>>,
+    /// Whether a body can actually drive its focus motor, keyed by native ID
+    /// (port). Filled once per device by `focus_drive_works`, because the widget
+    /// alone does not answer the question (see there). Never cleared: a body that
+    /// refused once will refuse again, and re-probing on every parameter read
+    /// would nudge the lens each time.
+    focus_drive: Arc<Mutex<HashMap<String, bool>>>,
 }
 
 impl GPhoto2Backend {
@@ -44,7 +50,7 @@ impl GPhoto2Backend {
         let connected: Arc<Mutex<HashMap<String, gphoto2::Camera>>> =
             Arc::new(Mutex::new(HashMap::new()));
         spawn_keepalive(connected.clone());
-        Ok(Self { context, connected })
+        Ok(Self { context, connected, focus_drive: Arc::new(Mutex::new(HashMap::new())) })
     }
 
     /// Point `CAMLIBS`/`IOLIBS` at plugin directories shipped next to the
@@ -74,6 +80,117 @@ impl GPhoto2Backend {
             .cloned()
             .ok_or(CameraError::NotConnected)
     }
+
+    /// Whether the body can really drive its focus motor — asked once, then cached.
+    ///
+    /// The widget alone does not answer this: libgphoto2 builds it from the PTP
+    /// operations the camera *advertises*, and some bodies advertise more than they
+    /// honour. The Nikon Z5 II exposes `manualfocusdrive` and then answers "not in
+    /// live view" to every drive command, even with live view demonstrably running
+    /// (`viewfinder` reads back on, previews stream fine). Nothing in the config
+    /// tree tells the two apart, so the only honest test is to try it: drive the
+    /// motor by one step and see. A step of 1 is the smallest move the body can
+    /// make and is imperceptible in the preview.
+    ///
+    /// Called from `get_parameters`, so a body that cannot focus never advertises
+    /// the control in the first place. Only bodies exposing the focus drive as a
+    /// range (Nikon) are probed — a Canon-style radio has no neutral step to send,
+    /// and Canon focus drive works, so those are taken at their word and fall back
+    /// to learning from a refusal in `drive_focus`.
+    fn focus_drive_works(&self, native_id: &str, camera: &gphoto2::Camera) -> bool {
+        if let Some(known) = self.focus_drive.lock().expect("gphoto2 mutex poisoned").get(native_id)
+        {
+            return *known;
+        }
+
+        let Some(widget) = widget_for::<RangeWidget>(camera, ParameterType::Focus) else {
+            return true;
+        };
+
+        // The motor only obeys in live view, and a preview grab is what gets the
+        // body there — a no-op on one already streaming.
+        let _ = camera.capture_preview().wait();
+        widget.set_value(1.0);
+
+        match camera.set_config(&widget).wait() {
+            Ok(()) => {
+                self.remember_focus_drive(native_id, true);
+                true
+            }
+            Err(e) if is_focus_refusal(&e) => {
+                eprintln!(
+                    "[gphoto2] {native_id}: the body refuses to drive the focus motor ({e}) \
+                     — hiding the Focus parameter for this device"
+                );
+                self.remember_focus_drive(native_id, false);
+                false
+            }
+            // A busy or I/O error says nothing about the body's capabilities: leave
+            // it unclassified and let the next parameter read ask again.
+            Err(e) => {
+                eprintln!("[gphoto2] {native_id}: focus-drive probe inconclusive ({e})");
+                true
+            }
+        }
+    }
+
+    fn remember_focus_drive(&self, native_id: &str, works: bool) {
+        self.focus_drive
+            .lock()
+            .expect("gphoto2 mutex poisoned")
+            .insert(native_id.to_string(), works);
+    }
+
+    /// Drives the focus motor by a relative amount.
+    ///
+    /// A refusal here is the same signal `focus_drive_works` probes for, so record
+    /// it: it is how the bodies that skip the probe (Canon-style radio widget) stop
+    /// advertising a control they cannot honour. "Focus at limit" / "stepping too
+    /// small" (`CameraError`) mean the motor *did* move, and a busy error is
+    /// transient — neither counts.
+    fn drive_focus(
+        &self,
+        native_id: &str,
+        camera: &gphoto2::Camera,
+        value: &str,
+    ) -> Result<(), CameraError> {
+        let _ = camera.capture_preview().wait();
+
+        // Range on Nikon, Radio ("Near 1"/"Far 1"…) on Canon.
+        let focus = ParameterType::Focus;
+        let outcome = if let Some(widget) = widget_for::<RangeWidget>(camera, focus) {
+            let v: f32 = value.parse().map_err(|_| CameraError::NotSupported)?;
+            widget.set_value(v);
+            camera.set_config(&widget).wait()
+        } else if let Some(widget) = widget_for::<RadioWidget>(camera, focus) {
+            widget.set_choice(value).map_err(map_err)?;
+            camera.set_config(&widget).wait()
+        } else {
+            return Err(CameraError::NotSupported);
+        };
+
+        match outcome {
+            Ok(()) => Ok(()),
+            Err(e) if is_focus_refusal(&e) => {
+                eprintln!(
+                    "[gphoto2] {native_id}: the body refused to drive the focus motor ({e}) \
+                     — hiding the Focus parameter for this device"
+                );
+                self.remember_focus_drive(native_id, false);
+                Err(CameraError::Backend(
+                    "gphoto2: this camera does not support driving the focus motor".to_string(),
+                ))
+            }
+            Err(e) => Err(map_err(e)),
+        }
+    }
+}
+
+/// Whether a failed focus drive means "this body cannot do it" rather than "not
+/// right now". libgphoto2 reports the Nikon refusal as a bare `GP_ERROR`
+/// (`Other`), and a body that never advertised the operation as `NotSupported`.
+fn is_focus_refusal(err: &gphoto2::Error) -> bool {
+    matches!(err.kind(), gphoto2::error::ErrorKind::Other | gphoto2::error::ErrorKind::NotSupported)
 }
 
 /// Background thread that keeps every connected camera awake. Canon bodies refuse
@@ -269,16 +386,15 @@ impl CameraBackend for GPhoto2Backend {
         let camera = self.camera_for(native_id)?;
         let root = camera.config().wait().map_err(map_err)?;
 
-        let mut params = Vec::new();
+        // Each parameter is tagged with the config key it came from, so the dedup
+        // below can keep the key `set_parameter` will write to.
+        let mut tagged = Vec::new();
         for child in root.children_iter() {
-            walk_widget(&child, &mut params);
+            walk_widget(&child, &mut tagged);
         }
 
-        // One entry per parameter type: a body can expose the same logical
-        // parameter under two config keys (Nikon has both `focusmode` and
-        // `focusmode2`). Keep the first — the walk order follows the camera's own
-        // config tree, and `set_parameter` probes the keys in the same order.
-        dedup_by_type(&mut params);
+        // One entry per parameter type, keeping the key `CONFIG_KEYS` prefers.
+        let mut params = dedup_by_type(tagged);
 
         // The `autoiso` toggle and the ISO list are separate widgets, so the ISO
         // selector can only learn it is read-only once both have been walked.
@@ -292,6 +408,14 @@ impl CameraBackend for GPhoto2Backend {
             | CameraParameter::RangeSelect { options, .. } => options.len() >= 2,
             _ => true,
         });
+
+        // A body can advertise a focus-drive widget it cannot honour, so only offer
+        // the control once the body has proven it works (probed once, then cached).
+        if params.iter().any(|p| type_of(p) == ParameterType::Focus)
+            && !self.focus_drive_works(native_id, &camera)
+        {
+            params.retain(|p| type_of(p) != ParameterType::Focus);
+        }
 
         Ok(params)
     }
@@ -363,13 +487,10 @@ impl CameraBackend for GPhoto2Backend {
             return Ok(());
         }
 
-        // Driving the focus motor over PTP only works while the body is in live
-        // view (Nikon rejects `manualfocusdrive` otherwise, Canon likewise). A
-        // preview grab is what puts the body in live view, so take one first — it
-        // is a no-op on a body already streaming. Best-effort: if it fails, still
-        // try the drive and report the drive's own error.
+        // Focus is the one parameter a body can advertise and still be unable to
+        // execute, so it gets its own path (which learns from a refusal).
         if param_type == ParameterType::Focus {
-            let _ = camera.capture_preview().wait();
+            return self.drive_focus(native_id, &camera, value);
         }
 
         // gphoto2 exposes the same logical parameter as Radio on most cameras but
@@ -445,13 +566,24 @@ fn set_iso_auto(camera: &gphoto2::Camera, on: bool) -> Result<(), CameraError> {
 // Widget tree walking → CameraParameter list
 // ---------------------------------------------------------------------------
 
-fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
-    match widget {
-        Widget::Group(g) => {
-            for child in g.children_iter() {
-                walk_widget(&child, out);
-            }
+/// Walks the config tree, tagging every parameter with the config key it was read
+/// from — `dedup_by_type` needs it to keep the key writes will go to.
+fn walk_widget(widget: &Widget, out: &mut Vec<(String, CameraParameter)>) {
+    if let Widget::Group(g) = widget {
+        for child in g.children_iter() {
+            walk_widget(&child, out);
         }
+        return;
+    }
+
+    let key = widget.name();
+    let mut leaf = Vec::new();
+    walk_leaf(widget, &mut leaf);
+    out.extend(leaf.into_iter().map(|param| (key.clone(), param)));
+}
+
+fn walk_leaf(widget: &Widget, out: &mut Vec<CameraParameter>) {
+    match widget {
         Widget::Radio(r) => {
             if r.readonly() {
                 return;
@@ -638,7 +770,7 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
                 });
             }
         }
-        _ => {} // Button, Date, Text → not exposed as parameters
+        _ => {} // Group (walked above), Button, Date, Text → not parameters
     }
 }
 
@@ -707,10 +839,13 @@ fn config_keys_for(param_type: ParameterType) -> impl Iterator<Item = &'static s
         .map(|(key, _)| *key)
 }
 
-/// Fetches the camera's widget for `param_type` as `W`, trying every config key
-/// the type is known by. A camera only exposes one of them (a Nikon has
-/// `f-number`, a Canon `aperture`), so the first hit is the right one. `None`
-/// when the body exposes none of the keys, or exposes one but not as a `W`.
+/// Fetches the camera's widget for `param_type` as `W`, trying the type's config
+/// keys in `CONFIG_KEYS` order. `None` when the body exposes none of them, or
+/// exposes one but not as a `W`.
+///
+/// A body may expose several keys of the same type, and they need not agree — see
+/// `dedup_by_type`, which resolves the read path against this same order so that a
+/// write always lands on the widget the client is looking at.
 fn widget_for<W>(camera: &gphoto2::Camera, param_type: ParameterType) -> Option<W>
 where
     W: TryFrom<Widget, Error = gphoto2::Error> + 'static + Send,
@@ -776,10 +911,46 @@ fn type_of(param: &CameraParameter) -> ParameterType {
     }
 }
 
-/// Drops repeats of a parameter type, keeping the first occurrence.
-fn dedup_by_type(params: &mut Vec<CameraParameter>) {
-    let mut seen = std::collections::HashSet::new();
-    params.retain(|p| seen.insert(type_of(p)));
+/// Reduces the walked `(config key, parameter)` pairs to one parameter per type,
+/// keeping the one read from the key `CONFIG_KEYS` ranks first — the same key
+/// `widget_for` will write to.
+///
+/// A body can expose the same logical parameter under two keys, and they need not
+/// behave the same. The Nikon Z5 II has *both* auto-ISO spellings, as two distinct
+/// PTP properties that disagree: `autoiso` (`ISOAuto`) writes and reads back fine,
+/// while `isoauto` (`ISO_Auto`) is stuck on "On" and rejects every write with "Bad
+/// parameters". Keeping whichever came first in the camera's config tree meant
+/// reading `isoauto` while writing `autoiso`: turning auto-ISO off silently
+/// succeeded on one property and the next refresh re-read the other, still "On".
+/// Nikon's `focusmode` / `focusmode2` pair is resolved the same way.
+///
+/// A parameter the walk synthesized rather than read from a key of its own (the
+/// IsoAuto folded into a Canon ISO list) ranks last, so a body that also has a
+/// dedicated widget for it wins — that widget is the one a write can reach.
+fn dedup_by_type(tagged: Vec<(String, CameraParameter)>) -> Vec<CameraParameter> {
+    let rank = |key: &str, param_type: ParameterType| {
+        CONFIG_KEYS
+            .iter()
+            .position(|(k, pt)| *k == key && *pt == param_type)
+            .unwrap_or(usize::MAX)
+    };
+
+    let mut best: HashMap<ParameterType, usize> = HashMap::new();
+    for (key, param) in &tagged {
+        let param_type = type_of(param);
+        let r = rank(key, param_type);
+        best.entry(param_type).and_modify(|b| *b = (*b).min(r)).or_insert(r);
+    }
+
+    let mut kept: HashSet<ParameterType> = HashSet::new();
+    tagged
+        .into_iter()
+        .filter(|(key, param)| {
+            let param_type = type_of(param);
+            rank(key, param_type) == best[&param_type] && kept.insert(param_type)
+        })
+        .map(|(_, param)| param)
+        .collect()
 }
 
 /// Marks the ISO selector read-only while auto-ISO is on. Needed for the bodies
@@ -841,11 +1012,31 @@ fn is_real_shutter_speed(choice: &str) -> bool {
     choice.chars().any(|c| c.is_ascii_digit())
 }
 
-/// A JPEG image-quality choice. RAW / RAW+JPEG / cRAW formats contain "RAW"; the
-/// server only ever returns JPEG (capture is hardcoded to image/jpeg), so we hide
-/// them — selecting one would break capture.
+/// A JPEG image-quality choice. Capture is hardcoded to image/jpeg, so every mode
+/// that writes a raw file — alone or alongside a JPEG — is hidden: selecting one
+/// would break capture.
+///
+/// Matching on "RAW" alone is not enough. Vendors name the format after their own
+/// extension and only sometimes spell out "raw": the Nikon Z5 II offers "NEF
+/// (Raw)" but also "NEF+Basic" and "NEF+Fine", which are RAW+JPEG modes with no
+/// "raw" in the label. So match the raw extensions themselves.
+///
+/// Choices the driver could not decode ("Unknown value 0003") are hidden too: they
+/// may well be raw modes, and there is no way to tell — offering one would be a
+/// coin flip on whether capture still works.
 fn is_jpeg_format(choice: &str) -> bool {
-    !choice.to_uppercase().contains("RAW")
+    const RAW_FORMATS: &[&str] = &[
+        "RAW", // generic, and Canon's cRAW
+        "NEF", "NRW", // Nikon
+        "CR2", "CR3", "CRW", // Canon
+        "ARW", "SR2", // Sony
+        "ORF", // Olympus / OM System
+        "RW2", // Panasonic
+        "RAF", // Fujifilm
+        "PEF", "DNG", // Pentax
+    ];
+    let upper = choice.to_uppercase();
+    !RAW_FORMATS.iter().any(|raw| upper.contains(raw)) && !upper.starts_with("UNKNOWN VALUE")
 }
 
 /// Parameters whose values form an ordered numeric progression (ISO, aperture,
@@ -1010,19 +1201,70 @@ mod tests {
     }
 
     /// Nikon exposes both `focusmode` and `focusmode2`; only one control should
-    /// reach the client.
+    /// reach the client, and it must be the key `CONFIG_KEYS` ranks first — the one
+    /// `set_parameter` writes to.
     #[test]
     fn duplicate_parameter_types_are_dropped() {
-        let mode = |current: &str| CameraParameter::Select {
-            param_type: ParameterType::FocusMode,
-            current: current.into(),
-            options: vec![],
-            disabled: false,
+        let mode = |key: &str, current: &str| {
+            (
+                key.to_string(),
+                CameraParameter::Select {
+                    param_type: ParameterType::FocusMode,
+                    current: current.into(),
+                    options: vec![],
+                    disabled: false,
+                },
+            )
         };
-        let mut params = vec![mode("AF-S"), mode("AF-C"), iso_param()];
-        dedup_by_type(&mut params);
+        // Tree order puts `focusmode2` first; `CONFIG_KEYS` prefers `focusmode`.
+        let params = dedup_by_type(vec![
+            mode("focusmode2", "AF-C"),
+            mode("focusmode", "AF-S"),
+            ("iso".to_string(), iso_param()),
+        ]);
         assert_eq!(params.len(), 2);
-        assert!(matches!(&params[0], CameraParameter::Select { current, .. } if current == "AF-S"));
+        assert!(params
+            .iter()
+            .any(|p| matches!(p, CameraParameter::Select { current, .. } if current == "AF-S")));
+    }
+
+    /// The Nikon Z5 II exposes two auto-ISO properties that disagree: `autoiso` is
+    /// the writable one, `isoauto` is stuck on. Reading the stuck one while writing
+    /// the other made "turn auto-ISO off" look like a no-op, so the read must land
+    /// on the key `CONFIG_KEYS` prefers regardless of the camera's tree order.
+    #[test]
+    fn auto_iso_read_follows_the_key_writes_go_to() {
+        let toggle = |key: &str, current: bool| {
+            (
+                key.to_string(),
+                CameraParameter::Boolean {
+                    param_type: ParameterType::IsoAuto,
+                    current,
+                    disabled: false,
+                },
+            )
+        };
+        let params = dedup_by_type(vec![toggle("isoauto", true), toggle("autoiso", false)]);
+        assert_eq!(params.len(), 1);
+        assert!(matches!(params[0], CameraParameter::Boolean { current: false, .. }));
+    }
+
+    /// A parameter the walk synthesized from another widget's choices (Canon folds
+    /// "Auto" into its ISO list) has no key of its own, so it must not outrank a
+    /// body's dedicated widget — but it must still survive when it stands alone.
+    #[test]
+    fn folded_iso_auto_is_kept_when_it_is_the_only_one() {
+        let folded = (
+            "iso".to_string(),
+            CameraParameter::Boolean {
+                param_type: ParameterType::IsoAuto,
+                current: true,
+                disabled: false,
+            },
+        );
+        let params = dedup_by_type(vec![folded]);
+        assert_eq!(params.len(), 1);
+        assert!(matches!(params[0], CameraParameter::Boolean { current: true, .. }));
     }
 
     fn iso_param() -> CameraParameter {
@@ -1051,6 +1293,28 @@ mod tests {
         assert!(!is_jpeg_format("RAW"));
         assert!(!is_jpeg_format("RAW + L"));
         assert!(!is_jpeg_format("cRAW")); // compact RAW is still RAW
+    }
+
+    /// The Nikon Z5 II names its raw modes after the NEF extension, and only one of
+    /// them says "Raw" — the RAW+JPEG pairs do not.
+    #[test]
+    fn vendor_raw_extensions_are_filtered_out() {
+        assert!(is_jpeg_format("JPEG Basic"));
+        assert!(is_jpeg_format("JPEG Normal"));
+        assert!(is_jpeg_format("JPEG Fine"));
+
+        assert!(!is_jpeg_format("NEF (Raw)"));
+        assert!(!is_jpeg_format("NEF+Basic"));
+        assert!(!is_jpeg_format("NEF+Fine"));
+        assert!(!is_jpeg_format("ARW"), "Sony raw");
+        assert!(!is_jpeg_format("RAF+F"), "Fujifilm raw + JPEG");
+    }
+
+    /// Choices libgphoto2 could not decode may be raw modes — never offer them.
+    #[test]
+    fn undecoded_choices_are_filtered_out() {
+        assert!(!is_jpeg_format("Unknown value 0003"));
+        assert!(!is_jpeg_format("unknown value 000a"));
     }
 
     #[test]

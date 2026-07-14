@@ -817,12 +817,39 @@ fn locate_camlibs(libdir: &Path) -> Option<PathBuf> {
     })
 }
 
+/// `LD_LIBRARY_PATH` for the `ldd` probes, with the crate's own output dirs
+/// removed. Cargo prepends `target/<profile>` and `target/<profile>/deps` when it
+/// runs a build script, so on a rebuild `ldd` resolves libgphoto2 & friends to the
+/// copies a *previous* run staged in the bundle. The closure would then point at
+/// the bundle itself (src == dest), and `copy_as` deletes the destination before
+/// copying — wiping the very libs it is meant to stage. Always resolve against the
+/// real prefix / system dirs instead. `None` = leave the variable unset.
+fn ldd_library_path() -> Option<String> {
+    let current = std::env::var("LD_LIBRARY_PATH").ok()?;
+    let profile_dir = std::env::var("OUT_DIR")
+        .ok()
+        .and_then(|d| Path::new(&d).ancestors().nth(3).map(Path::to_path_buf))?;
+    let deps_dir = profile_dir.join("deps");
+    let kept: Vec<&str> = current
+        .split(':')
+        .filter(|e| !e.is_empty())
+        .filter(|e| Path::new(e) != profile_dir && Path::new(e) != deps_dir)
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(":"))
+}
+
 /// Direct dynamic dependencies of a library, as absolute paths.
 fn list_deps(lib: &Path, is_mac: bool) -> Vec<PathBuf> {
     let output = if is_mac {
         Command::new("otool").arg("-L").arg(lib).output()
     } else {
-        Command::new("ldd").arg(lib).output()
+        let mut cmd = Command::new("ldd");
+        cmd.arg(lib);
+        match ldd_library_path() {
+            Some(path) => cmd.env("LD_LIBRARY_PATH", path),
+            None => cmd.env_remove("LD_LIBRARY_PATH"),
+        };
+        cmd.output()
     };
     let out = match output {
         Ok(o) if o.status.success() => o,
@@ -904,6 +931,16 @@ fn copy_into(src: &Path, dest_dir: &Path) {
 /// Copy `src` to an explicit destination path (used to rename a lib to its
 /// SONAME while copying).
 fn copy_as(src: &Path, dest: &Path) {
+    // Never let the source be the destination: `remove_file` below would delete the
+    // file we are about to read.
+    let same_file = src == dest
+        || matches!(
+            (std::fs::canonicalize(src), std::fs::canonicalize(dest)),
+            (Ok(a), Ok(b)) if a == b
+        );
+    if same_file {
+        return;
+    }
     // brew dylibs are read-only, and std::fs::copy copies their mode — so a stale
     // read-only copy from a previous build can't be overwritten. Drop it first.
     let _ = std::fs::remove_file(dest);
