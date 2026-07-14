@@ -102,9 +102,13 @@ fn spawn_keepalive(connected: Arc<Mutex<HashMap<String, gphoto2::Camera>>>) {
         .expect("failed to spawn gphoto2 keep-alive thread");
 }
 
+/// libgphoto2 errors carry a human-readable reason ("Camera is busy", "Could not
+/// claim the USB device", plus any driver detail) — keep it, so a failed
+/// `set_parameter` tells the user what the body actually refused instead of an
+/// opaque `SDK error: 0x00000000`.
 fn map_err(err: gphoto2::Error) -> CameraError {
     eprintln!("[gphoto2] error: {err}");
-    CameraError::SdkError(0)
+    CameraError::Backend(format!("gphoto2: {err}"))
 }
 
 /// libgphoto2 reports cameras it has no specific driver for under a generic
@@ -270,6 +274,16 @@ impl CameraBackend for GPhoto2Backend {
             walk_widget(&child, &mut params);
         }
 
+        // One entry per parameter type: a body can expose the same logical
+        // parameter under two config keys (Nikon has both `focusmode` and
+        // `focusmode2`). Keep the first — the walk order follows the camera's own
+        // config tree, and `set_parameter` probes the keys in the same order.
+        dedup_by_type(&mut params);
+
+        // The `autoiso` toggle and the ISO list are separate widgets, so the ISO
+        // selector can only learn it is read-only once both have been walked.
+        reconcile_iso_auto(&mut params);
+
         // A select/range_select with fewer than two options offers no real choice
         // (e.g. exposure compensation in Manual mode, which the body reports as a
         // single "0"). Hide those so the UI only shows controls the user can act on.
@@ -323,34 +337,20 @@ impl CameraBackend for GPhoto2Backend {
     ) -> Result<(), CameraError> {
         let camera = self.camera_for(native_id)?;
 
-        // IsoAuto is a synthetic toggle backed by the camera's "iso" radio widget,
-        // mirroring the Canon backend. true → select the auto choice (the only
-        // non-numeric one); false → select the first concrete ISO value queried
-        // live from the camera, rather than hardcoding a value it may not offer.
+        // IsoAuto is synthetic: some bodies back it with a dedicated toggle, others
+        // with an "Auto" entry in the ISO list. See `set_iso_auto`.
         if param_type == ParameterType::IsoAuto {
-            let key = config_key_for(ParameterType::Iso).ok_or(CameraError::NotSupported)?;
-            let widget = camera.config_key::<RadioWidget>(key).wait().map_err(map_err)?;
-            let on = matches!(value, "1" | "true" | "True");
-            let choices: Vec<String> = widget.choices_iter().map(|c| c.to_string()).collect();
-            let target = if on {
-                choices.iter().find(|c| c.parse::<u32>().is_err())
-            } else {
-                choices.iter().find(|c| c.parse::<u32>().is_ok())
-            }
-            .ok_or(CameraError::NotSupported)?;
-            widget.set_choice(target.as_str()).map_err(map_err)?;
-            camera.set_config(&widget).wait().map_err(map_err)?;
-            return Ok(());
+            return set_iso_auto(&camera, is_truthy(value));
         }
 
         // FocusAuto is a synthetic toggle backed by the camera's "focusmode" radio
-        // widget (Nikon has no separate AF/MF boolean — MF is one focusmode value),
+        // widget (there is no separate AF/MF boolean — MF is one focusmode value),
         // mirroring the IsoAuto handling above. true → first AF choice; false →
         // the manual choice, both queried live from the camera.
         if param_type == ParameterType::FocusAuto {
-            let key = config_key_for(ParameterType::FocusMode).ok_or(CameraError::NotSupported)?;
-            let widget = camera.config_key::<RadioWidget>(key).wait().map_err(map_err)?;
-            let on = matches!(value, "1" | "true" | "True");
+            let widget: RadioWidget = widget_for(&camera, ParameterType::FocusMode)
+                .ok_or(CameraError::NotSupported)?;
+            let on = is_truthy(value);
             let choices: Vec<String> = widget.choices_iter().map(|c| c.to_string()).collect();
             let target = if on {
                 choices.iter().find(|c| !is_manual_focus_choice(c))
@@ -363,31 +363,82 @@ impl CameraBackend for GPhoto2Backend {
             return Ok(());
         }
 
-        let key = config_key_for(param_type).ok_or(CameraError::NotSupported)?;
+        // Driving the focus motor over PTP only works while the body is in live
+        // view (Nikon rejects `manualfocusdrive` otherwise, Canon likewise). A
+        // preview grab is what puts the body in live view, so take one first — it
+        // is a no-op on a body already streaming. Best-effort: if it fails, still
+        // try the drive and report the drive's own error.
+        if param_type == ParameterType::Focus {
+            let _ = camera.capture_preview().wait();
+        }
 
-        // Try the most likely widget type first; fall back through alternatives.
-        // gphoto2 exposes the same logical parameter as Radio on most cameras
-        // but as Range or Toggle on some, so we probe each.
-        if let Ok(widget) = camera.config_key::<RadioWidget>(key).wait() {
-            widget.set_choice(value).map_err(map_err)?;
+        // gphoto2 exposes the same logical parameter as Radio on most cameras but
+        // as Range or Toggle on some (focus drive is a Range on Nikon, a Radio on
+        // Canon), so probe each widget type over every key the parameter is known by.
+        if let Some(widget) = widget_for::<RadioWidget>(&camera, param_type) {
+            // An on/off radio is exposed as a Boolean, so clients send "true" /
+            // "false" — translate those back to the camera's own On/Off choice.
+            // Any other parameter round-trips the option value verbatim.
+            let choices: Vec<String> = widget.choices_iter().map(|c| c.to_string()).collect();
+            let choice = on_off_choice(&choices, is_truthy(value))
+                .cloned()
+                .unwrap_or_else(|| value.to_string());
+            widget.set_choice(choice.as_str()).map_err(map_err)?;
             camera.set_config(&widget).wait().map_err(map_err)?;
             return Ok(());
         }
-        if let Ok(widget) = camera.config_key::<RangeWidget>(key).wait() {
+        if let Some(widget) = widget_for::<RangeWidget>(&camera, param_type) {
             let v: f32 = value.parse().map_err(|_| CameraError::NotSupported)?;
             widget.set_value(v);
             camera.set_config(&widget).wait().map_err(map_err)?;
             return Ok(());
         }
-        if let Ok(widget) = camera.config_key::<ToggleWidget>(key).wait() {
-            let on = matches!(value, "1" | "true" | "True");
-            widget.set_toggled(on);
+        if let Some(widget) = widget_for::<ToggleWidget>(&camera, param_type) {
+            widget.set_toggled(is_truthy(value));
             camera.set_config(&widget).wait().map_err(map_err)?;
             return Ok(());
         }
 
         Err(CameraError::NotSupported)
     }
+}
+
+/// Turns auto-ISO on or off, whichever way the body models it.
+///
+/// Two families: Nikon keeps its ISO list concrete and exposes auto-ISO as its
+/// own `autoiso` toggle widget; Canon folds an "Auto" choice into the ISO list.
+/// Prefer the dedicated toggle when the body has one, otherwise fall back to
+/// selecting the auto choice (turning auto off then means selecting the first
+/// concrete ISO the camera offers, rather than hardcoding a value it may not have).
+fn set_iso_auto(camera: &gphoto2::Camera, on: bool) -> Result<(), CameraError> {
+    // A dedicated auto-ISO widget: a toggle on some drivers, an "On"/"Off" radio
+    // on others — libgphoto2 models the same PTP on/off property either way.
+    if let Some(toggle) = widget_for::<ToggleWidget>(camera, ParameterType::IsoAuto) {
+        toggle.set_toggled(on);
+        camera.set_config(&toggle).wait().map_err(map_err)?;
+        return Ok(());
+    }
+    if let Some(radio) = widget_for::<RadioWidget>(camera, ParameterType::IsoAuto) {
+        let choices: Vec<String> = radio.choices_iter().map(|c| c.to_string()).collect();
+        let target = on_off_choice(&choices, on).ok_or(CameraError::NotSupported)?;
+        radio.set_choice(target.as_str()).map_err(map_err)?;
+        camera.set_config(&radio).wait().map_err(map_err)?;
+        return Ok(());
+    }
+
+    let widget: RadioWidget =
+        widget_for(camera, ParameterType::Iso).ok_or(CameraError::NotSupported)?;
+    let choices: Vec<String> = widget.choices_iter().map(|c| c.to_string()).collect();
+    let target = if on {
+        auto_iso_choice(&choices).cloned()
+    } else {
+        choices.iter().find(|c| is_concrete_iso(c)).cloned()
+    }
+    .ok_or(CameraError::NotSupported)?;
+
+    widget.set_choice(target.as_str()).map_err(map_err)?;
+    camera.set_config(&widget).wait().map_err(map_err)?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -411,6 +462,17 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
             let current = r.choice();
             let choices: Vec<String> = r.choices_iter().map(|c| c.to_string()).collect();
 
+            // An on/off property the driver models as a two-choice radio rather
+            // than a toggle (Nikon's `autoiso`) is still a Boolean to our clients.
+            if on_off_choice(&choices, true).is_some() {
+                out.push(CameraParameter::Boolean {
+                    param_type: pt,
+                    current: is_on_choice(&current),
+                    disabled: false,
+                });
+                return;
+            }
+
             match pt {
                 // ISO is split into an IsoAuto toggle + an Iso selector, mirroring
                 // the Canon backend. libgphoto2 localizes the auto label (e.g.
@@ -418,20 +480,31 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
                 // the auto choice is the only non-numeric one — every real ISO
                 // value parses as an integer.
                 ParameterType::Iso => {
+                    let auto = auto_iso_choice(&choices).cloned();
                     let options: Vec<ParameterOption> = choices
                         .iter()
-                        .filter(|&c| is_concrete_iso(c))
+                        .filter(|c| Some(*c) != auto.as_ref())
                         .map(|c| ParameterOption { label: c.clone(), value: c.clone() })
                         .collect();
                     if options.is_empty() {
                         return;
                     }
-                    let iso_auto = !is_concrete_iso(&current);
-                    out.push(CameraParameter::Boolean {
-                        param_type: ParameterType::IsoAuto,
-                        current: iso_auto,
-                        disabled: false,
-                    });
+                    // Only this body's own ISO list can say whether auto is on. When
+                    // it holds no auto entry (Nikon), auto-ISO lives in a separate
+                    // `autoiso` toggle widget walked on its own — leave IsoAuto to it
+                    // and let `reconcile_iso_auto` disable the selector afterwards.
+                    let iso_auto = match &auto {
+                        Some(auto) => {
+                            let on = *auto == current;
+                            out.push(CameraParameter::Boolean {
+                                param_type: ParameterType::IsoAuto,
+                                current: on,
+                                disabled: false,
+                            });
+                            on
+                        }
+                        None => false,
+                    };
                     // When auto is on the concrete ISO is read-only; show the first
                     // value as a placeholder and disable the control.
                     let iso_current = if iso_auto {
@@ -552,19 +625,15 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
                 });
             }
         }
+        // A toggle is a plain on/off widget (e.g. Nikon's `autoiso`) → Boolean.
         Widget::Toggle(t) => {
             if t.readonly() {
                 return;
             }
             if let Some(pt) = param_type_for(&t.name()) {
-                let current = if t.toggled().unwrap_or(false) { "1" } else { "0" }.to_string();
-                out.push(CameraParameter::Select {
+                out.push(CameraParameter::Boolean {
                     param_type: pt,
-                    current,
-                    options: vec![
-                        ParameterOption { label: "Off".into(), value: "0".into() },
-                        ParameterOption { label: "On".into(),  value: "1".into() },
-                    ],
+                    current: t.toggled().unwrap_or(false),
                     disabled: false,
                 });
             }
@@ -576,41 +645,113 @@ fn walk_widget(widget: &Widget, out: &mut Vec<CameraParameter>) {
 // ---------------------------------------------------------------------------
 // Mapping between gphoto2 config-key names and our ParameterType enum.
 //
-// Cameras report slightly different config-key names depending on the camlib
-// (Nikon vs Sony vs Fuji vs ptp2…). The pairs below are the ones I have seen
-// in the wild — extend as you observe new ones.
+// Cameras name the same logical parameter differently depending on the camlib
+// (Nikon exposes aperture as "f-number", Canon as "aperture"), so several keys
+// can map to one type. This table is the single source of truth for both
+// directions: reads look a key up with `param_type_for`, writes probe every key
+// a type is known by with `config_keys_for`. Extend it as you observe new names.
 // ---------------------------------------------------------------------------
 
+const CONFIG_KEYS: &[(&str, ParameterType)] = &[
+    ("iso", ParameterType::Iso),
+    ("isospeed", ParameterType::Iso),
+    ("iso speed", ParameterType::Iso),
+    ("iso_speed", ParameterType::Iso),
+    // Nikon bodies keep the ISO list concrete and expose auto-ISO as its own
+    // toggle widget; Canon folds an "Auto" choice into the ISO list instead
+    // (handled in `walk_widget` / `set_iso_auto`).
+    ("autoiso", ParameterType::IsoAuto),
+    ("isoauto", ParameterType::IsoAuto),
+    ("iso_auto", ParameterType::IsoAuto),
+    ("shutterspeed", ParameterType::ShutterSpeed),
+    ("shutterspeed2", ParameterType::ShutterSpeed),
+    ("shutter_speed", ParameterType::ShutterSpeed),
+    ("shutter speed", ParameterType::ShutterSpeed),
+    ("aperture", ParameterType::Aperture),
+    ("f-number", ParameterType::Aperture),
+    ("f_number", ParameterType::Aperture),
+    ("fnumber", ParameterType::Aperture),
+    ("whitebalance", ParameterType::WhiteBalance),
+    ("white_balance", ParameterType::WhiteBalance),
+    ("white balance", ParameterType::WhiteBalance),
+    ("colortemperature", ParameterType::ColorTemperature),
+    ("color_temperature", ParameterType::ColorTemperature),
+    ("exposurecompensation", ParameterType::ExposureCompensation),
+    ("exposure_compensation", ParameterType::ExposureCompensation),
+    ("imageformat", ParameterType::ImageQuality),
+    ("image_format", ParameterType::ImageQuality),
+    ("imagequality", ParameterType::ImageQuality),
+    ("image_quality", ParameterType::ImageQuality),
+    // Focus mode (AF-S/AF-C/Manual…) → split into FocusAuto + FocusMode (see
+    // walk_widget). "manualfocusdrive" is the relative manual-focus jog → Focus.
+    ("focusmode", ParameterType::FocusMode),
+    ("focusmode2", ParameterType::FocusMode),
+    ("focus_mode", ParameterType::FocusMode),
+    ("manualfocusdrive", ParameterType::Focus),
+    ("manual_focus_drive", ParameterType::Focus),
+];
+
 fn param_type_for(name: &str) -> Option<ParameterType> {
-    match name {
-        "iso" | "isospeed" | "iso speed" | "iso_speed" => Some(ParameterType::Iso),
-        "shutterspeed" | "shutter_speed" | "shutter speed" => Some(ParameterType::ShutterSpeed),
-        "aperture" | "f-number" | "f_number" | "fnumber" => Some(ParameterType::Aperture),
-        "whitebalance" | "white_balance" | "white balance" => Some(ParameterType::WhiteBalance),
-        "colortemperature" | "color_temperature" => Some(ParameterType::ColorTemperature),
-        "exposurecompensation" | "exposure_compensation" => Some(ParameterType::ExposureCompensation),
-        "imageformat" | "image_format" | "imagequality" | "image_quality" => Some(ParameterType::ImageQuality),
-        // Focus mode (AF-S/AF-C/Manual…) → split into FocusAuto + FocusMode (see
-        // walk_widget). "manualfocusdrive" is the relative manual-focus jog → Focus.
-        "focusmode" | "focusmode2" | "focus_mode" => Some(ParameterType::FocusMode),
-        "manualfocusdrive" | "manual_focus_drive" => Some(ParameterType::Focus),
-        _ => None,
-    }
+    let name = name.to_ascii_lowercase();
+    CONFIG_KEYS
+        .iter()
+        .find(|(key, _)| *key == name)
+        .map(|(_, pt)| *pt)
 }
 
-fn config_key_for(param_type: ParameterType) -> Option<&'static str> {
-    match param_type {
-        ParameterType::Iso                  => Some("iso"),
-        ParameterType::ShutterSpeed         => Some("shutterspeed"),
-        ParameterType::Aperture             => Some("aperture"),
-        ParameterType::WhiteBalance         => Some("whitebalance"),
-        ParameterType::ColorTemperature     => Some("colortemperature"),
-        ParameterType::ExposureCompensation => Some("exposurecompensation"),
-        ParameterType::ImageQuality         => Some("imageformat"),
-        ParameterType::FocusMode            => Some("focusmode"),
-        ParameterType::Focus                => Some("manualfocusdrive"),
-        _ => None,
+/// Every config key `param_type` is known by, in preference order.
+fn config_keys_for(param_type: ParameterType) -> impl Iterator<Item = &'static str> {
+    CONFIG_KEYS
+        .iter()
+        .filter(move |(_, pt)| *pt == param_type)
+        .map(|(key, _)| *key)
+}
+
+/// Fetches the camera's widget for `param_type` as `W`, trying every config key
+/// the type is known by. A camera only exposes one of them (a Nikon has
+/// `f-number`, a Canon `aperture`), so the first hit is the right one. `None`
+/// when the body exposes none of the keys, or exposes one but not as a `W`.
+fn widget_for<W>(camera: &gphoto2::Camera, param_type: ParameterType) -> Option<W>
+where
+    W: TryFrom<Widget, Error = gphoto2::Error> + 'static + Send,
+{
+    config_keys_for(param_type).find_map(|key| camera.config_key::<W>(key).wait().ok())
+}
+
+/// Boolean values arrive as strings from the API (`"true"` / `"false"`), but be
+/// lenient about what clients send.
+fn is_truthy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "on" | "yes"
+    )
+}
+
+/// Whether a radio choice denotes the "on" / "off" state of an on/off property.
+/// libgphoto2 spells them "On"/"Off" (English under the `LC_ALL=C` we force in
+/// `new()`), some drivers "1"/"0".
+fn is_on_choice(choice: &str) -> bool {
+    matches!(choice.trim().to_ascii_lowercase().as_str(), "on" | "1")
+}
+
+fn is_off_choice(choice: &str) -> bool {
+    matches!(choice.trim().to_ascii_lowercase().as_str(), "off" | "0")
+}
+
+/// The choice standing for `on` in an on/off radio, or `None` when `choices` is
+/// not such a pair. libgphoto2 models the same PTP on/off property as a toggle
+/// widget on some drivers and as a two-choice radio on others, so both shapes
+/// have to be recognised and mapped onto our `Boolean` parameter kind.
+fn on_off_choice(choices: &[String], on: bool) -> Option<&String> {
+    let is_on_off_pair = choices.len() == 2
+        && choices.iter().any(|c| is_on_choice(c))
+        && choices.iter().any(|c| is_off_choice(c));
+    if !is_on_off_pair {
+        return None;
     }
+    choices
+        .iter()
+        .find(|c| if on { is_on_choice(c) } else { is_off_choice(c) })
 }
 
 /// True when a gphoto2 `focusmode` choice denotes manual focus — the one mode
@@ -623,12 +764,73 @@ fn is_manual_focus_choice(choice: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Post-processing of the walked parameter list
+// ---------------------------------------------------------------------------
+
+fn type_of(param: &CameraParameter) -> ParameterType {
+    match param {
+        CameraParameter::Boolean { param_type, .. }
+        | CameraParameter::Range { param_type, .. }
+        | CameraParameter::Select { param_type, .. }
+        | CameraParameter::RangeSelect { param_type, .. } => *param_type,
+    }
+}
+
+/// Drops repeats of a parameter type, keeping the first occurrence.
+fn dedup_by_type(params: &mut Vec<CameraParameter>) {
+    let mut seen = std::collections::HashSet::new();
+    params.retain(|p| seen.insert(type_of(p)));
+}
+
+/// Marks the ISO selector read-only while auto-ISO is on. Needed for the bodies
+/// that back IsoAuto with a standalone toggle widget (Nikon): the ISO list is a
+/// different widget and cannot know about it on its own. A no-op for the bodies
+/// whose ISO list carries its own "Auto" choice — `walk_widget` already set the
+/// flag there.
+fn reconcile_iso_auto(params: &mut [CameraParameter]) {
+    let auto_on = params.iter().any(|p| {
+        matches!(
+            p,
+            CameraParameter::Boolean {
+                param_type: ParameterType::IsoAuto,
+                current: true,
+                ..
+            }
+        )
+    });
+    if !auto_on {
+        return;
+    }
+    for param in params.iter_mut() {
+        if let CameraParameter::RangeSelect {
+            param_type: ParameterType::Iso,
+            disabled,
+            ..
+        } = param
+        {
+            *disabled = true;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Value classification — locale-independent, since libgphoto2 localizes labels.
 // ---------------------------------------------------------------------------
 
-/// A concrete (non-auto) ISO value. libgphoto2 reports the auto choice with a
-/// localized label ("Auto" / "Automatique"…), but every real ISO is a plain
-/// integer — so anything that does not parse as one is the auto entry.
+/// The "Auto" entry of an ISO choice list, if the body has one (Canon does,
+/// Nikon does not — it has a separate `autoiso` toggle instead).
+///
+/// libgphoto2 localizes the label ("Auto" / "Automatique"…), so we identify it
+/// by shape: every real ISO is a plain integer, so the auto entry is the only
+/// non-numeric choice. Bodies that list extended values ("Hi 1", "Lo 0.3") have
+/// several non-numeric choices and no auto entry — then none of them is auto.
+fn auto_iso_choice(choices: &[String]) -> Option<&String> {
+    let mut non_numeric = choices.iter().filter(|c| !is_concrete_iso(c));
+    let candidate = non_numeric.next()?;
+    non_numeric.next().is_none().then_some(candidate)
+}
+
+/// A concrete (non-auto) ISO value: a plain integer, as every real ISO is.
 fn is_concrete_iso(choice: &str) -> bool {
     choice.parse::<u32>().is_ok()
 }
@@ -667,6 +869,7 @@ mod tests {
     #[test]
     fn maps_known_config_keys_and_ignores_unknown() {
         assert_eq!(param_type_for("iso"), Some(ParameterType::Iso));
+        assert_eq!(param_type_for("autoiso"), Some(ParameterType::IsoAuto));
         assert_eq!(param_type_for("shutterspeed"), Some(ParameterType::ShutterSpeed));
         assert_eq!(param_type_for("aperture"), Some(ParameterType::Aperture));
         assert_eq!(param_type_for("imageformat"), Some(ParameterType::ImageQuality));
@@ -675,10 +878,32 @@ mod tests {
         assert_eq!(param_type_for("somethingelse"), None);
     }
 
+    /// The Nikon spellings must be writable, not just readable: `set_parameter`
+    /// looks the widget up by every key of the type, and Nikon names aperture
+    /// "f-number" (issue #28 — "Failed to set Aperture: unknown parameter type").
     #[test]
-    fn config_key_round_trips_through_param_type_for() {
+    fn vendor_key_aliases_are_reachable_from_the_param_type() {
+        let keys: Vec<&str> = config_keys_for(ParameterType::Aperture).collect();
+        assert!(keys.contains(&"aperture")); // Canon
+        assert!(keys.contains(&"f-number")); // Nikon
+    }
+
+    #[test]
+    fn config_keys_round_trip_through_param_type_for() {
+        for (key, pt) in CONFIG_KEYS {
+            assert_eq!(param_type_for(key), Some(*pt), "key {key:?} should round-trip");
+            assert!(
+                config_keys_for(*pt).any(|k| k == *key),
+                "key {key:?} should be probed for {pt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_settable_param_type_has_at_least_one_key() {
         for pt in [
             ParameterType::Iso,
+            ParameterType::IsoAuto,
             ParameterType::ShutterSpeed,
             ParameterType::Aperture,
             ParameterType::WhiteBalance,
@@ -688,9 +913,17 @@ mod tests {
             ParameterType::FocusMode,
             ParameterType::Focus,
         ] {
-            let key = config_key_for(pt).expect("each mapped type has a config key");
-            assert_eq!(param_type_for(key), Some(pt), "key {key:?} should round-trip");
+            assert!(config_keys_for(pt).next().is_some(), "{pt:?} has no config key");
         }
+    }
+
+    #[test]
+    fn truthy_values() {
+        assert!(is_truthy("true"));
+        assert!(is_truthy("True"));
+        assert!(is_truthy("1"));
+        assert!(!is_truthy("false"));
+        assert!(!is_truthy("0"));
     }
 
     #[test]
@@ -709,6 +942,96 @@ mod tests {
         assert!(is_concrete_iso("6400"));
         assert!(!is_concrete_iso("Auto"));
         assert!(!is_concrete_iso("Automatique")); // localized label still detected
+    }
+
+    fn strings(values: &[&str]) -> Vec<String> {
+        values.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// Drivers model an on/off property either as a toggle or as an On/Off radio
+    /// (Nikon's `autoiso`); both must map onto our Boolean parameter kind.
+    #[test]
+    fn on_off_radio_pairs_map_to_booleans() {
+        let on_off = strings(&["On", "Off"]);
+        assert_eq!(on_off_choice(&on_off, true), Some(&"On".to_string()));
+        assert_eq!(on_off_choice(&on_off, false), Some(&"Off".to_string()));
+
+        let numeric = strings(&["0", "1"]);
+        assert_eq!(on_off_choice(&numeric, true), Some(&"1".to_string()));
+
+        // A real multi-choice list is not a boolean, even one holding "off".
+        let wb = strings(&["Auto", "Daylight", "Off"]);
+        assert_eq!(on_off_choice(&wb, true), None);
+        let iso = strings(&["100", "200"]);
+        assert_eq!(on_off_choice(&iso, true), None);
+    }
+
+    #[test]
+    fn auto_iso_choice_detection() {
+        // Canon-style list: the auto entry is the only non-numeric choice, whatever
+        // libgphoto2 localized it to.
+        let canon = strings(&["Auto", "100", "200", "6400"]);
+        assert_eq!(auto_iso_choice(&canon), Some(&"Auto".to_string()));
+        let localized = strings(&["Automatique", "100", "200"]);
+        assert_eq!(auto_iso_choice(&localized), Some(&"Automatique".to_string()));
+
+        // Nikon-style list: concrete values only — auto-ISO is a separate toggle.
+        let nikon = strings(&["100", "200", "25600"]);
+        assert_eq!(auto_iso_choice(&nikon), None);
+
+        // Extended values are not an auto entry: several non-numeric choices → none.
+        let extended = strings(&["100", "25600", "Hi 1", "Hi 2"]);
+        assert_eq!(auto_iso_choice(&extended), None);
+    }
+
+    /// Bodies that expose auto-ISO as a standalone toggle (Nikon) walk it as a
+    /// separate widget, so the ISO selector only learns it is read-only here.
+    #[test]
+    fn iso_selector_is_disabled_while_the_auto_iso_toggle_is_on() {
+        let iso = || CameraParameter::RangeSelect {
+            param_type: ParameterType::Iso,
+            current: "100".into(),
+            options: vec![ParameterOption { label: "100".into(), value: "100".into() }],
+            disabled: false,
+        };
+        let auto = |current| CameraParameter::Boolean {
+            param_type: ParameterType::IsoAuto,
+            current,
+            disabled: false,
+        };
+
+        let mut on = vec![iso(), auto(true)];
+        reconcile_iso_auto(&mut on);
+        assert!(matches!(on[0], CameraParameter::RangeSelect { disabled: true, .. }));
+
+        let mut off = vec![iso(), auto(false)];
+        reconcile_iso_auto(&mut off);
+        assert!(matches!(off[0], CameraParameter::RangeSelect { disabled: false, .. }));
+    }
+
+    /// Nikon exposes both `focusmode` and `focusmode2`; only one control should
+    /// reach the client.
+    #[test]
+    fn duplicate_parameter_types_are_dropped() {
+        let mode = |current: &str| CameraParameter::Select {
+            param_type: ParameterType::FocusMode,
+            current: current.into(),
+            options: vec![],
+            disabled: false,
+        };
+        let mut params = vec![mode("AF-S"), mode("AF-C"), iso_param()];
+        dedup_by_type(&mut params);
+        assert_eq!(params.len(), 2);
+        assert!(matches!(&params[0], CameraParameter::Select { current, .. } if current == "AF-S"));
+    }
+
+    fn iso_param() -> CameraParameter {
+        CameraParameter::RangeSelect {
+            param_type: ParameterType::Iso,
+            current: "100".into(),
+            options: vec![],
+            disabled: false,
+        }
     }
 
     #[test]

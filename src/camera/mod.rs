@@ -275,6 +275,11 @@ pub enum CameraError {
     NotConnected,
     #[error("operation not supported by this backend")]
     NotSupported,
+    /// A driver error that carries its own human-readable reason (libgphoto2
+    /// reports "Camera is busy", "Could not claim the USB device"… rather than a
+    /// numeric SDK code). Preferred over `SdkError` when a message is available.
+    #[error("{0}")]
+    Backend(String),
     #[error("remote backend error: {0}")]
     Remote(String),
 }
