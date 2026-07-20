@@ -472,11 +472,13 @@ jobs:
           #  3. libxml2.so.2 must resolve to OUR bundled copy, not the runner's
           #     system one — otherwise the artifact silently depends on a lib that
           #     recent distros no longer ship (see the packaging step).
+          #     ldd expands the $ORIGIN rpath, which can leave a "/./" segment in
+          #     the path (e.g. ".../toucan-camera-server-linux/./libxml2.so.2"), so
+          #     canonicalize both sides with realpath before comparing.
           XML2_RESOLVED="$(awk '/libxml2\.so\.2 =>/ {print $3}' /tmp/ldd.txt)"
-          case "$XML2_RESOLVED" in
-            "$PWD"/libxml2.so.2) ;;
-            *) echo "ERROR: libxml2.so.2 resolves to '$XML2_RESOLVED', not the bundled copy"; exit 1 ;;
-          esac
+          if [ "$(realpath "$XML2_RESOLVED")" != "$(realpath "$PWD/libxml2.so.2")" ]; then
+            echo "ERROR: libxml2.so.2 resolves to '$XML2_RESOLVED', not the bundled copy"; exit 1
+          fi
           if grep -F 'not found' /tmp/ldd.txt; then
             echo "ERROR: at least one transitive dependency missing"; exit 1
           fi
