@@ -23,10 +23,11 @@ use crate::camera::{
 const MJPG: [u8; 4] = *b"MJPG";
 const YUYV: [u8; 4] = *b"YUYV";
 
-/// Default resolution we try at connect time. The user can change it later via
-/// the `VideoFormat` parameter.
-const DEFAULT_WIDTH:  u32 = 1280;
-const DEFAULT_HEIGHT: u32 = 720;
+/// Fallback resolution used at connect time when the camera reports no usable
+/// discrete frame size, or when its preferred (highest) mode fails to start.
+/// The user can change the resolution later via the `VideoFormat` parameter.
+const FALLBACK_WIDTH:  u32 = 1280;
+const FALLBACK_HEIGHT: u32 = 720;
 const BUFFER_COUNT:   u32 = 4;
 
 /// Block at most this long when waiting for a frame from the kernel queue.
@@ -225,7 +226,25 @@ impl CameraBackend for WebcamLinuxBackend {
         }
 
         let device = Device::with_path(native_id).map_err(map_io)?;
-        let started = unsafe { start_stream(&device, DEFAULT_WIDTH, DEFAULT_HEIGHT)? };
+
+        // Start at the camera's best mode (like the Windows / macOS backends,
+        // which select the highest-resolution format at session-open time)
+        // instead of a fixed 720p.
+        let (width, height) =
+            best_size(&device).unwrap_or((FALLBACK_WIDTH, FALLBACK_HEIGHT));
+
+        let started = match unsafe { start_stream(&device, width, height) } {
+            Ok(s) => s,
+            Err(e) if (width, height) != (FALLBACK_WIDTH, FALLBACK_HEIGHT) => {
+                // A large uncompressed mode can be refused for lack of USB
+                // bandwidth; fall back rather than failing the connection.
+                eprintln!(
+                    "[webcam_linux] {width}x{height} failed ({e:?}); falling back to {FALLBACK_WIDTH}x{FALLBACK_HEIGHT}"
+                );
+                unsafe { start_stream(&device, FALLBACK_WIDTH, FALLBACK_HEIGHT)? }
+            }
+            Err(e) => return Err(e),
+        };
 
         let mut connected = self.connected.lock().expect("webcam_linux mutex poisoned");
         connected.insert(
@@ -487,6 +506,22 @@ fn discrete_sizes(device: &Device, fourcc: [u8; 4]) -> Vec<(u32, u32)> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The camera's preferred capture size: the highest-resolution MJPG mode, or —
+/// when the camera offers no MJPG at all — the highest-resolution YUYV mode.
+/// MJPG wins over a larger YUYV mode because uncompressed frames cost far more
+/// USB bandwidth (often capping the frame rate or failing to start outright)
+/// and have to be transcoded to JPEG on every capture.
+///
+/// Returns `None` when the device reports no discrete size in either format.
+fn best_size(device: &Device) -> Option<(u32, u32)> {
+    let largest = |fourcc: [u8; 4]| {
+        discrete_sizes(device, fourcc)
+            .into_iter()
+            .max_by_key(|(w, h)| (*w as u64) * (*h as u64))
+    };
+    largest(MJPG).or_else(|| largest(YUYV))
 }
 
 /// Builds the `VideoStreamFormat` parameter from every resolution the camera
