@@ -6,8 +6,12 @@
 # package (which is frequently outdated), then points PKG_CONFIG_PATH at the
 # resulting prefix. build.rs (`copy_gphoto2_bundle`) discovers it via pkg-config
 # and bundles libgphoto2 + libgphoto2_port + the camlibs/iolibs plugins next to
-# the binary as usual. Only the two core libs come from source; their small
-# dependencies (libusb, libexif, libltdl) still come from the OS.
+# the binary as usual.
+#
+# Its small dependencies (libltdl, libusb, libexif) come from the OS on Linux. On
+# macOS the release pipeline builds them from source too — see
+# scripts/build-macos-deps.sh — and passes them in through PKG_CONFIG_PATH plus
+# LTDLINCL/LIBLTDL (libltdl has no .pc file).
 #
 # Usage: build-libgphoto2.sh <git-ref> <install-prefix> [extra configure args...]
 #
@@ -23,16 +27,23 @@ SRC="${LIBGPHOTO2_SRC:-${PREFIX}.src}"
 
 # --- Toolchain discovery (macOS Homebrew keg-only tools) -------------------
 # On macOS, gettext (autopoint) and libtool (glibtoolize) are keg-only, and the
-# pkg-config / libtool autoconf macros live under the Homebrew prefix. Pick the
-# prefix matching the running architecture (x86_64 slice runs under Rosetta at
-# /usr/local, arm64 natively at /opt/homebrew). On Linux none of these exist and
-# the loop is a no-op — the -dev packages already put everything on the default
-# search paths.
-case "$(uname -m)" in
-  x86_64) BREW=/usr/local ;;
-  arm64)  BREW=/opt/homebrew ;;
-  *)      BREW="" ;;
-esac
+# pkg-config / libtool autoconf macros live under the Homebrew prefix.
+#
+# Always /opt/homebrew, even when this runs as an x86_64 process under Rosetta for
+# the universal binary's Intel slice: Homebrew 7.0.0 (2026-09) moved macOS x86_64
+# to Tier 3 and there is no Intel Homebrew at /usr/local any more. These are build
+# tools — generators and .pc readers — so running the arm64 ones from an x86_64
+# process is fine, and the aclocal m4 files are architecture-independent. What
+# does have to match the architecture is the libraries, which the caller supplies
+# per arch (see the header).
+#
+# On Linux the prefix does not exist and the loop is a no-op — the -dev packages
+# already put everything on the default search paths.
+if [ "$(uname -s)" = "Darwin" ]; then
+  BREW=/opt/homebrew
+else
+  BREW=""
+fi
 if [ -n "$BREW" ]; then
   for tool in gettext libtool; do
     [ -d "$BREW/opt/$tool/bin" ] && PATH="$BREW/opt/$tool/bin:$PATH"
