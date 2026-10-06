@@ -46,19 +46,59 @@ echo "==> building libgphoto2 deps for $(uname -m) into $PREFIX"
 
 mkdir -p "$PREFIX" "$WORK"
 
+# Downloads a tarball, trying each candidate URL in turn. ftp.gnu.org is
+# regularly unreachable from GitHub's macOS runners (connections to :443 just
+# time out), which used to fail the whole job, so every source has at least one
+# mirror and the first one that answers wins. The per-URL timeouts are bounded
+# (--connect-timeout) so an unreachable host costs seconds, not the 75 s the
+# default connect timeout gave each of curl's retries.
+#
+#   fetch <output-path> <url>...
+fetch() {
+  local out="$1"
+  shift
+
+  local url
+  for url in "$@"; do
+    echo "    try $url"
+    if curl -fsSL --connect-timeout 15 --max-time 600 --retry 2 --retry-delay 2 \
+      "$url" -o "$out"; then
+      return 0
+    fi
+    echo "    ...failed, trying next mirror" >&2
+  done
+
+  echo "ERROR: could not download $(basename "$out") from any mirror" >&2
+  return 1
+}
+
 # Builds one release tarball. Release tarballs ship a ./configure, so no
 # autoreconf (and no autotools version matching) is needed here.
 #
-#   build <name> <url> [configure args...]
+#   build <name> <url> [more urls...] [-- configure args...]
+#
+# Everything up to `--` is a download candidate (see fetch); everything after it
+# is passed to ./configure. The separator is mandatory when there are configure
+# args, because URLs are variadic.
 build() {
-  local name="$1" url="$2"
-  shift 2
+  local name="$1"
+  shift
 
-  local tarball="$WORK/$(basename "$url")"
+  local urls=()
+  while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
+    urls+=("$1")
+    shift
+  done
+  # Drop the separator, leaving only configure args in "$@".
+  if [ "${1:-}" = "--" ]; then
+    shift
+  fi
+
+  local tarball="$WORK/$(basename "${urls[0]}")"
   local src="$WORK/$name"
 
-  echo "--> $name: $url"
-  curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$tarball"
+  echo "--> $name"
+  fetch "$tarball" "${urls[@]}"
   rm -rf "$src"
   mkdir -p "$src"
   tar -xf "$tarball" -C "$src" --strip-components=1
@@ -82,12 +122,20 @@ build() {
 # external copy (see GP_LIBLTDL in libgphoto2_port/gphoto-m4/gp-libltdl.m4: it
 # deliberately does not ship its own). It comes as part of the libtool tarball;
 # the libtool driver scripts it also installs are unused here, which is harmless.
+#
+# ftp.gnu.org is the least reliable host in this script from GitHub's runners, so
+# it comes last: kernel.org first (a full, fast GNU mirror), then ftpmirror.gnu.org
+# (redirects to whichever mirror is closest), then the canonical host.
 build libtool \
+  "https://mirrors.kernel.org/gnu/libtool/libtool-${LIBTOOL_VERSION}.tar.xz" \
+  "https://ftpmirror.gnu.org/libtool/libtool-${LIBTOOL_VERSION}.tar.xz" \
   "https://ftp.gnu.org/gnu/libtool/libtool-${LIBTOOL_VERSION}.tar.xz"
 
 # libusb — the USB transport behind libgphoto2_port's usb1 iolib.
+# SourceForge hosts the same release tarballs as the GitHub release.
 build libusb \
-  "https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2"
+  "https://github.com/libusb/libusb/releases/download/v${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2" \
+  "https://downloads.sourceforge.net/project/libusb/libusb-1.0/libusb-${LIBUSB_VERSION}/libusb-${LIBUSB_VERSION}.tar.bz2"
 
 # libexif — optional but default-on in libgphoto2 (thumbnail extraction from the
 # CameraFilesystem). Built so both slices have the same feature set.
@@ -99,6 +147,8 @@ build libusb \
 # target), hence passing it only here.
 build libexif \
   "https://github.com/libexif/libexif/releases/download/v${LIBEXIF_VERSION}/libexif-${LIBEXIF_VERSION}.tar.bz2" \
+  "https://downloads.sourceforge.net/project/libexif/libexif/${LIBEXIF_VERSION}/libexif-${LIBEXIF_VERSION}.tar.gz" \
+  -- \
   --disable-nls \
   --disable-docs
 
