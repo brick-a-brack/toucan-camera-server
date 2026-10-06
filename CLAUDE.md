@@ -92,6 +92,8 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 - `LiveViewSenders` = `Arc<Mutex<HashMap<String, broadcast::Sender<Arc<Bytes>>>>>` — one sender per active device (keyed by opaque device ID).
 - Only one capture loop runs per device regardless of how many clients are connected. The loop starts when the first client subscribes and stops when the last one disconnects.
 - `EDS_ERR_OBJECT_NOTREADY` (0x0000A102) during frame capture is skipped (continue), not fatal.
+- **A stream is only closed when the camera is gone for good** — i.e. it no longer appears in its backend's `list_devices` (checked every ~2 s once polls have been missing for ~1.5 s), or the loop's sender was replaced/removed (explicit disconnect, reconnect). Latency, a stalled pipeline or repeated backend errors never end the stream, however long they last.
+- Placeholders (`static/assets/nosignal.jpg`, `endofstream.jpg`): "no signal" is shown **only before the first frame ever** (after a ~2 s warm-up grace); once a frame has arrived, a gap keeps re-sending the last real frame (heartbeat-paced, so late subscribers get it) and "no signal" is never shown again. "End of stream" is the terminal frame, sent only when the stream actually ends as above (composited onto a canvas matching the last frame's resolution), followed by the closing `--frame--` boundary.
 - The route checks `is_connected` via `spawn_blocking` **before** sending any HTTP headers — returns 409 if not connected.
 - Broadcast buffer capacity: 4 frames (drops old frames if clients are slow).
 - No frames are ever written to disk — everything is in-memory and streamed directly.
