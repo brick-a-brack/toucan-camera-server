@@ -4,4 +4,13 @@
     <string name="status_running">Running</string>
     <string name="status_stopped">Stopped</string>
     <string name="status_idle">Press Start to launch the server.</string>
+
+    <!-- Foreground-service notification. Overridable at runtime through
+         CameraServerService.NotificationText; translate these for the defaults. -->
+    <string name="notification_title">Toucan Camera Server</string>
+    <string name="notification_text_starting">Starting…</string>
+    <!-- %1$d is the port the server actually bound. -->
+    <string name="notification_text_running">API on port %1$d</string>
+    <string name="notification_channel_name">Camera Server</string>
+    <string name="notification_channel_description">Remote HTTP camera controller</string>
 </resources>

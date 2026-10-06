@@ -22,6 +22,9 @@ val Hairline          = Color(0x14FFFFFF)
 val LiveGreen         = Color(0xFFBDF5D1)
 val LiveGreenDot      = Color(0xFF4ADE80)
 
+val ErrorRed          = Color(0xFFF5C2C2)
+val ErrorRedDot       = Color(0xFFEF6161)
+
 @Immutable
 data class ToucanAccent(
     val primary: Color,

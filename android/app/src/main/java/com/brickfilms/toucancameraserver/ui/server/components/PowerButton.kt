@@ -33,6 +33,9 @@ fun PowerButton(
     running: Boolean,
     onToggle: () -> Unit,
     modifier: Modifier = Modifier,
+    // A start is in flight: the tap is ignored until the native server has
+    // bound (or failed), so two servers can never be asked for.
+    busy: Boolean = false,
     size: Dp = 178.dp,
 ) {
     val accent = LocalAccent.current
@@ -138,7 +141,7 @@ fun PowerButton(
                 )
                 .clip(CircleShape)
                 .background(coreBrush)
-                .clickable(onClick = onToggle),
+                .clickable(enabled = !busy, onClick = onToggle),
             contentAlignment = Alignment.Center,
         ) {
             Column(
@@ -147,12 +150,20 @@ fun PowerButton(
             ) {
                 Icon(
                     imageVector = Icons.Outlined.PowerSettingsNew,
-                    contentDescription = if (running) "Stop server" else "Start server",
+                    contentDescription = when {
+                        busy    -> "Server starting"
+                        running -> "Stop server"
+                        else    -> "Start server"
+                    },
                     tint = coreContent,
                     modifier = Modifier.size(36.dp),
                 )
                 Text(
-                    text = if (running) "TAP TO STOP" else "TAP TO START",
+                    text = when {
+                        busy    -> "STARTING…"
+                        running -> "TAP TO STOP"
+                        else    -> "TAP TO START"
+                    },
                     color = coreContent.copy(alpha = 0.85f),
                     style = MaterialTheme.typography.labelMedium,
                 )

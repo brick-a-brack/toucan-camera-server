@@ -12,46 +12,67 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import com.brickfilms.toucancameraserver.ui.server.ServerStatus
+import com.brickfilms.toucancameraserver.ui.theme.ErrorRed
+import com.brickfilms.toucancameraserver.ui.theme.ErrorRedDot
 import com.brickfilms.toucancameraserver.ui.theme.LiveGreen
 import com.brickfilms.toucancameraserver.ui.theme.LiveGreenDot
 import com.brickfilms.toucancameraserver.ui.theme.ToucanFgDim
 import com.brickfilms.toucancameraserver.ui.theme.ToucanFgFaint
 
 @Composable
-fun StatusHeader(running: Boolean, modifier: Modifier = Modifier) {
+fun StatusHeader(status: ServerStatus, modifier: Modifier = Modifier) {
+    val label = when (status) {
+        ServerStatus.Running  -> "LIVE · STREAMING"
+        ServerStatus.Starting -> "STARTING · PLEASE WAIT"
+        ServerStatus.Error    -> "ERROR · SERVER STOPPED"
+        ServerStatus.Idle     -> "IDLE · SERVER STOPPED"
+    }
+    val color = when (status) {
+        ServerStatus.Running -> LiveGreen
+        ServerStatus.Error   -> ErrorRed
+        else                 -> ToucanFgDim
+    }
+
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // Fixed 20dp box so both states occupy the same height
+        // Fixed 20dp box so every state occupies the same height
         Box(Modifier.size(20.dp), contentAlignment = Alignment.Center) {
-            if (running) {
-                PulsingDot(color = LiveGreenDot)
-            } else {
-                Box(
-                    Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(ToucanFgFaint)
-                )
+            when (status) {
+                ServerStatus.Running  -> PulsingDot(color = LiveGreenDot, periodMillis = 2000)
+                ServerStatus.Starting -> PulsingDot(color = ToucanFgDim, periodMillis = 900)
+                ServerStatus.Error    -> StaticDot(color = ErrorRedDot)
+                ServerStatus.Idle     -> StaticDot(color = ToucanFgFaint)
             }
         }
         Text(
-            text = if (running) "LIVE · STREAMING" else "IDLE · SERVER STOPPED",
-            color = if (running) LiveGreen else ToucanFgDim,
+            text = label,
+            color = color,
             style = MaterialTheme.typography.labelMedium,
         )
     }
 }
 
 @Composable
-private fun PulsingDot(color: Color) {
+private fun StaticDot(color: Color) {
+    Box(
+        Modifier
+            .size(8.dp)
+            .clip(CircleShape)
+            .background(color)
+    )
+}
+
+@Composable
+private fun PulsingDot(color: Color, periodMillis: Int) {
     val infinite = rememberInfiniteTransition(label = "live-dot")
     val ringAlpha by infinite.animateFloat(
         initialValue = 0.6f, targetValue = 0f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2000, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = periodMillis, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Restart,
         ),
         label = "ring-alpha",
@@ -59,7 +80,7 @@ private fun PulsingDot(color: Color) {
     val ringScale by infinite.animateFloat(
         initialValue = 1f, targetValue = 3.2f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2000, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = periodMillis, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Restart,
         ),
         label = "ring-scale",

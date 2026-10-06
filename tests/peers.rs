@@ -23,7 +23,8 @@ fn app() -> axum::Router {
     let backends: BackendState = Arc::new(HashMap::new());
     let token = Arc::new(RwLock::new(TOKEN.to_string()));
     let peers = Arc::new(PeerRegistry::new());
-    build_router(AppState::new(backends, token, peers))
+    let instance_id = Arc::new("test-instance".to_string());
+    build_router(AppState::new(backends, token, instance_id, peers))
 }
 
 /// Spawns a minimal server whose `/health` returns the given JSON, used as a
