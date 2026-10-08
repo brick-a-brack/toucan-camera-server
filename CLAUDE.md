@@ -101,6 +101,7 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 - Response headers: `Content-Type: image/jpeg`, `Content-Length: <size>`.
 - No base64, no JSON wrapper — raw binary only.
 - Only JPEG output is supported for now (no RAW/CR3).
+- **Frame averaging**: the optional `?frames=N` query parameter captures N consecutive shots and averages them pixel by pixel (random sensor noise cancels out; noise sigma drops by sqrt(N)). Default / absent / malformed / `0` → `1` (averaging disabled, the camera's JPEG is returned untouched — no re-encode), capped at `MAX_AVERAGING_FRAMES` = 20. The burst and the merge run in a single `spawn_blocking` (shots must be consecutive on the same session). Frames of differing sizes abort with 500 (`frame size inconsistency`); the merged image is re-encoded at JPEG quality 95. Logic + unit tests in `src/routes/cameras.rs` (`parse_frame_count`, `average_frames`).
 
 ### HTTP layer
 - Framework: `axum` (not actix-web).
@@ -121,7 +122,8 @@ PUT  /cameras/{id}/disconnect        — close a session with a device
 GET  /cameras/{id}/parameters        — list all parameters with current value, allowed options, and disabled flag (requires connected)
 PUT  /cameras/{id}/parameters        — set a parameter value (requires connected)
 GET  /cameras/{id}/liveview          — MJPEG stream (requires connected, returns 409 if not)
-POST /cameras/{id}/capture           — capture a single JPEG photo, returns raw bytes (requires connected)
+POST /cameras/{id}/capture           — capture a JPEG photo, returns raw bytes (requires connected)
+                                       ?frames=N averages N consecutive shots to cut noise (default 1, invalid 1, max 20)
 
 # Remote backend only (feature `backend-remote`)
 GET    /peers                        — list registered peers (returns id, url, token — token surfaced for the local UI)

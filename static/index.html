@@ -140,6 +140,23 @@
       color: #fde68a;
     }
 
+    /* Frame-averaging selector, sitting just left of the Capture button */
+    .frames-select {
+      border: none;
+      border-radius: 6px;
+      padding: .4rem .5rem;
+      font-size: .8rem;
+      font-family: inherit;
+      background: #2a1600;
+      color: #fdba74;
+      cursor: pointer;
+    }
+
+    .frames-select:disabled {
+      opacity: .4;
+      cursor: default;
+    }
+
     .btn:not(:disabled):hover {
       opacity: .8;
     }
@@ -562,6 +579,9 @@
           <button class="btn btn-connect"    onclick="connect('${cam.id}')">Connect</button>
           <button class="btn btn-disconnect" onclick="disconnect('${cam.id}')">Disconnect</button>
           <button class="btn btn-params"     onclick="toggleParams('${cam.id}')">Parameters</button>
+          <select class="frames-select" id="frames-${cam.id}" title="Frame averaging: capture N shots and merge them to cut sensor noise">
+            ${framesOptions()}
+          </select>
           <button class="btn btn-capture"    onclick="capturePhoto('${cam.id}', this)">Capture</button>
           <button class="btn btn-liveview"   onclick="toggleLiveView('${cam.id}')">Live view</button>
         </div>
@@ -586,6 +606,7 @@
       const btnDisconn = card.querySelector('.btn-disconnect');
       const btnParams = card.querySelector('.btn-params');
       const btnCapture = card.querySelector('.btn-capture');
+      const selFrames = card.querySelector('.frames-select');
       const btnLv = card.querySelector('.btn-liveview');
 
       if (cam.connected) {
@@ -595,6 +616,7 @@
         btnDisconn.disabled = false;
         btnParams.disabled = false;
         btnCapture.disabled = false;
+        selFrames.disabled = false;
         btnLv.disabled = false;
       } else {
         badge.textContent = 'Disconnected';
@@ -603,6 +625,7 @@
         btnDisconn.disabled = true;
         btnParams.disabled = true;
         btnCapture.disabled = true;
+        selFrames.disabled = true;
         btnLv.disabled = true;
         if (liveViews[cam.id]) stopLiveView(cam.id);
         if (paramPanels[cam.id]) closeParams(cam.id);
@@ -870,13 +893,27 @@
     // Capture
     // -------------------------------------------------------------------------
 
+    // Frame-averaging choices offered in the UI. 1 = disabled (single shot);
+    // the server caps the parameter at MAX_AVERAGING_FRAMES (20) anyway.
+    const FRAME_COUNTS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20];
+
+    function framesOptions() {
+      return FRAME_COUNTS
+        .map(n => `<option value="${n}">${n === 1 ? '1 frame' : `${n} frames`}</option>`)
+        .join('');
+    }
+
     async function capturePhoto(id, btn) {
+      // Averaging multiplies the shutter actuations, so a 20-frame merge can
+      // take a while — reflect the count in the button label.
+      const frames = Number(document.getElementById(`frames-${id}`)?.value ?? 1);
+
       btn.disabled = true;
       btn.classList.add('capturing');
-      btn.textContent = 'Capturing…';
+      btn.textContent = frames > 1 ? `Capturing ${frames}…` : 'Capturing…';
 
       try {
-        const res = await fetch(`/cameras/${id}/capture`, { method: 'POST', headers: { 'Authorization': `Bearer ${TOKEN}` } });
+        const res = await fetch(`/cameras/${id}/capture?frames=${frames}`, { method: 'POST', headers: { 'Authorization': `Bearer ${TOKEN}` } });
         if (!res.ok) {
           const data = await res.json().catch(() => ({}));
           throw new Error(data.error ?? `HTTP ${res.status}`);
