@@ -1,5 +1,5 @@
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex as StdMutex, RwLock};
 
 use axum::{
     body::Body,
@@ -30,10 +30,29 @@ pub type BackendState = Arc<HashMap<String, Arc<dyn CameraBackend>>>;
 /// sender that was replaced by a newer connection while the loop was exiting.
 type LiveViewSenders = Arc<Mutex<HashMap<String, Arc<broadcast::Sender<Arc<Bytes>>>>>>;
 
+/// Opaque device IDs with a capture currently in flight.
+///
+/// A capture monopolizes its camera's serialized backend channel for the whole
+/// exposure + download (up to 30 s on Canon). While it runs, `list_devices`,
+/// `is_connected` and `get_live_view_frame` for that device queue behind it and
+/// appear to stall. This set lets the `/cameras` listing and the live-view loop
+/// distinguish "capturing, so tolerate the stall" from a real disconnect.
+type CapturingSet = Arc<StdMutex<HashSet<String>>>;
+
+/// Last successful `list_devices` result per backend id. Used to keep a camera
+/// visible in `/cameras` when its backend times out *because* a capture is
+/// holding the channel, instead of dropping it (which the UI reads as
+/// "disconnected").
+type DeviceListCache = Arc<StdMutex<HashMap<String, Vec<DeviceInfo>>>>;
+
 #[derive(Clone)]
 pub struct AppState {
     pub backends: BackendState,
     pub live_views: LiveViewSenders,
+    /// Opaque device IDs with an in-flight capture (see [`CapturingSet`]).
+    pub capturing: CapturingSet,
+    /// Per-backend last-known-good device list (see [`DeviceListCache`]).
+    pub device_cache: DeviceListCache,
     pub token: Arc<RwLock<String>>,
     /// Unique ID generated once at startup, exposed in `/health` so peers can
     /// detect self-registration attempts.
@@ -49,6 +68,53 @@ impl axum::extract::FromRef<AppState> for BackendState {
     }
 }
 
+/// Marks an opaque device ID as capturing for its lifetime, removing it on drop
+/// (including on error or panic) so a failed capture can never wedge the device
+/// in the "capturing" state forever.
+struct CaptureGuard {
+    set: CapturingSet,
+    id: String,
+}
+
+impl CaptureGuard {
+    fn new(set: CapturingSet, id: String) -> Self {
+        if let Ok(mut s) = set.lock() {
+            s.insert(id.clone());
+        }
+        Self { set, id }
+    }
+}
+
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.set.lock() {
+            s.remove(&self.id);
+        }
+    }
+}
+
+/// True if the given opaque device ID currently has a capture in flight.
+fn is_capturing(capturing: &CapturingSet, opaque_id: &str) -> bool {
+    capturing
+        .lock()
+        .map(|s| s.contains(opaque_id))
+        .unwrap_or(false)
+}
+
+/// True if any opaque ID currently capturing belongs to `backend_id`.
+fn backend_has_capture(capturing: &CapturingSet, backend_id: &str) -> bool {
+    capturing
+        .lock()
+        .map(|s| {
+            s.iter().any(|oid| {
+                DeviceId::decode(oid)
+                    .map(|d| d.backend == backend_id)
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 impl AppState {
     pub fn new(
         backends: BackendState,
@@ -59,6 +125,8 @@ impl AppState {
         Self {
             backends,
             live_views: Arc::new(Mutex::new(HashMap::new())),
+            capturing: Arc::new(StdMutex::new(HashSet::new())),
+            device_cache: Arc::new(StdMutex::new(HashMap::new())),
             token,
             instance_id,
             #[cfg(feature = "backend-remote")]
@@ -71,7 +139,7 @@ impl AppState {
 // Handlers
 // ---------------------------------------------------------------------------
 
-pub async fn list_cameras(State(backends): State<BackendState>) -> Json<Vec<DeviceInfo>> {
+pub async fn list_cameras(State(state): State<AppState>) -> Json<Vec<DeviceInfo>> {
     // Query every backend concurrently, each on a blocking thread with a timeout.
     // `list_devices` is a blocking SDK call; running them in parallel means a slow
     // backend can't serialize behind the others, and the timeout means one that is
@@ -79,28 +147,52 @@ pub async fn list_cameras(State(backends): State<BackendState>) -> Json<Vec<Devi
     // it simply appears on a later poll once ready.
     let timeout = std::time::Duration::from_secs(3);
 
-    let tasks: Vec<_> = backends
+    let tasks: Vec<_> = state
+        .backends
         .values()
         .cloned()
         .map(|backend| {
+            let cache = state.device_cache.clone();
+            let capturing = state.capturing.clone();
             tokio::spawn(async move {
+                let backend_id = backend.backend_id().to_string();
                 let priority = backend.dedup_priority();
                 let listed = tokio::time::timeout(
                     timeout,
                     tokio::task::spawn_blocking(move || backend.list_devices()),
                 )
                 .await;
-                match listed {
+                let found = match listed {
                     Ok(Ok(Ok(found))) => {
-                        found.into_iter().map(|d| (priority, d)).collect::<Vec<_>>()
+                        // Fresh result — refresh the cache for this backend.
+                        if let Ok(mut c) = cache.lock() {
+                            c.insert(backend_id.clone(), found.clone());
+                        }
+                        found
                     }
                     Ok(Ok(Err(e))) => {
                         eprintln!("[error] failed to list devices from backend: {e}");
                         Vec::new()
                     }
                     Ok(Err(_)) => Vec::new(), // spawn_blocking panicked
-                    Err(_) => Vec::new(),     // backend too slow this round
-                }
+                    Err(_) => {
+                        // Backend didn't answer in time. If a capture is holding
+                        // this backend's channel, that's expected — fall back to
+                        // the last-known-good list so the camera stays visible
+                        // instead of flickering to "disconnected". Otherwise the
+                        // backend is genuinely slow/absent this round: drop it.
+                        if backend_has_capture(&capturing, &backend_id) {
+                            cache
+                                .lock()
+                                .ok()
+                                .and_then(|c| c.get(&backend_id).cloned())
+                                .unwrap_or_default()
+                        } else {
+                            Vec::new()
+                        }
+                    }
+                };
+                found.into_iter().map(|d| (priority, d)).collect::<Vec<_>>()
             })
         })
         .collect();
@@ -232,8 +324,12 @@ pub async fn disconnect_camera(
 /// Predefined placeholder JPEGs pushed into the live-view stream when the
 /// camera is not delivering frames, so the client always sees a clear image
 /// instead of a frozen or blank panel.
-/// - `NOSIGNAL_JPEG`: the camera is connected but not producing frames.
-/// - `ENDOFSTREAM_JPEG`: the stream was working and then stopped.
+/// - `NOSIGNAL_JPEG`: the camera is connected but has *never* produced a frame.
+///   Once a stream has started it is never shown again — a mid-stream gap keeps
+///   the last real frame on screen instead.
+/// - `ENDOFSTREAM_JPEG`: terminal frame, sent only when the camera is gone for
+///   good (no longer reported by its backend's device list). Latency, however
+///   long, never ends a stream.
 const NOSIGNAL_JPEG: &[u8] = include_bytes!("../../static/assets/nosignal.jpg");
 const ENDOFSTREAM_JPEG: &[u8] = include_bytes!("../../static/assets/endofstream.jpg");
 
@@ -282,6 +378,24 @@ fn compose_endofstream(width: u32, height: u32) -> Option<Vec<u8>> {
         .encode_image(&image::DynamicImage::ImageRgb8(canvas))
         .ok()?;
     Some(out)
+}
+
+/// Whether the camera really went away: it is no longer reported by its own
+/// backend's device list (unplugged, powered off, peer gone). This is the only
+/// condition that ends a live-view stream — a stalled pipeline or a long
+/// latency keeps the device listed, and must only freeze the preview on the
+/// last frame, never close it.
+///
+/// `opaque_id` is compared against `DeviceInfo.id`, which backends build with
+/// `DeviceId::new(backend, native_id).encode()` — the same opaque string the
+/// route was called with. An enumeration failure is *not* treated as gone: a
+/// transient backend error must not tear the stream down.
+async fn device_vanished(backend: &Arc<dyn CameraBackend>, opaque_id: &str) -> bool {
+    let b = backend.clone();
+    match tokio::task::spawn_blocking(move || b.list_devices()).await {
+        Ok(Ok(devices)) => !devices.iter().any(|d| d.id == opaque_id),
+        _ => false,
+    }
 }
 
 /// Wrap raw JPEG bytes in a `multipart/x-mixed-replace` part (boundary `frame`).
@@ -354,6 +468,7 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
             let native_id = dev_id.native_id.clone();
             let live_views_loop = state.live_views.clone();
             let opaque_id_loop = id.clone();
+            let capturing_loop = state.capturing.clone();
 
             tokio::spawn(async move {
                 // Cap at 30 fps (≈32 ms/frame). Backends slower than this run
@@ -365,24 +480,23 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                 // two cameras stream at once: aggressive per-frame USB reads (Canon
                 // EVF) starve another camera's passive SDK stream (Nikon).
                 let frame_interval = tokio::time::Duration::from_millis(32);
-                // Break after ~10 s of consecutive not-ready frames to avoid
-                // spinning forever when the camera stalls (e.g. after a
-                // parameter change that disrupts the capture pipeline).
+                // Consecutive polls that returned no frame. Latency alone never
+                // ends the stream: a stall only freezes the preview on the last
+                // real frame (or shows "no signal" if there was never one) and
+                // triggers the periodic "is the device still there?" check below.
                 let mut consecutive_misses: u32 = 0;
-                const MAX_CONSECUTIVE_MISSES: u32 = 300;
                 // Grace period before showing the "no signal" placeholder while the
                 // camera is still warming up (before its very first frame). Without
                 // it, "no signal" flashes during normal initialization. ~2 s at
                 // ~32 ms/poll ≈ 60 misses.
                 const NOSIGNAL_GRACE_MISSES: u32 = 60;
-                // Once the camera has been delivering frames, a sustained run of
-                // not-ready polls means the live stream stopped (e.g. the camera was
-                // disconnected). End the stream straight to the "end of stream"
-                // placeholder — never fall back to "no signal", which only applies
-                // to warm-up. ~1.5 s at ~32 ms/poll ≈ 45 misses, short enough to
-                // react quickly yet tolerant of brief mid-stream hiccups (e.g. a
-                // parameter change momentarily disrupting the pipeline).
-                const POST_SIGNAL_STALL_MISSES: u32 = 45;
+                // After this many consecutive misses the stall is no longer a
+                // hiccup, so start asking the backend whether the device is still
+                // enumerated. ~1.5 s at ~32 ms/poll ≈ 45 misses.
+                const STALL_MISSES: u32 = 45;
+                // Re-check device presence every ~2 s while stalled (≈64 polls).
+                // `list_devices` can hit USB/HTTP, so it must stay rare.
+                const DEVICE_CHECK_EVERY: u32 = 64;
                 // Whether the camera has ever delivered a real frame. Decides the
                 // terminal placeholder: "end of stream" if it worked and then
                 // stopped, "no signal" if it never produced anything.
@@ -422,6 +536,12 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                     let result =
                         tokio::task::spawn_blocking(move || b.get_live_view_frame(&nid)).await;
 
+                    // A poll that produced no frame ("miss"): either the camera is
+                    // not ready, or the backend errored. Neither ends the stream —
+                    // only the device disappearing from the backend's device list
+                    // does (handled after the match).
+                    let mut missed = false;
+
                     match result {
                         Ok(Ok(jpeg)) => {
                             consecutive_misses = 0;
@@ -455,46 +575,84 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
                             }
                             last_send = tokio::time::Instant::now();
                         }
-                        Ok(Err(crate::camera::CameraError::SdkError(0x0000_A102))) => {
-                            // Camera not ready — no frame available.
+                        Ok(Err(e)) => {
+                            // Not-ready is the normal gap; any other error (a "busy"
+                            // backend during a capture, a transient SDK failure) is
+                            // treated the same way — logged once per run of misses so
+                            // a permanently erroring camera can't flood the log.
+                            if !matches!(e, crate::camera::CameraError::SdkError(0x0000_A102))
+                                && consecutive_misses == 0
+                            {
+                                eprintln!("[warn] live view frame error for {native_id}: {e}");
+                            }
+                            missed = true;
+                        }
+                        Err(_) => break, // spawn_blocking panicked
+                    }
+
+                    if missed {
+                        if is_capturing(&capturing_loop, &opaque_id_loop) {
+                            // A capture holds this camera's channel: the gap is
+                            // expected, not a stall. Hold the last real frame.
+                            consecutive_misses = 0;
+                        } else {
                             consecutive_misses += 1;
                             if had_signal {
-                                // The stream was live and stopped: treat a sustained
-                                // gap as end of stream. Keep showing the last real
-                                // frame until then (no "no signal" flash), then break
-                                // so the loop's terminal placeholder is "end of
-                                // stream", not "no signal".
-                                if consecutive_misses >= POST_SIGNAL_STALL_MISSES {
-                                    eprintln!("[warn] live view for {native_id} stopped after {consecutive_misses} not-ready polls, ending stream");
+                                // The stream was live: keep showing the last real
+                                // frame, heartbeat-paced so late subscribers get it
+                                // too. Never "no signal" — that is warm-up only.
+                                if last_send.elapsed() >= HEARTBEAT {
+                                    if let Some(frame) = &last_frame {
+                                        if tx.send(frame.clone()).is_err() {
+                                            break;
+                                        }
+                                        last_send = tokio::time::Instant::now();
+                                    }
+                                }
+                            } else if consecutive_misses >= NOSIGNAL_GRACE_MISSES
+                                && last_send.elapsed() >= HEARTBEAT
+                            {
+                                // Warm-up: the camera never produced a frame. After
+                                // the grace period show "no signal" so the client
+                                // sees a clear image instead of a blank panel.
+                                if tx.send(nosignal_frame.clone()).is_err() {
                                     break;
                                 }
-                            } else {
-                                // Warm-up: the camera has not produced a frame yet.
-                                // After the grace period, show "no signal"
-                                // (heartbeat-paced) so the client sees a clear image
-                                // instead of a blank panel.
-                                if consecutive_misses >= NOSIGNAL_GRACE_MISSES
-                                    && last_send.elapsed() >= HEARTBEAT
-                                {
-                                    if tx.send(nosignal_frame.clone()).is_err() {
-                                        break;
-                                    }
-                                    last_send = tokio::time::Instant::now();
-                                    // Force the next real frame to be broadcast even
-                                    // if byte-identical to the placeholder gap.
-                                    last_jpeg = None;
+                                last_send = tokio::time::Instant::now();
+                                // Force the next real frame to be broadcast even if
+                                // byte-identical to the placeholder gap.
+                                last_jpeg = None;
+                            }
+
+                            // Sustained stall. Latency is not a reason to close the
+                            // stream — the only one is the camera being gone for
+                            // good, so ask the backend periodically whether it is
+                            // still enumerated.
+                            if consecutive_misses >= STALL_MISSES
+                                && (consecutive_misses - STALL_MISSES)
+                                    .is_multiple_of(DEVICE_CHECK_EVERY)
+                            {
+                                if device_vanished(&backend_loop, &opaque_id_loop).await {
+                                    eprintln!("[warn] live view for {native_id}: device no longer listed, ending stream");
+                                    break;
                                 }
-                                if consecutive_misses >= MAX_CONSECUTIVE_MISSES {
-                                    eprintln!("[warn] live view stalled for {native_id} after {consecutive_misses} consecutive misses, stopping loop");
+                                // Still listed, but this loop's sender is no longer
+                                // the registered one (explicit disconnect, or a
+                                // reconnect installed a new sender): the loop is
+                                // orphaned, stop it.
+                                let orphaned = {
+                                    let senders = live_views_loop.lock().await;
+                                    match senders.get(&opaque_id_loop) {
+                                        Some(current) => !Arc::ptr_eq(current, &tx),
+                                        None => true,
+                                    }
+                                };
+                                if orphaned {
+                                    eprintln!("[warn] live view for {native_id}: session closed, ending stream");
                                     break;
                                 }
                             }
                         }
-                        Ok(Err(e)) => {
-                            eprintln!("[error] live view frame error for {native_id}: {e}");
-                            break;
-                        }
-                        Err(_) => break, // spawn_blocking panicked
                     }
 
                     let elapsed = tick.elapsed();
@@ -722,7 +880,7 @@ fn encode_rgb_jpeg(img: &image::RgbImage) -> Result<Vec<u8>, String> {
 }
 
 pub async fn capture_photo(
-    State(backends): State<BackendState>,
+    State(state): State<AppState>,
     Path(id): Path<String>,
     Query(query): Query<CaptureQuery>,
 ) -> Response {
@@ -739,7 +897,7 @@ pub async fn capture_photo(
         }
     };
 
-    let backend = match backends.get(&dev_id.backend) {
+    let backend = match state.backends.get(&dev_id.backend) {
         Some(b) => b.clone(),
         None => {
             return (
@@ -749,6 +907,11 @@ pub async fn capture_photo(
                 .into_response()
         }
     };
+
+    // Mark this device as capturing for the whole call so the `/cameras` listing
+    // and the live-view loop tolerate the channel being blocked by the capture
+    // instead of reporting a disconnect / ending the stream. Dropped on return.
+    let _capture_guard = CaptureGuard::new(state.capturing.clone(), id.clone());
 
     let native_id = dev_id.native_id.clone();
     // The whole burst runs on a single blocking task: the shots must be

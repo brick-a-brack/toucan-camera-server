@@ -1,6 +1,6 @@
 [package]
 name = "toucan-camera-server"
-version = "0.0.17"
+version = "0.0.19"
 edition = "2021"
 
 [lib]
@@ -76,6 +76,12 @@ nusb = { version = "0.2.4", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 v4l = { version = "0.14", optional = true }
+
+# JNI glue for the Android library (src/lib.rs, module `android_jni`): reading
+# Java strings and returning the status JSON. Replaces hand-written JNIEnv vtable
+# offsets, which were correct but silently fatal if ever off by one.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
 
 [build-dependencies]
 cc = "1"

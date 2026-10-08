@@ -77,37 +77,62 @@ jobs:
 
           hdiutil detach "$MOUNT_POINT" -quiet
 
-      - name: Install libgphoto2 build tools + deps (both arches)
+      - name: Install libgphoto2 build tools
         run: |
           set -eo pipefail
-          # Native arm64 toolchain + libgphoto2 runtime deps (Homebrew at
-          # /opt/homebrew). autoconf/automake/libtool/gettext are needed to build
-          # libgphoto2 from a git checkout; libusb/libexif are its link deps.
-          brew install autoconf automake libtool pkg-config gettext libusb libexif
-          # The universal binary's x86_64 slice needs x86_64 deps, but the arm64
-          # runner ships no Intel Homebrew. Install one at /usr/local under Rosetta
-          # and pull the Intel bottles there.
+          # BUILD TOOLS ONLY, from the native arm64 Homebrew. They serve both
+          # slices: autoconf/automake/libtoolize generate scripts and pkg-config
+          # reads .pc files, so their own architecture is irrelevant (an x86_64
+          # process can exec these arm64 binaries).
+          #
+          # The LIBRARIES libgphoto2 links (libltdl, libusb, libexif) used to come
+          # from Homebrew too — a second, Intel Homebrew installed at /usr/local
+          # under Rosetta for the x86_64 slice. That stopped working with Homebrew
+          # 7.0.0 (2026-09), which moved macOS x86_64 to Tier 3: no Intel bottles,
+          # and the installer now refuses outright ("Homebrew on macOS is only
+          # supported on Apple Silicon processors!"). They are built from pinned
+          # sources per arch below instead.
+          brew install autoconf automake libtool pkg-config gettext
+
+      - name: Install Rosetta (for the x86_64 slice)
+        run: |
+          # Rosetta itself is unaffected by Homebrew dropping Intel; we still use
+          # it so the x86_64 builds run as native x86_64 processes rather than in
+          # autotools cross-compilation mode. Already present on some images.
           sudo softwareupdate --install-rosetta --agree-to-license || true
-          if [ ! -x /usr/local/bin/brew ]; then
-            curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o /tmp/brew-install.sh
-            arch -x86_64 /bin/bash -c "NONINTERACTIVE=1 /bin/bash /tmp/brew-install.sh"
-          fi
-          arch -x86_64 /usr/local/bin/brew install autoconf automake libtool pkg-config gettext libusb libexif
+          arch -x86_64 /usr/bin/true || { echo "ERROR: cannot run x86_64 processes"; exit 1; }
+
+      - name: Build libgphoto2 deps from source (arm64)
+        run: bash scripts/build-macos-deps.sh "$HOME/gphoto2-deps-arm"
+
+      - name: Build libgphoto2 deps from source (x86_64)
+        run: |
+          arch -x86_64 /bin/bash -c 'bash scripts/build-macos-deps.sh "$HOME/gphoto2-deps-x86"'
 
       - name: Build libgphoto2 from source (arm64)
         run: |
-          export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig"
+          DEPS="$HOME/gphoto2-deps-arm"
+          export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
+          # GP_LIBLTDL has no .pc file to go by: it probes the default paths, then
+          # /usr/local, /usr/pkg and `brew --prefix`. Pass it our prefix explicitly
+          # — mandatory for the x86_64 slice, where `brew --prefix` would hand it
+          # the arm64 libltdl.
+          export LTDLINCL="-I$DEPS/include"
+          export LIBLTDL="-L$DEPS/lib -lltdl"
           bash scripts/build-libgphoto2.sh "$LIBGPHOTO2_REF" "$HOME/gphoto2-arm"
 
       - name: Build libgphoto2 from source (x86_64)
         run: |
           # Run the whole build as an x86_64 process (Rosetta) so clang defaults to
-          # the x86_64 target and config.guess reports x86_64. The script picks up
-          # the /usr/local (Intel) toolchain from uname -m.
+          # the x86_64 target and config.guess reports x86_64 — a native build, not
+          # a cross one. The autotools still come from /opt/homebrew (see
+          # scripts/build-libgphoto2.sh).
           arch -x86_64 /bin/bash -c '
             set -eo pipefail
-            export PATH="/usr/local/bin:$PATH"
-            export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig"
+            DEPS="$HOME/gphoto2-deps-x86"
+            export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
+            export LTDLINCL="-I$DEPS/include"
+            export LIBLTDL="-L$DEPS/lib -lltdl"
             bash scripts/build-libgphoto2.sh "$LIBGPHOTO2_REF" "$HOME/gphoto2-x86"
           '
 
@@ -157,16 +182,17 @@ jobs:
         env:
           PKG_CONFIG_ALLOW_CROSS: "1"
         run: |
-          # Link against the from-source Intel libgphoto2; fall back to /usr/local
-          # brew .pc files for its deps (libusb, libexif, …).
-          export PKG_CONFIG_PATH="$HOME/gphoto2-x86/lib/pkgconfig:/usr/local/lib/pkgconfig"
+          # Link against the from-source Intel libgphoto2 and the x86_64 deps built
+          # alongside it. No Homebrew path here: /opt/homebrew is the wrong arch and
+          # there is no Intel Homebrew any more.
+          export PKG_CONFIG_PATH="$HOME/gphoto2-x86/lib/pkgconfig:$HOME/gphoto2-deps-x86/lib/pkgconfig"
           cargo build --release \
             --target x86_64-apple-darwin \
             --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-sony,backend-remote
 
       - name: Build arm64
         run: |
-          export PKG_CONFIG_PATH="$HOME/gphoto2-arm/lib/pkgconfig:/opt/homebrew/lib/pkgconfig"
+          export PKG_CONFIG_PATH="$HOME/gphoto2-arm/lib/pkgconfig:$HOME/gphoto2-deps-arm/lib/pkgconfig"
           cargo build --release \
             --target aarch64-apple-darwin \
             --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-sony,backend-remote

@@ -28,9 +28,35 @@ static BACKENDS: Mutex<Option<BackendState>> = Mutex::new(None);
 static RAN: AtomicBool = AtomicBool::new(false);
 
 /// Records the backend registry so the shutdown path can reach every backend.
+///
+/// Also re-arms [`run`]: a new registry is a new server lifecycle, and on Android
+/// the service starts and stops the server repeatedly inside a single process —
+/// each stop has to release the SDKs again, which the one-shot `RAN` latch would
+/// otherwise prevent after the first one.
 pub fn set_backends(backends: BackendState) {
-    if let Ok(mut slot) = BACKENDS.lock() {
-        *slot = Some(backends);
+    let previous = match BACKENDS.lock() {
+        Ok(mut slot) => slot.replace(backends),
+        Err(_) => None,
+    };
+    RAN.store(false, Ordering::SeqCst);
+
+    // Dispose of the registry we just replaced on a plain OS thread, never here.
+    //
+    // This is called from inside `bind_server`, i.e. from within a `block_on` —
+    // an asynchronous context. Dropping the old registry can drop the last `Arc`
+    // of a backend that owns a tokio runtime (the remote backend does), and
+    // dropping a runtime inside an async context panics outright:
+    // "Cannot drop a runtime in a context where blocking is not allowed."
+    // That used to kill the server thread mid-rebind on Android, before it had
+    // bound anything.
+    if let Some(previous) = previous {
+        if std::thread::Builder::new()
+            .name("backend-dispose".to_string())
+            .spawn(move || drop(previous))
+            .is_err()
+        {
+            eprintln!("[warn] could not spawn a thread to release the previous backends");
+        }
     }
 }
 

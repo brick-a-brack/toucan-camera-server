@@ -57,7 +57,9 @@ fun ServerScreen(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
         ) {
-            AppBar()
+            // No title bar: the status header leads. The spacer keeps the content
+            // off the status bar, which the removed title bar used to provide.
+            Spacer(Modifier.height(24.dp))
 
             Column(
                 Modifier
@@ -66,12 +68,27 @@ fun ServerScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Spacer(Modifier.height(2.dp))
-                StatusHeader(running = state.isRunning)
+                StatusHeader(status = state.status)
                 Spacer(Modifier.height(18.dp))
-                PowerButton(running = state.isRunning, onToggle = onToggleServer)
+                PowerButton(
+                    running = state.isRunning,
+                    busy = state.isBusy,
+                    onToggle = onToggleServer,
+                )
                 Spacer(Modifier.height(22.dp))
                 HeroTagline(running = state.isRunning)
                 Spacer(Modifier.height(14.dp))
+                // Why the server is not running, as the native side reported it.
+                state.errorMessage?.let { message ->
+                    Text(
+                        text = message,
+                        color = ErrorRed,
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(14.dp))
+                }
             }
 
             Spacer(Modifier.height(18.dp))
@@ -107,18 +124,6 @@ fun ServerScreen(
     }
 }
 
-@Composable
-private fun AppBar() {
-    Text(
-        text = "Toucan Camera Server",
-        color = ToucanFg,
-        style = MaterialTheme.typography.titleMedium,
-        textAlign = TextAlign.Center,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 22.dp, vertical = 18.dp),
-    )
-}
 
 @Composable
 private fun HeroTagline(running: Boolean) {

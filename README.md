@@ -36,7 +36,7 @@ Open the printed URL in a browser to access the web UI. The token is already inc
 | `--token <token>` | Authentication token (default: auto-generated UUID v4)                            |
 | `--expose`        | Bind to `0.0.0.0` (reachable from the LAN) instead of `127.0.0.1` (loopback only) |
 
-By default the server is reachable only from the local machine. Use `--expose` to make it reachable from other devices on the network (it always stays protected by the token). On Android the server is exposed on the LAN automatically.
+By default the server is reachable only from the local machine. Use `--expose` to make it reachable from other devices on the network (it always stays protected by the token). The Android app always listens on the LAN (a phone server exists to be driven from another device); embedders can still pick loopback through the `expose` argument of the native `startServer`.
 
 ## Authentication
 
@@ -64,6 +64,15 @@ Manage peers from the **Remote peers** panel in the web UI, or via the API:
 The `url` may be given as `host:port` or `http://host:port`. The `token` is the **peer's** own authentication token, and is optional. When adding a peer, the server checks that it is reachable and that the token is valid — an unreachable or invalid peer is rejected and never stored.
 
 > Peers are kept in memory only and are not persisted across restarts. For two machines to reach each other, start each server with `--expose`.
+
+## Embed it in an Android app
+
+The Android release ships the server engine on its own as `toucan-camera-lib-android.zip`
+(`libtoucan_camera.so`), next to the Toucan app itself. Your app supplies the Android
+side — a foreground service and its notification — and drives the server through five
+native calls. See **[docs/android-embedding.md](docs/android-embedding.md)** for the
+contract, and note the one constraint: JNI short names pin the declaring class to
+`com.brickfilms.toucancameraserver.CameraServerService`, whatever your own package is.
 
 ## Contribute
 

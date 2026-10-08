@@ -5,7 +5,7 @@
 
 ## Project overview
 REST API to control cameras (DSLR and webcams) from multiple vendors and operating systems.
-The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token>` or `?token=`). It binds to `127.0.0.1` by default (loopback only); pass `--expose` to bind `0.0.0.0` (LAN). On Android it always binds `0.0.0.0`. `BIND_ADDR` overrides the bind address on any platform.
+The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token>` or `?token=`). It binds to `127.0.0.1` by default (loopback only); pass `--expose` to bind `0.0.0.0` (LAN). On Android the caller chooses (the `expose` argument of `startServer`), defaulting to LAN. `BIND_ADDR` overrides the bind address on any platform.
 
 ## Code style
 - Follow standard Rust conventions (`rustfmt`, `clippy`).
@@ -92,6 +92,8 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 - `LiveViewSenders` = `Arc<Mutex<HashMap<String, broadcast::Sender<Arc<Bytes>>>>>` — one sender per active device (keyed by opaque device ID).
 - Only one capture loop runs per device regardless of how many clients are connected. The loop starts when the first client subscribes and stops when the last one disconnects.
 - `EDS_ERR_OBJECT_NOTREADY` (0x0000A102) during frame capture is skipped (continue), not fatal.
+- **A stream is only closed when the camera is gone for good** — i.e. it no longer appears in its backend's `list_devices` (checked every ~2 s once polls have been missing for ~1.5 s), or the loop's sender was replaced/removed (explicit disconnect, reconnect). Latency, a stalled pipeline or repeated backend errors never end the stream, however long they last.
+- Placeholders (`static/assets/nosignal.jpg`, `endofstream.jpg`): "no signal" is shown **only before the first frame ever** (after a ~2 s warm-up grace); once a frame has arrived, a gap keeps re-sending the last real frame (heartbeat-paced, so late subscribers get it) and "no signal" is never shown again. "End of stream" is the terminal frame, sent only when the stream actually ends as above (composited onto a canvas matching the last frame's resolution), followed by the closing `--frame--` boundary.
 - The route checks `is_connected` via `spawn_blocking` **before** sending any HTTP headers — returns 409 if not connected.
 - Broadcast buffer capacity: 4 frames (drops old frames if clients are slow).
 - No frames are ever written to disk — everything is in-memory and streamed directly.
@@ -105,7 +107,10 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 
 ### HTTP layer
 - Framework: `axum` (not actix-web).
-- The server binds to `127.0.0.1` by default (loopback); the `--expose` flag binds `0.0.0.0` (LAN), and Android always does. `BIND_ADDR` overrides on any platform (highest precedence). See `resolve_bind_addr()` / `parse_args()` in `lib.rs`.
+- The server binds to `127.0.0.1` by default (loopback); the `--expose` flag binds `0.0.0.0` (LAN). `BIND_ADDR` overrides on any platform (highest precedence). See `resolve_bind_addr()` / `parse_args()` in `lib.rs`.
+- **`expose` is honoured on every platform, Android included** — the caller decides (`--expose`, or the `expose` argument of the `startServer` JNI call); only the *default* differs, `parse_args()` turning it on for Android. `resolve_bind_addr` keeps the `BIND_ADDR` override and delegates the mapping to `bind_addr_for`, which is unit-tested (env-free, so it cannot race the other tests).
+- **Binding is split from serving**: `bind_server(ServerConfig) -> BoundServer` builds the backends, the router and the listener, then `BoundServer::serve()` / `serve_with_shutdown()` runs it. The caller therefore learns the real `addr` before the first request — the requested port may be taken, in which case the OS picks one. `run_server()` (CLI) and the Android `startServer` JNI call are both thin wrappers over this.
+- `shutdown::set_backends()` re-arms the one-shot teardown latch, because Android starts and stops the server repeatedly inside one process and each stop must release the SDKs again.
 - Every route is wrapped by `auth::auth_middleware` (a `.layer()` on the whole router), so all endpoints — including `/`, `/health`, `/cameras`, and `/peers` — require the bearer token.
 - All routes must be registered explicitly; no catch-all wildcards unless intentional.
 - JSON is the response format for all non-binary endpoints.
@@ -181,12 +186,36 @@ DELETE /peers/{id}                   — remove a peer (204, or 404 if unknown)
 - Source: `src/backends/camera2_android/bridge.c` (NDK Camera2 + Media NDK) + `src/backends/camera2_android/mod.rs` (Rust actor over `std::sync::mpsc`, like the other native backends).
 - `backend_id()` is `"camera2-android"`. Compiled only for `target_os = "android"`, gated behind `backend-camera2-android`.
 - Build: `build.rs` compiles `bridge.c` with the NDK clang toolchain (needs `ANDROID_NDK_HOME`/`NDK_HOME`, API level 24+) and links `camera2ndk`, `mediandk`, `android`, `log`.
-- The crate is built as a `cdylib` loaded by the Kotlin `CameraServerService` via JNI. The `startServer` / `stopServer` / `setToken` entry points live in `lib.rs` (`android_jni` module).
-- On Android the HTTP server binds to `0.0.0.0` by default (LAN-accessible) instead of `127.0.0.1`; `BIND_ADDR` overrides. The pairing token is supplied from Kotlin via `setToken()` and can change while running.
+- The crate is built as a `cdylib` loaded by the Kotlin `CameraServerService` via JNI. The entry points live in `lib.rs` (`android_jni` module) and use the `jni` crate (Android-only dependency) — never hand-written `JNIEnv` vtable offsets.
+- On Android the bind address is chosen per start via `startServer(..., expose)`: `true` → `0.0.0.0` (other devices on the network can reach the API), `false` → `127.0.0.1` (only apps on the phone itself). `BIND_ADDR` still overrides. The **app always passes `expose = true`** — a phone server exists to be driven from another device, so the choice is not worth a control on screen; it stays in the API for embedders that want loopback only. The pairing token is supplied from Kotlin via `setToken()` and can change while running.
+
+#### JNI surface (`android_jni`)
+| Native method | Signature | Contract |
+|---|---|---|
+| `startServer` | `(port: Int, token: String, expose: Boolean) -> Int` | Returns the port **actually bound**, or `ERR_RUNTIME` (-1) / `ERR_BIND` (-2) / `ERR_PANIC` (-3). Blocks until the socket is bound, so Kotlin calls it off the main thread. Idempotent: returns the live port if already running. `port <= 0` → default 8040; empty `token` → the one left by `setToken`, else a random one (never an open server); `expose` → `0.0.0.0` vs `127.0.0.1`. **On a running server**: identical `port`/`expose` → untouched, live port returned (a service redelivery is harmless); different `token` → applied in place; different `port`/`expose` → **stopped and rebound**, since the bind address is fixed when the socket opens (connections dropped, camera sessions released). The comparison is against the *requested* port, not the bound one — otherwise a fallback port would rebind on every call. |
+| `stopServer` | `()` | Cancels the accept loop, runs `shutdown::run()` (releases the camera sessions) and waits up to 5 s for the server thread. Makes stop → start cycles work in one process. |
+| `isServerRunning` | `() -> Boolean` | The real state, not a flag Kotlin maintains. |
+| `serverStatusJson` | `() -> String` | JSON: `running`, `port`, `bind_address`, `expose`, `token`, `version`, `instance_id`, `uptime_seconds`, `backends`, `last_error`. Cheap (all in memory) so the UI can poll it; device enumeration stays on `GET /cameras`. |
+| `setToken` | `(token: String)` | Updates the pending token and the live one; effective at once on a running server. An **empty token is refused** (the current one is kept): `auth_middleware` compares the presented value to this one, so an empty one would let `?token=` through. Never logged — it is a credential. |
+
+- **Rules**: a JNI function must not let a panic unwind across the FFI boundary (that aborts the whole app), so every entry point wraps its body in `catch_unwind`. Globals are locked through `android_jni::lock`, which recovers from poisoning — there is no process restart to fall back on.
+- `@JvmStatic external fun` in the Kotlin `companion object` puts the native methods as `static` on the **outer** class, so the symbols are `Java_com_brickfilms_toucancameraserver_CameraServerService_<name>` with a `JClass` second argument. Verify with `javap -p` + `llvm-nm -D` on the built `.so` after touching either side.
+- **`com.brickfilms.toucancameraserver.CameraServerService` is frozen ABI.** JNI short names encode the package and class, and there is no `JNI_OnLoad`/`RegisterNatives` fallback, so renaming or moving that class breaks the `.so` symbols *and* every third-party app embedding `toucan-camera-lib-android.zip` (they must declare the natives under that exact FQN — see `docs/android-embedding.md`). Rename it only together with a deliberate migration.
+- The server is **never** started by calling `run_server()` on Android: `startServer` drives `bind_server` directly, so the bound port is reported back instead of being assumed.
+
+#### Android app (`android/`)
+- The CI publishes the `.so` on its own as `toucan-camera-lib-android.zip`, next to the app's `.aab`/`.apk`, for other apps to embed the server engine without this app; `docs/android-embedding.md` is their integration contract (symbols, status JSON, manifest). There is deliberately **no** library module / AAR: consumers reimplement the Android layer from `CameraServerService.kt`.
+- Gradle project (Compose, Material 3) whose `app/src/main/jniLibs/<abi>/libtoucan_camera.so` is the `cdylib` built by `cargo build --release --target aarch64-linux-android --features backend-camera2-android,backend-remote` (git-ignored — rebuild and copy it after any Rust change).
+- `CameraServerService.kt` owns the native server and is the single source of truth: it publishes a `StateFlow<ServerState>` fed by `serverStatusJson()`. The UI renders that state — it must never assume the server is up, nor which port it got.
+- **The service API must stay callable from Java** (the server is embedded by other apps, not only by this one): keep `@JvmStatic` on every entry point (`start`, `stop`, `refresh`, `state`, `errorMessage`), `@JvmOverloads` wherever there are default arguments (Kotlin defaults are invisible to Java), results on the `ServerCallback` SAM interface rather than a `suspend fun` or a bare Kotlin function type, and `NotificationText` on the class rather than the companion (so Java writes `CameraServerService.NotificationText`, not `...Companion.NotificationText`). Callbacks fire once, on the main thread. A Java caller cannot collect the `StateFlow`, so `refresh()` has to stay cheap and return the state. After touching this surface, check it with `javap -p` on the compiled class — and ideally by compiling a throwaway Java caller.
+- `ServerState.kt` mirrors the status JSON (keep both in sync); `ServerUiState.from()` maps it to the Compose state, adding the `Starting` / `Error` phases the native side does not track.
+- `MainActivity` supplies the reachable LAN address (from the Wi-Fi interface — the server binds `0.0.0.0`, which is not displayable) and the port comes from the native status.
+- **Permissions are requested one by one, never gated on each other.** `CAMERA` is required, `POST_NOTIFICATIONS` (Android 13+) is not — but gating the request on the camera being missing meant notifications were never asked for again once the camera was granted, and the foreground notification then silently never appears (`startForeground` still succeeds). Check with `adb shell dumpsys package <pkg> | grep -A5 "runtime permissions:"`.
+- **Notification wording is customizable**, never hardcoded: the defaults live in `res/values/strings.xml` (`notification_title`, `notification_text_starting`, `notification_text_running` with `%1$d` = the bound port, plus the channel name/description) and a host app overrides any of them per run with `CameraServerService.start(ctx, token, port, NotificationText(title = ..., running = ...))`. A null field falls back to its resource. Calling `start()` again on a running server only refreshes the notification (the native start is idempotent), which is how the wording is changed live.
 
 ### gphoto2 backend (libgphoto2)
 - Source: `src/backends/gphoto2/mod.rs`. Pure Rust over the `gphoto2` crate (libgphoto2 PTP/USB cameras). `backend_id()` is `"gphoto2"`. Compiled only for `target_os = "linux"` / `"macos"`, gated behind `backend-gphoto2`.
-- **System dependency**: `libgphoto2` must be discoverable via `pkg-config` (`brew install libgphoto2 pkg-config` / `apt install libgphoto2-dev pkg-config`). Linked dynamically and **not bundled** — end users need libgphoto2 installed at runtime (like libusb on Linux). No actor thread: the `gphoto2` crate's `Camera`/`Context` are `Send + Sync` and serialize per-camera calls internally; open handles live in an `Arc<Mutex<HashMap>>`.
+- **System dependency**: `libgphoto2` must be discoverable via `pkg-config` (`brew install libgphoto2 pkg-config` / `apt install libgphoto2-dev pkg-config`). The release pipeline instead compiles it from a pinned ref (`scripts/build-libgphoto2.sh`), and on macOS its own deps too — libltdl, libusb, libexif via `scripts/build-macos-deps.sh`, once per arch of the universal binary. Those deps used to come from Homebrew, including an Intel Homebrew at `/usr/local` under Rosetta for the x86_64 slice; Homebrew 7.0.0 (2026-09) moved macOS x86_64 to Tier 3 (no Intel bottles, installer refuses on x86_64), which killed that path for good. Homebrew is still used on macOS for the **build tools** (autoconf/automake/libtool/pkg-config/gettext), always from the arm64 prefix — `build-libgphoto2.sh` hardcodes `/opt/homebrew` because an x86_64 process can exec those arm64 tools and the aclocal macros are arch-independent. `GP_LIBLTDL` has no `.pc` file and would otherwise autodetect `brew --prefix` (the wrong arch for the Intel slice), so the workflow passes `LTDLINCL` / `LIBLTDL` explicitly. Linked dynamically and **not bundled** — end users need libgphoto2 installed at runtime (like libusb on Linux). No actor thread: the `gphoto2` crate's `Camera`/`Context` are `Send + Sync` and serialize per-camera calls internally; open handles live in an `Arc<Mutex<HashMap>>`.
 - **Coexistence with the Canon EDSDK backend**: when `backend-canon` is also compiled in, it owns Canon bodies (native EVF live view + zoom/pan/tilt, full property set). The gphoto2 backend hides Canon models via `owned_by_other_backend(model)` = `cfg!(feature = "backend-canon") && model.to_lowercase().starts_with("canon")`, filtering `list_devices` and guarding `connect`, so the same camera never appears under both backends nor has the two drivers contend for USB. Without `backend-canon`, gphoto2 handles Canon too.
 - **Locale**: libgphoto2 localizes choice labels via gettext (e.g. French "Automatique"/"pose longue", decimal "0,5"). `GPhoto2Backend::new()` sets `LC_ALL=C` before the first gphoto2 call so labels and numeric formatting are stable English/ASCII (and option `value`s round-trip consistently to `set_choice`). Value classification is still locale-independent as defence (see below).
 - **Vendor config-key names**: cameras name the same logical parameter differently (Nikon's aperture is `f-number`, Canon's is `aperture`). `CONFIG_KEYS` is the single source of truth mapping every known key → `ParameterType`; reads use `param_type_for(key)`, writes probe **every** key of the type (`config_keys_for`) against each widget kind (`widget_for::<W>`). Never write a single hardcoded key — that silently breaks writes on the vendors using the other spelling.
@@ -217,7 +246,8 @@ DELETE /peers/{id}                   — remove a peer (204, or 404 if unknown)
 ```
 src/
   main.rs             — binary entry point (macOS CFRunLoop pump; #[tokio::main] elsewhere)
-  lib.rs              — run_server, build_backends, build_router, Android JNI entry points
+  lib.rs              — bind_server/BoundServer, run_server, build_backends,
+                        build_router, Android JNI entry points (android_jni)
   auth.rs             — bearer-token auth middleware (Authorization header or ?token=)
   camera/
     mod.rs            — CameraBackend trait, DeviceId, DeviceInfo, CameraError,
@@ -250,6 +280,12 @@ src/
     peers.rs          — /peers management handlers (feature backend-remote)
 static/
   index.html          — web UI source (embedded in binary at compile time)
+android/              — Android app (Gradle, Compose) wrapping the cdylib
+  app/src/main/java/com/brickfilms/toucancameraserver/
+    CameraServerService.kt — foreground service + JNI surface + ServerState flow
+    ServerState.kt         — Kotlin mirror of serverStatusJson()
+    MainActivity.kt        — Compose host, LAN address, token persistence
+    ui/server/             — ServerUiState + screen and components
 build.rs              — SDK linking + DLL copy based on active features and target OS
 ```
 
