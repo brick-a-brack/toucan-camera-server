@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.view.OrientationEventListener
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -129,6 +130,28 @@ class CameraServerService : Service() {
         /** Replaces the pairing token; effective immediately on a running server. */
         @JvmStatic external fun setToken(token: String)
 
+        /**
+         * Reports how the device is currently held, so the cameras hand out
+         * upright live-view frames and stills.
+         *
+         * [degrees] is the raw 0-359 value of [OrientationEventListener] — **not**
+         * a `Surface.ROTATION_*` constant, whose sign is the opposite — or
+         * [OrientationEventListener.ORIENTATION_UNKNOWN] (-1) when the device is
+         * flat and has no meaningful "up", which disables rotation.
+         *
+         * The native side cannot read this itself: the NDK exposes no device
+         * orientation, so this call is the only way it ever learns about one. This
+         * service already feeds it from the accelerometer while it runs, so a host
+         * app normally needs nothing; call it directly only to drive the
+         * orientation from your own source (a locked activity orientation, a
+         * gimbal, a remote UI).
+         *
+         * Cheap — one atomic store — and safe to call on every sensor event. Each
+         * camera then exposes an `rotate_auto` parameter (on by default) a client
+         * can turn off to get the sensor's native framing back.
+         */
+        @JvmStatic external fun setDeviceRotation(degrees: Int)
+
         // -------------------------------------------------------------------
         // Observable state
         // -------------------------------------------------------------------
@@ -227,6 +250,27 @@ class CameraServerService : Service() {
             context.stopService(Intent(context, CameraServerService::class.java))
         }
 
+        /**
+         * Rounds a raw accelerometer angle to 0, 90, 180 or 270, keeping [current]
+         * until the device is a good 15 degrees past the boundary.
+         *
+         * Without that hysteresis a phone held near 45 degrees would flip the whole
+         * live view back and forth on sensor noise alone.
+         */
+        @JvmStatic
+        fun quantizeOrientation(orientation: Int, current: Int): Int {
+            if (orientation == OrientationEventListener.ORIENTATION_UNKNOWN) {
+                return OrientationEventListener.ORIENTATION_UNKNOWN
+            }
+            val degrees = ((orientation % 360) + 360) % 360
+            val candidate = (degrees + 45) / 90 * 90 % 360
+            if (current == OrientationEventListener.ORIENTATION_UNKNOWN) return candidate
+            if (candidate == current) return current
+            // Angular distance to the quarter turn currently in force.
+            val delta = Math.abs(degrees - current).let { if (it > 180) 360 - it else it }
+            return if (delta > 60) candidate else current
+        }
+
         /** Fallback wording when the native side reported no message of its own. */
         @JvmStatic
         fun errorMessage(code: Int): String = when (code) {
@@ -237,9 +281,48 @@ class CameraServerService : Service() {
         }
     }
 
+    /**
+     * Feeds the native side the device orientation, quantized to a quarter turn.
+     *
+     * Deliberately driven by the accelerometer rather than `Display.rotation`: a
+     * phone acting as a camera server is usually locked to portrait (and its
+     * activity often not even in the foreground), so `Display.rotation` would
+     * never move while the phone physically does.
+     */
+    private var orientationListener: OrientationEventListener? = null
+
+    /** Last quarter turn reported, so unchanged readings cost nothing. */
+    private var reportedOrientation = OrientationEventListener.ORIENTATION_UNKNOWN
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        startWatchingOrientation()
+    }
+
+    private fun startWatchingOrientation() {
+        if (orientationListener != null) return
+        val listener = object : OrientationEventListener(this) {
+            override fun onOrientationChanged(orientation: Int) {
+                val next = quantizeOrientation(orientation, reportedOrientation)
+                if (next == reportedOrientation) return
+                reportedOrientation = next
+                setDeviceRotation(next)
+            }
+        }
+        // False when the device has no accelerometer: the orientation then stays
+        // unknown, which simply means no rotation is applied.
+        if (listener.canDetectOrientation()) {
+            listener.enable()
+            orientationListener = listener
+        }
+    }
+
+    private fun stopWatchingOrientation() {
+        orientationListener?.disable()
+        orientationListener = null
+        reportedOrientation = OrientationEventListener.ORIENTATION_UNKNOWN
+        setDeviceRotation(OrientationEventListener.ORIENTATION_UNKNOWN)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -296,6 +379,7 @@ class CameraServerService : Service() {
         if (_state.value.phase != ServerPhase.Failed) {
             refresh()
         }
+        stopWatchingOrientation()
         resolve(pendingStop, _state.value)
         scope.cancel()
         super.onDestroy()

@@ -10,9 +10,15 @@ fn main() {
     println!("cargo:rerun-if-changed=src/backends/camera2_android/bridge.h");
     println!("cargo:rerun-if-changed=src/backends/sony/bridge.cpp");
     println!("cargo:rerun-if-changed=src/backends/sony/bridge.h");
+    println!("cargo:rerun-if-changed=src/camera/jpeg_rotate.c");
+    println!("cargo:rerun-if-changed=src/camera/jpeg_rotate.h");
     println!("cargo:rerun-if-changed=logo/logo.ico");
 
     let target = std::env::var("TARGET").unwrap_or_default();
+
+    if std::env::var_os("CARGO_FEATURE_JPEG_ROTATE").is_some() {
+        build_jpeg_rotate();
+    }
 
     // Windows resources (icon) — only when targeting Windows, not when cross-compiling
     // to another target (e.g. Android) from a Windows host.
@@ -1176,4 +1182,55 @@ fn patch_rpath(lib: &Path, rpath: &str) {
         .args(["--add-rpath", rpath])
         .arg(lib)
         .status();
+}
+
+/// Compiles the lossless JPEG rotation shim against mozjpeg's headers.
+///
+/// It is C rather than more Rust FFI because libjpeg reports a fatal error by
+/// calling `error_exit`, which must not return — the only legal way out is
+/// `longjmp`, which Rust cannot do. See the comment at the top of
+/// `src/camera/jpeg_rotate.c`.
+///
+/// `mozjpeg-sys` declares `links = "jpeg"`, so Cargo hands us its include
+/// directories (the generated `jconfig.h` and the vendored sources) in
+/// `DEP_JPEG_INCLUDE`, already joined with the platform path separator.
+fn build_jpeg_rotate() {
+    let includes = std::env::var_os("DEP_JPEG_INCLUDE")
+        .expect("DEP_JPEG_INCLUDE not set — mozjpeg-sys should have emitted it");
+
+    let mut build = cc::Build::new();
+    build.file("src/camera/jpeg_rotate.c").include("src/camera");
+    let include_dirs: Vec<_> = std::env::split_paths(&includes).collect();
+    for dir in &include_dirs {
+        build.include(dir);
+    }
+    build.compile("tc_jpeg_rotate");
+
+    // Link order: a static library only resolves symbols for the objects that
+    // come before it, and Cargo puts a dependency's native library ahead of the
+    // current crate's. Our shim therefore needs mozjpeg named again *after* it,
+    // or every jpeg_* call it makes stays undefined. Linking the same archive
+    // twice is harmless.
+    //
+    // `mozjpeg-sys` names it `mozjpeg<abi>` in its OUT_DIR, and publishes the abi
+    // as DEP_JPEG_LIB_VERSION; the OUT_DIR is the parent of the include directory
+    // it generated `jconfig.h` into.
+    let abi = std::env::var("DEP_JPEG_LIB_VERSION").unwrap_or_else(|_| "62".to_string());
+    let Some(out_dir) = include_dirs.first().and_then(|p| p.parent()) else {
+        return;
+    };
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=mozjpeg{abi}");
+
+    // The SIMD kernels live in a second archive, which mozjpeg's own objects
+    // call into — so it has to come after them, same reason as above. It only
+    // exists where the assembler SIMD needs was available (NEON on ARM; x86
+    // wants nasm and silently goes scalar without it), hence the lookup.
+    let simd = format!("mozjpegsimd{abi}");
+    let exists = [format!("lib{simd}.a"), format!("{simd}.lib")]
+        .iter()
+        .any(|name| out_dir.join(name).exists());
+    if exists {
+        println!("cargo:rustc-link-lib=static={simd}");
+    }
 }

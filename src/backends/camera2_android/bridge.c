@@ -20,6 +20,10 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
+// Defined further down, next to the preview capture path.
+static uint8_t *yuv_to_rgb(AImage *image, int32_t rotation,
+                           int32_t *out_w, int32_t *out_h, size_t *out_size);
+
 // ---------------------------------------------------------------------------
 // Session state
 // ---------------------------------------------------------------------------
@@ -55,6 +59,14 @@ typedef struct {
     int32_t                      photo_ready;
 
     int32_t                      disconnected;
+
+    // Orientation. sensor_orientation / front_facing come from the static
+    // characteristics and never change; pending_rotation is the clockwise angle
+    // the in-flight still capture asked for, read back by on_photo_available to
+    // straighten a YUV fallback frame.
+    int32_t                      sensor_orientation;
+    int32_t                      front_facing;
+    int32_t                      pending_rotation;
 
     // Session ready synchronisation
     pthread_mutex_t              sess_mutex;
@@ -157,44 +169,17 @@ static void on_photo_available(void *ctx, AImageReader *reader) {
             }
         }
     } else {
-        // YUV_420_888: convert to packed RGB24
-        uint8_t *y_data = NULL, *u_data = NULL, *v_data = NULL;
-        int y_len = 0, u_len = 0, v_len = 0;
-        int32_t y_row = 0, u_row = 0, v_row = 0;
-        int32_t u_pix = 0, v_pix = 0;
-
-        AImage_getPlaneData(image, 0, &y_data, &y_len);
-        AImage_getPlaneData(image, 1, &u_data, &u_len);
-        AImage_getPlaneData(image, 2, &v_data, &v_len);
-        AImage_getPlaneRowStride(image, 0, &y_row);
-        AImage_getPlaneRowStride(image, 1, &u_row);
-        AImage_getPlaneRowStride(image, 2, &v_row);
-        AImage_getPlanePixelStride(image, 1, &u_pix);
-        AImage_getPlanePixelStride(image, 2, &v_pix);
-
-        if (y_data && u_data && v_data && width > 0 && height > 0) {
-            size_t rgb_size = (size_t)(width * height * 3);
-            uint8_t *rgb = (uint8_t *)malloc(rgb_size);
-            if (rgb) {
-                for (int row = 0; row < height; row++) {
-                    for (int col = 0; col < width; col++) {
-                        int y_val = y_data[row * y_row + col] & 0xFF;
-                        int u_val = u_data[(row / 2) * u_row + (col / 2) * u_pix] & 0xFF;
-                        int v_val = v_data[(row / 2) * v_row + (col / 2) * v_pix] & 0xFF;
-
-                        int r = (int)(y_val + 1.402f * (v_val - 128));
-                        int g = (int)(y_val - 0.344136f * (u_val - 128) - 0.714136f * (v_val - 128));
-                        int b = (int)(y_val + 1.772f * (u_val - 128));
-
-                        int idx = (row * width + col) * 3;
-                        rgb[idx]     = (uint8_t)(r < 0 ? 0 : r > 255 ? 255 : r);
-                        rgb[idx + 1] = (uint8_t)(g < 0 ? 0 : g > 255 ? 255 : g);
-                        rgb[idx + 2] = (uint8_t)(b < 0 ? 0 : b > 255 ? 255 : b);
-                    }
-                }
-                s->photo_data   = rgb;
-                s->photo_size   = rgb_size;
-            }
+        // YUV_420_888 fallback (no JPEG stream on this device): convert to packed
+        // RGB24 and straighten it in the same pass, since the HAL's
+        // JPEG_ORIENTATION never applies to a YUV output.
+        size_t rgb_size = 0;
+        int32_t rgb_w = 0, rgb_h = 0;
+        uint8_t *rgb = yuv_to_rgb(image, s->pending_rotation, &rgb_w, &rgb_h, &rgb_size);
+        if (rgb) {
+            s->photo_data   = rgb;
+            s->photo_size   = rgb_size;
+            s->photo_width  = rgb_w;
+            s->photo_height = rgb_h;
         }
     }
 
@@ -330,6 +315,27 @@ void *ac_open_session(const char *camera_id) {
     if (ACameraManager_getCameraCharacteristics(s->manager, camera_id, &s->chars) != ACAMERA_OK) {
         LOGE("getCameraCharacteristics failed for %s", camera_id);
         goto fail;
+    }
+
+    // Orientation characteristics: the sensor's fixed mounting angle and which
+    // way the lens points. Both are static, so they are read once here and the
+    // per-frame angle is computed from them plus the device orientation the host
+    // app reports (see src/camera/rotation.rs).
+    {
+        ACameraMetadata_const_entry entry = {0};
+        if (ACameraMetadata_getConstEntry(
+                s->chars, ACAMERA_SENSOR_ORIENTATION, &entry) == ACAMERA_OK
+            && entry.count >= 1) {
+            s->sensor_orientation = entry.data.i32[0];
+        }
+        entry = (ACameraMetadata_const_entry){0};
+        if (ACameraMetadata_getConstEntry(
+                s->chars, ACAMERA_LENS_FACING, &entry) == ACAMERA_OK
+            && entry.count >= 1) {
+            s->front_facing = (entry.data.u8[0] == ACAMERA_LENS_FACING_FRONT);
+        }
+        LOGI("Sensor orientation: %d deg, %s facing",
+             s->sensor_orientation, s->front_facing ? "front" : "back/external");
     }
 
     // Open camera device — synchronous in the NDK C API.
@@ -469,12 +475,40 @@ void ac_close_session(void *handle) {
 // YUV_420_888 → packed RGB24 helper
 // ---------------------------------------------------------------------------
 
-static uint8_t *yuv_to_rgb(AImage *image, int32_t *out_w, int32_t *out_h,
+// Byte offset, in the destination buffer, of the pixel read at (row, col) of a
+// `width` x `height` source, for a clockwise rotation of `rotation` degrees.
+//
+// This is why rotating the live view costs nothing: the YUV -> RGB pass has to
+// write every pixel anyway, and all that changes is the address it writes to.
+static inline size_t rotated_index(int32_t rotation,
+                                   int32_t row, int32_t col,
+                                   int32_t width, int32_t height) {
+    switch (rotation) {
+        case 90:  return (size_t)((int64_t)col * height + (height - 1 - row)) * 3;
+        case 180: return (size_t)((int64_t)(height - 1 - row) * width + (width - 1 - col)) * 3;
+        case 270: return (size_t)((int64_t)(width - 1 - col) * height + row) * 3;
+        default:  return (size_t)((int64_t)row * width + col) * 3;
+    }
+}
+
+// Converts a YUV_420_888 image to packed RGB24, turning it clockwise by
+// `rotation` degrees (0, 90, 180 or 270) on the way. *out_w / *out_h report the
+// dimensions **after** rotation, so a quarter turn swaps them.
+static uint8_t *yuv_to_rgb(AImage *image, int32_t rotation,
+                             int32_t *out_w, int32_t *out_h,
                              size_t *out_size) {
     int32_t width = 0, height = 0;
     AImage_getWidth(image, &width);
     AImage_getHeight(image, &height);
-    *out_w = width; *out_h = height;
+
+    if (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270)
+        rotation = 0;
+
+    if (rotation == 90 || rotation == 270) {
+        *out_w = height; *out_h = width;
+    } else {
+        *out_w = width; *out_h = height;
+    }
 
     uint8_t *y_data = NULL, *u_data = NULL, *v_data = NULL;
     int y_len = 0, u_len = 0, v_len = 0;
@@ -506,7 +540,7 @@ static uint8_t *yuv_to_rgb(AImage *image, int32_t *out_w, int32_t *out_h,
             int g = (int)(y_val - 0.344136f * (u_val - 128) - 0.714136f * (v_val - 128));
             int b = (int)(y_val + 1.772f * (u_val - 128));
 
-            int idx = (row * width + col) * 3;
+            size_t idx = rotated_index(rotation, row, col, width, height);
             rgb[idx]     = (uint8_t)(r < 0 ? 0 : r > 255 ? 255 : r);
             rgb[idx + 1] = (uint8_t)(g < 0 ? 0 : g > 255 ? 255 : g);
             rgb[idx + 2] = (uint8_t)(b < 0 ? 0 : b > 255 ? 255 : b);
@@ -516,7 +550,17 @@ static uint8_t *yuv_to_rgb(AImage *image, int32_t *out_w, int32_t *out_h,
     return rgb;
 }
 
-int ac_capture_frame(void *handle,
+int32_t ac_sensor_orientation(void *handle) {
+    AcSession *s = (AcSession *)handle;
+    return s ? s->sensor_orientation : 0;
+}
+
+int32_t ac_front_facing(void *handle) {
+    AcSession *s = (AcSession *)handle;
+    return s ? s->front_facing : 0;
+}
+
+int ac_capture_frame(void *handle, int32_t rotation,
                      uint8_t **out_data, size_t *out_size,
                      int32_t *out_width, int32_t *out_height) {
     AcSession *s = (AcSession *)handle;
@@ -537,7 +581,7 @@ int ac_capture_frame(void *handle,
 
     size_t rgb_size = 0;
     int32_t w = 0, h = 0;
-    uint8_t *rgb = yuv_to_rgb(image, &w, &h, &rgb_size);
+    uint8_t *rgb = yuv_to_rgb(image, rotation, &w, &h, &rgb_size);
     AImage_delete(image);
 
     if (!rgb) return -1;
@@ -700,7 +744,7 @@ static int has_jpeg_format(ACameraMetadata *chars) {
     return 0;
 }
 
-int ac_capture_photo(void *handle,
+int ac_capture_photo(void *handle, int32_t rotation,
                      uint8_t **out_data, size_t *out_size,
                      int32_t *out_width, int32_t *out_height,
                      int32_t *out_is_jpeg) {
@@ -762,6 +806,18 @@ int ac_capture_photo(void *handle,
         goto restore;
     ACaptureRequest_addTarget(jpeg_req, jpeg_target);
     apply_tracked_settings(s, jpeg_req, /*is_preview=*/0);
+
+    // Ask the HAL to straighten the still. Free when it obliges by rotating the
+    // pixels — but the spec also lets it merely write the EXIF orientation tag,
+    // which the Rust side detects and corrects losslessly. For the YUV fallback
+    // the tag means nothing, so on_photo_available turns the buffer instead.
+    if (rotation != 0 && rotation != 90 && rotation != 180 && rotation != 270)
+        rotation = 0;
+    s->pending_rotation = rotation;
+    if (has_jpeg) {
+        int32_t jpeg_orientation = rotation;
+        ACaptureRequest_setEntry_i32(jpeg_req, ACAMERA_JPEG_ORIENTATION, 1, &jpeg_orientation);
+    }
 
     pthread_mutex_lock(&s->photo_mutex);
     free(s->photo_data); s->photo_data = NULL; s->photo_size = 0; s->photo_ready = 0;

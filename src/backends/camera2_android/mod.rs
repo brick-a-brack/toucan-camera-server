@@ -4,6 +4,7 @@ use std::io::Cursor;
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::mpsc;
 
+use crate::camera::rotation;
 use crate::camera::{
     CameraBackend, CameraError, CameraParameter, DeviceId, DeviceInfo,
     ParameterOption, ParameterType,
@@ -56,8 +57,11 @@ extern "C" {
     fn ac_list_devices(out: *mut AcDeviceInfo, capacity: c_int) -> c_int;
     fn ac_open_session(camera_id: *const c_char) -> *mut c_void;
     fn ac_close_session(handle: *mut c_void);
+    fn ac_sensor_orientation(handle: *mut c_void) -> i32;
+    fn ac_front_facing(handle: *mut c_void) -> i32;
     fn ac_capture_frame(
         handle:     *mut c_void,
+        rotation:   i32,
         out_data:   *mut *mut u8,
         out_size:   *mut usize,
         out_width:  *mut i32,
@@ -65,6 +69,7 @@ extern "C" {
     ) -> c_int;
     fn ac_capture_photo(
         handle:     *mut c_void,
+        rotation:   i32,
         out_data:   *mut *mut u8,
         out_size:   *mut usize,
         out_width:  *mut i32,
@@ -250,12 +255,37 @@ impl CameraBackend for Camera2AndroidBackend {
 // Actor thread
 // ---------------------------------------------------------------------------
 
-struct SessionHandle(*mut c_void);
+struct SessionHandle {
+    handle: *mut c_void,
+    /// Straighten live-view frames and stills for the device's current
+    /// orientation. On by default: a phone's camera turns with the phone, so an
+    /// upright image is what a client expects — the toggle exists for callers
+    /// that would rather receive the sensor's native framing.
+    rotate_auto: bool,
+}
 unsafe impl Send for SessionHandle {}
+
+impl SessionHandle {
+    /// Clockwise rotation to apply to this device's output, in degrees.
+    ///
+    /// Zero whenever the correction is off, or while no host has reported a device
+    /// orientation (`rotation::ORIENTATION_UNKNOWN`) — a phone lying flat has no
+    /// meaningful "up".
+    fn rotation(&self) -> i32 {
+        if !self.rotate_auto {
+            return 0;
+        }
+        rotation::jpeg_orientation(
+            unsafe { ac_sensor_orientation(self.handle) },
+            rotation::device_orientation(),
+            unsafe { ac_front_facing(self.handle) } != 0,
+        )
+    }
+}
 
 impl Drop for SessionHandle {
     fn drop(&mut self) {
-        unsafe { ac_close_session(self.0) };
+        unsafe { ac_close_session(self.handle) };
     }
 }
 
@@ -280,7 +310,8 @@ fn actor_thread(rx: mpsc::Receiver<Command>) {
                 let _ = reply.send(get_parameters_impl(&device_id, &sessions));
             }
             Ok(Command::SetParameter { device_id, param_type, value, reply }) => {
-                let _ = reply.send(set_parameter_impl(&device_id, param_type, &value, &sessions));
+                let _ =
+                    reply.send(set_parameter_impl(&device_id, param_type, &value, &mut sessions));
             }
             Ok(Command::GetLiveViewFrame { device_id, reply }) => {
                 let _ = reply.send(capture_frame_impl(&device_id, &sessions));
@@ -340,7 +371,10 @@ fn connect_impl(
         return Err(CameraError::DeviceNotFound(device_id.to_string()));
     }
 
-    sessions.insert(device_id.to_string(), SessionHandle(handle));
+    sessions.insert(
+        device_id.to_string(),
+        SessionHandle { handle, rotate_auto: true },
+    );
     Ok(())
 }
 
@@ -358,7 +392,8 @@ fn get_parameters_impl(
     device_id: &str,
     sessions: &HashMap<String, SessionHandle>,
 ) -> Result<Vec<CameraParameter>, CameraError> {
-    let handle = sessions.get(device_id).ok_or(CameraError::NotConnected)?.0;
+    let session = sessions.get(device_id).ok_or(CameraError::NotConnected)?;
+    let handle = session.handle;
 
     let mut buf: Vec<AcParamDesc> = (0..AC_MAX_PARAMS)
         .map(|_| unsafe { std::mem::zeroed() })
@@ -455,6 +490,14 @@ fn get_parameters_impl(
         }
     }
 
+    // Auto-rotate is ours, not the camera's: no Camera2 property backs it, so it
+    // is appended here instead of coming back from the bridge.
+    params.push(CameraParameter::Boolean {
+        param_type: ParameterType::RotateAuto,
+        current:    session.rotate_auto,
+        disabled:   false,
+    });
+
     Ok(params)
 }
 
@@ -462,17 +505,25 @@ fn set_parameter_impl(
     device_id: &str,
     param_type: ParameterType,
     value: &str,
-    sessions: &HashMap<String, SessionHandle>,
+    sessions: &mut HashMap<String, SessionHandle>,
 ) -> Result<(), CameraError> {
-    let handle = sessions.get(device_id).ok_or(CameraError::NotConnected)?.0;
-    let c_kind = param_type_to_c_kind(param_type).ok_or(CameraError::NotSupported)?;
-    let c_kind = CString::new(c_kind).map_err(|_| CameraError::NotSupported)?;
+    let session = sessions.get_mut(device_id).ok_or(CameraError::NotConnected)?;
 
     let int_val: i32 = match value {
         "true"  => 1,
         "false" => 0,
         v       => v.parse().map_err(|_| CameraError::NotSupported)?,
     };
+
+    // Handled entirely on this side — the bridge knows nothing about it.
+    if param_type == ParameterType::RotateAuto {
+        session.rotate_auto = int_val != 0;
+        return Ok(());
+    }
+
+    let handle = session.handle;
+    let c_kind = param_type_to_c_kind(param_type).ok_or(CameraError::NotSupported)?;
+    let c_kind = CString::new(c_kind).map_err(|_| CameraError::NotSupported)?;
 
     let ret = unsafe { ac_set_parameter(handle, c_kind.as_ptr(), int_val) };
     if ret != 0 { Err(CameraError::NotSupported) } else { Ok(()) }
@@ -482,14 +533,25 @@ fn capture_frame_impl(
     device_id: &str,
     sessions: &HashMap<String, SessionHandle>,
 ) -> Result<Vec<u8>, CameraError> {
-    let handle = sessions.get(device_id).ok_or(CameraError::NotConnected)?.0;
+    let session = sessions.get(device_id).ok_or(CameraError::NotConnected)?;
 
     let mut data_ptr: *mut u8 = std::ptr::null_mut();
     let mut size:   usize = 0;
     let mut width:  i32   = 0;
     let mut height: i32   = 0;
 
-    let ret = unsafe { ac_capture_frame(handle, &mut data_ptr, &mut size, &mut width, &mut height) };
+    // The rotation is folded into the YUV -> RGB conversion, so an upright frame
+    // costs exactly what a sideways one did.
+    let ret = unsafe {
+        ac_capture_frame(
+            session.handle,
+            session.rotation(),
+            &mut data_ptr,
+            &mut size,
+            &mut width,
+            &mut height,
+        )
+    };
     if ret != 0 || data_ptr.is_null() {
         // Reuse the Canon "not ready" code so the capture loop skips this frame
         // instead of breaking the stream (frames may be temporarily unavailable).
@@ -506,7 +568,8 @@ fn capture_photo_impl(
     device_id: &str,
     sessions: &HashMap<String, SessionHandle>,
 ) -> Result<Vec<u8>, CameraError> {
-    let handle = sessions.get(device_id).ok_or(CameraError::NotConnected)?.0;
+    let session = sessions.get(device_id).ok_or(CameraError::NotConnected)?;
+    let requested = session.rotation();
 
     let mut data_ptr: *mut u8 = std::ptr::null_mut();
     let mut size:    usize = 0;
@@ -515,7 +578,15 @@ fn capture_photo_impl(
     let mut is_jpeg: i32   = 0;
 
     let ret = unsafe {
-        ac_capture_photo(handle, &mut data_ptr, &mut size, &mut width, &mut height, &mut is_jpeg)
+        ac_capture_photo(
+            session.handle,
+            requested,
+            &mut data_ptr,
+            &mut size,
+            &mut width,
+            &mut height,
+            &mut is_jpeg,
+        )
     };
     if ret != 0 || data_ptr.is_null() {
         return Err(CameraError::SdkError(0xFFFF_FFFD));
@@ -524,11 +595,63 @@ fn capture_photo_impl(
     let bytes = unsafe { std::slice::from_raw_parts(data_ptr, size).to_vec() };
     unsafe { ac_free_frame(data_ptr) };
 
-    if is_jpeg != 0 {
-        Ok(bytes)
-    } else {
-        rgb24_to_jpeg(bytes, width as u32, height as u32)
+    if is_jpeg == 0 {
+        // RGB24 fallback: the bridge already turned the buffer, and `width` /
+        // `height` describe it after rotation.
+        return rgb24_to_jpeg(bytes, width as u32, height as u32);
     }
+
+    // The HAL was asked for `requested` degrees through ACAMERA_JPEG_ORIENTATION,
+    // which it may have honoured by turning the pixels (nothing left to do) or by
+    // merely writing an EXIF tag (we finish the job without re-encoding).
+    let residual = rotation::residual_rotation(&bytes, requested, width, height);
+    log_info(&format!(
+        "photo {} bytes, asked the HAL for {requested} deg, {residual} deg left to do",
+        bytes.len()
+    ));
+    if residual == 0 {
+        return Ok(bytes);
+    }
+    let started = std::time::Instant::now();
+    match rotation::rotate_jpeg(&bytes, residual) {
+        Ok((rotated, path)) => {
+            log_info(&format!(
+                "{residual} deg rotation via {path:?} took {} ms",
+                started.elapsed().as_millis()
+            ));
+            Ok(rotated)
+        }
+        Err(e) => {
+            // Better a sideways photo than no photo: the EXIF tag the HAL wrote
+            // still describes it correctly for viewers that honour it.
+            log_error(&format!("rotating by {residual} deg failed: {e}"));
+            Ok(bytes)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// logcat
+// ---------------------------------------------------------------------------
+
+extern "C" {
+    fn __android_log_write(prio: c_int, tag: *const u8, text: *const u8) -> c_int;
+}
+
+/// Writes to logcat. stderr goes nowhere on Android, and this backend only ever
+/// builds there.
+fn log_at(priority: c_int, msg: &str) {
+    let mut text = format!("camera2-android: {msg}");
+    text.push('\0');
+    unsafe { __android_log_write(priority, c"ToucanCamera".as_ptr().cast(), text.as_ptr()) };
+}
+
+fn log_info(msg: &str) {
+    log_at(4 /* INFO */, msg);
+}
+
+fn log_error(msg: &str) {
+    log_at(6 /* ERROR */, msg);
 }
 
 // ---------------------------------------------------------------------------

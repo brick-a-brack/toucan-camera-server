@@ -26,6 +26,7 @@ Java_com_brickfilms_toucancameraserver_CameraServerService_stopServer
 Java_com_brickfilms_toucancameraserver_CameraServerService_isServerRunning
 Java_com_brickfilms_toucancameraserver_CameraServerService_serverStatusJson
 Java_com_brickfilms_toucancameraserver_CameraServerService_setToken
+Java_com_brickfilms_toucancameraserver_CameraServerService_setDeviceRotation
 ```
 
 There is no `JNI_OnLoad` / `RegisterNatives` and no neutral C API, so your
@@ -73,6 +74,7 @@ class CameraServerService : android.app.Service() {
         @JvmStatic external fun isServerRunning(): Boolean
         @JvmStatic external fun serverStatusJson(): String
         @JvmStatic external fun setToken(token: String)
+        @JvmStatic external fun setDeviceRotation(degrees: Int)
     }
     // onStartCommand / onDestroy / the notification are yours to write.
 }
@@ -145,6 +147,30 @@ means a client holding the old one gets `403` on its next request. An **empty
 token is refused** (the current one is kept): the auth middleware compares the
 presented value to this one, so an empty token would let `?token=` through.
 
+### `setDeviceRotation(degrees: Int)`
+
+Tells the server how the device is currently held, so the cameras hand out
+upright live-view frames and stills instead of the sensor's native framing.
+
+`degrees` is the raw 0-359 value of `OrientationEventListener` — **not** a
+`Surface.ROTATION_*` constant, whose sign is the opposite — or
+`OrientationEventListener.ORIENTATION_UNKNOWN` (-1) when the device is flat and
+has no meaningful "up". Until you call this, nothing is ever rotated.
+
+The native side cannot read this itself: the NDK exposes no device orientation at
+all, which is why it has to come from your Java layer. One atomic store, so it is
+safe to call on every sensor event; only call it when the quarter turn actually
+changes, with some hysteresis, or a phone held near 45 degrees will flip the live
+view back and forth on sensor noise. `CameraServerService.kt` in this repository
+does exactly that and is the shortest thing to copy.
+
+Each camera then exposes a `rotate_auto` boolean parameter (on by default) over
+HTTP, so a client can turn the correction off per device without touching this.
+
+`Display.rotation` is the wrong source here: a phone acting as a camera server is
+usually locked to portrait, so that value never moves while the phone physically
+does.
+
 ## Using the server
 
 Everything else goes over HTTP on the bound port, protected by the token
@@ -154,6 +180,6 @@ routes — `GET /cameras`, `PUT /cameras/{id}/connect`, `GET /cameras/{id}/livev
 
 ## Keeping in sync
 
-The JSON above and the five signatures are the contract. If you upgrade the
+The JSON above and the six signatures are the contract. If you upgrade the
 `.so`, re-read this page: the Rust side of it is `src/lib.rs`, module
 `android_jni`.

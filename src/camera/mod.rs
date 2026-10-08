@@ -1,3 +1,5 @@
+pub mod rotation;
+
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -134,6 +136,15 @@ pub enum ParameterType {
 
     // Photo resolution (width × height encoded as w*10000+h)
     PhotoResolution,
+
+    // Whether the backend straightens frames and stills according to the
+    // device's current orientation. Only meaningful for cameras that move with
+    // their host (Android), where it defaults to on.
+    //
+    // Unlike every other `*Auto` here it has no sibling value parameter: it
+    // switches a correction on and off rather than handing a value to the
+    // camera, so nothing is ever `disabled` because of it.
+    RotateAuto,
 
     // Live view controls
     LiveViewZoom,

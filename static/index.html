@@ -701,7 +701,8 @@
         return;
       }
 
-      grid.innerHTML = params.map(p => renderParamItem(p, id)).join('');
+      const types = new Set(params.map(p => p.type));
+      grid.innerHTML = params.map(p => renderParamItem(p, id, types)).join('');
 
       grid.querySelectorAll('.param-checkbox').forEach(el => {
         el.addEventListener('change', () => setParamBoolean(el));
@@ -722,14 +723,21 @@
       });
     }
 
-    function renderParamItem(p, id) {
+    function renderParamItem(p, id, types) {
       const name = escHtml(formatParamName(p.type));
       const disabledCls = p.disabled ? ' disabled' : '';
       const disabledAttr = p.disabled ? ' disabled' : '';
 
       if (p.kind === 'boolean') {
         const checked = p.current ? 'checked' : '';
-        const isAuto = p.type.includes('_auto');
+        // "auto / manual" only makes sense when the toggle really hands a value
+        // over to the camera, i.e. when the parameter it automates is in the
+        // list too (iso_auto -> iso). A toggle with no such sibling just turns a
+        // behaviour on and off — rotate_auto has no "manual rotation" to offer —
+        // so it reads true / false. Derived from the response rather than from
+        // the name, which is why a new _auto parameter needs nothing here.
+        const isAuto = p.type.endsWith('_auto')
+          && types.has(p.type.slice(0, -'_auto'.length));
         const onLabel = isAuto ? 'auto' : 'true';
         const offLabel = isAuto ? 'manual' : 'false';
         return `

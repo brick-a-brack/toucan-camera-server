@@ -36,7 +36,15 @@ backend-webcam-linux = ["dep:v4l"]
 backend-gphoto2 = ["dep:gphoto2", "dep:nusb"]
 backend-webcam-macos = []
 backend-webcam-windows = ["dep:windows", "dep:windows-core"]
-backend-camera2-android = []
+# Android cameras move with the device, so this backend corrects the orientation
+# of every frame it hands out — hence jpeg-rotate.
+backend-camera2-android = ["jpeg-rotate"]
+# Lossless (DCT-domain) JPEG rotation, used to straighten a still when the camera
+# HAL only wrote an EXIF orientation tag instead of turning the pixels.
+# libjpeg-turbo/mozjpeg is compiled from source by `cc` — no cmake, and no nasm
+# outside x86 SIMD, which this does not need (a DCT transform is entropy coding
+# only, where SIMD does not apply).
+jpeg-rotate = ["dep:mozjpeg-sys"]
 # Relays cameras exposed by other toucan-camera-server instances over HTTP.
 backend-remote = ["dep:reqwest"]
 
@@ -58,6 +66,15 @@ reqwest = { version = "0.12", optional = true, default-features = false, feature
 # placeholder onto a canvas matching the last real frame's resolution. Several
 # backends also use it to encode captured frames to JPEG.
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
+# libjpeg-turbo/mozjpeg: jpegtran's `transupp` transformations (jtransform_*) for
+# the lossless rotation, and the encoder for the re-encoding fallback. Only the C
+# library is used — the pipeline is driven from src/camera/jpeg_rotate.c, never
+# through this crate's FFI, because libjpeg's fatal-error path has to be left with
+# longjmp. `with_simd` gets NEON on ARM, which is what makes the fallback's encode
+# affordable; it degrades on its own to no SIMD where the assembler it needs is
+# missing (x86 wants nasm), so it never breaks a build. `nasm_simd` is left off
+# for exactly that reason, and `unwinding` only matters for the FFI we do not use.
+mozjpeg-sys = { version = "2.2", optional = true, default-features = false, features = ["jpegtran", "with_simd"] }
 gphoto2 = { version = "3.4", optional = true }
 windows-core = { version = "0.58", optional = true }
 windows = { version = "0.58", optional = true, features = [

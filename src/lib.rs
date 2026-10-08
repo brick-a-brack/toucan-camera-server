@@ -1038,4 +1038,29 @@ pub mod android_jni {
         // The token is a credential: log that it changed, never its value.
         alog("pairing token updated");
     }
+
+    /// `CameraServerService.setDeviceRotation(degrees)`
+    ///
+    /// Reports how the device is currently held, so the camera backends can hand
+    /// out upright frames and stills. `degrees` is the raw 0-359 value of
+    /// `OrientationEventListener` (and its `ORIENTATION_UNKNOWN` = -1); anything
+    /// else counts as unknown, which disables rotation.
+    ///
+    /// The NDK cannot read the device orientation at all — only the Java layer
+    /// can — so this is the single way the native side ever learns about it. Cheap
+    /// (one atomic store) and safe to call on every sensor event.
+    #[no_mangle]
+    pub extern "system" fn Java_com_brickfilms_toucancameraserver_CameraServerService_setDeviceRotation<'local>(
+        _env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        degrees: jint,
+    ) {
+        let _ = std::panic::catch_unwind(|| {
+            crate::camera::rotation::set_device_orientation(degrees);
+            // Kotlin only calls on a real change, so this stays quiet. INFO
+            // rather than `alog`, which is WARN (prio 5) despite its comment —
+            // a quarter turn is routine, not a problem.
+            write_log(4 /* INFO */, &format!("device orientation: {degrees}"));
+        });
+    }
 }
