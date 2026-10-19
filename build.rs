@@ -875,19 +875,24 @@ fn copy_gphoto2_bundle() {
     let mut plugins = camlib_plugins.clone();
     plugins.extend(iolib_plugins.iter().cloned());
     let closure = collect_closure(&roots, &plugins, is_mac);
-    // Bundle file name per flat lib. `canonicalize` resolved the dev symlink
-    // (`libgphoto2.so`) to the fully-versioned real file (`libgphoto2.so.6.0.0`),
-    // but on Linux the loader resolves NEEDED entries by SONAME
-    // (`libgphoto2.so.6`). Copy under the SONAME so $ORIGIN lookups from the
-    // binary and the plugins resolve. On macOS the install name already uses the
-    // versioned file name, so keep the canonical file name there.
+    // Bundle file name per flat lib — never the canonical file name: `canonicalize`
+    // resolved the symlink a dependent actually names (`libgphoto2.so`,
+    // `libltdl.7.dylib`) to the fully-versioned real file (`libgphoto2.so.6.0.0`,
+    // `libltdl.7.4.2.dylib`), and the loader looks a dependency up under the name
+    // recorded in the load command, not under the real file name. Copy under the
+    // name the lib advertises for itself — its SONAME on Linux
+    // (`libgphoto2.so.6`), its install name on macOS (`libltdl.7.dylib`) — so
+    // $ORIGIN / @executable_path lookups from the binary and the plugins resolve,
+    // and so the relink pass (which matches by base name against the manifest)
+    // recognises the dependency at all.
     let named: Vec<(PathBuf, String)> = closure
         .iter()
         .map(|lib| {
             let fallback =
                 lib.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_string();
-            let name = if is_linux { soname(lib).unwrap_or_else(|| fallback.clone()) } else { fallback };
-            (lib.clone(), name)
+            let advertised =
+                if is_linux { soname(lib) } else { install_name_base(lib) };
+            (lib.clone(), advertised.unwrap_or(fallback))
         })
         .collect();
     for (lib, name) in &named {
@@ -1033,8 +1038,19 @@ fn list_deps(lib: &Path, is_mac: bool) -> Vec<PathBuf> {
 /// Whether a dependency should be copied into the bundle (skip the OS base libs).
 fn is_bundleworthy(dep: &Path, is_mac: bool) -> bool {
     if is_mac {
+        // Negative filter, never an allowlist of known prefixes: the release
+        // pipeline builds libgphoto2's own deps from source into a private prefix
+        // ($HOME/gphoto2-deps-<arch>), which an "/opt/homebrew or /usr/local"
+        // allowlist silently dropped. They were then neither copied nor listed in
+        // the manifest, so the relink pass left libgphoto2 pointing at an absolute
+        // CI-only path and the binary died at launch on the user's machine with
+        // "Library not loaded: /Users/runner/gphoto2-deps-arm/lib/libltdl.7.dylib".
+        // Anything outside the OS library dirs is ours to ship.
+        const SYSTEM_PREFIXES: &[&str] = &["/usr/lib/", "/System/"];
         let s = dep.to_string_lossy();
-        s.starts_with("/opt/homebrew/") || s.starts_with("/usr/local/")
+        // `@rpath/…` / `@loader_path/…` entries are not absolute: they are already
+        // relocatable and resolved by whoever loads them, so leave them alone.
+        dep.is_absolute() && !SYSTEM_PREFIXES.iter().any(|p| s.starts_with(p))
     } else {
         const SYSTEM: &[&str] = &[
             "libc.", "libm.", "libpthread.", "libdl.", "librt.", "ld-linux",
@@ -1114,6 +1130,26 @@ fn copy_as(src: &Path, dest: &Path) {
     // brew/apt dylibs are read-only; make the copy writable so the Linux patchelf
     // pass and the macOS CI install_name_tool relink can modify it.
     make_writable(dest);
+}
+
+/// The base name of the install name a Mach-O advertises (macOS), e.g.
+/// `libltdl.7.dylib` for a lib whose real file is `libltdl.7.4.2.dylib` — the
+/// name dependents record in their load commands. `None` if `otool` is
+/// unavailable or prints nothing usable (fall back to the file name).
+fn install_name_base(lib: &Path) -> Option<String> {
+    let out = Command::new("otool").arg("-D").arg(lib).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // `otool -D` echoes the file path as a `…:` header (once per arch slice),
+    // then the install name on its own line.
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.ends_with(':'))
+        .and_then(|l| Path::new(l).file_name())
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
 }
 
 /// The SONAME an ELF advertises (Linux), e.g. `libgphoto2.so.6` — the name the

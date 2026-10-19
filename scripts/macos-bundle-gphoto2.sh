@@ -6,11 +6,11 @@
 # libgphoto2 dependency closure (flat dylibs, listed in `gphoto2-bundle.manifest`)
 # plus the `camlibs/` and `iolibs/` plugin dirs. Build scripts run before the link
 # and only ever see one arch, so they cannot lipo-merge the arches nor rewrite the
-# binary's own Homebrew-baked absolute load commands. This script does both:
+# binary's own build-time absolute load commands. This script does both:
 #   1. lipo-merges each staged dylib/plugin from the two arches into a fat file,
 #   2. rewrites every install name to be relocatable (@executable_path for the
 #      binary and the flat libs, @loader_path/.. for the plugins),
-# so the universal binary ships standalone (users no longer need Homebrew).
+# so the universal binary ships standalone (no system libgphoto2 needed).
 #
 # Usage: macos-bundle-gphoto2.sh <x86_64-release-dir> <arm64-release-dir> <out-dir>
 # <out-dir> must already contain the lipo'd `toucan-camera-server` binary.
@@ -30,8 +30,8 @@ fi
 manifest_has() { grep -qx "$1" "$MANIFEST"; }
 
 # relink <file> <prefix>: repoint every bundled-lib dependency of <file> at
-# <prefix>/<basename>. Handles both arch slices (Homebrew uses /opt/homebrew on
-# arm64 and /usr/local on x86_64).
+# <prefix>/<basename>. Reads both arch slices, whose deps carry different
+# build-time prefixes (each arch is built against its own dependency prefix).
 relink() {
   file="$1"
   prefix="$2"
@@ -87,18 +87,24 @@ done
 # 3. The binary: point its bundled-lib dependencies next to itself.
 relink "$OUT/toucan-camera-server" "@executable_path"
 
-# 4. Verify the bundle is self-contained: every @executable_path / @loader_path
-# dependency of the binary, the flat dylibs and the plugins must resolve to a
-# file we actually shipped. This turns a silently-incomplete bundle (the kind
-# that crashes at launch with "Library not loaded") into a hard CI failure.
+# 4. Verify the bundle is self-contained, on two counts:
+#   a. every @executable_path / @loader_path dependency of the binary, the flat
+#      dylibs and the plugins must resolve to a file we actually shipped;
+#   b. no shipped Mach-O may keep an absolute dependency outside the OS library
+#      dirs — such a path only exists on the build machine. That is how
+#      "Library not loaded: /Users/runner/gphoto2-deps-arm/lib/libltdl.7.dylib"
+#      shipped: the build-time dep prefix was not recognised as bundleworthy, so
+#      the lib was never staged and the (a) check had nothing to complain about.
+# Both turn a silently-broken bundle into a hard CI failure.
 verify_fail=0
 verify_refs() {
   f="$1"
-  refs=$(
+  all=$(
     { otool -arch arm64 -L "$f" 2>/dev/null || true
       otool -arch x86_64 -L "$f" 2>/dev/null || true
-    } | awk '/@executable_path\/|@loader_path\// { print $1 }' | sort -u
+    } | awk 'NR > 1 && /^[[:space:]]/ { print $1 }' | sort -u
   )
+  refs=$(echo "$all" | grep -e '@executable_path/' -e '@loader_path/' || true)
   while IFS= read -r ref || [ -n "$ref" ]; do
     [ -n "$ref" ] || continue
     base="$(basename "$ref")"
@@ -108,6 +114,13 @@ verify_refs() {
       verify_fail=1
     fi
   done <<< "$refs"
+  # Absolute paths: only the OS library dirs survive on a user's machine.
+  abs=$(echo "$all" | grep '^/' | grep -v -e '^/usr/lib/' -e '^/System/' || true)
+  while IFS= read -r ref || [ -n "$ref" ]; do
+    [ -n "$ref" ] || continue
+    echo "VERIFY FAIL: $(basename "$f") keeps build-machine path '$ref' (not relocatable)"
+    verify_fail=1
+  done <<< "$abs"
 }
 
 verify_refs "$OUT/toucan-camera-server"
