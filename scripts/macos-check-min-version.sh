@@ -18,15 +18,18 @@
 #   <floor>  the macOS version the release claims to support, e.g. 11.0
 #            (must match MACOSX_DEPLOYMENT_TARGET used for the build)
 #
-# Binaries we build ourselves must record exactly <floor>; bundled third-party
-# runtimes (Canon, Sony, Nikon) are only reported, since their minimum is
-# whatever the vendor shipped and we cannot lower it.
+# Binaries we build ourselves must not require more than <floor>; bundled
+# third-party runtimes (Canon, Sony, Nikon) are only reported, since their
+# minimum is whatever the vendor shipped and we cannot lower it. Those NOTE lines
+# are worth reading: a vendor library that is linked at build time (Sony's
+# Cr_Core) is loaded at launch, so its minimum is the release's real floor.
 
 set -eu
 
-DIR="$1"
+DIR="${1%/}"
 FLOOR="$2"
 MANIFEST="${3:-}"
+BINARY="toucan-camera-server"
 
 command -v otool >/dev/null 2>&1 || { echo "ERROR: otool not found (needs Xcode CLT)"; exit 1; }
 
@@ -50,15 +53,35 @@ higher_than() {
   [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$1" ]
 }
 
-# Files we build: the server itself, the libgphoto2 dylibs we compile from
-# source, and their plugins. Everything else in the bundle is a vendor runtime.
+# Files we build: the server itself, the libgphoto2 dylibs we compile from source
+# (the manifest names them) and their plugins. Everything else in the bundle is a
+# vendor runtime.
+#
+# Matched by PATH, never by base name alone: a vendor runtime directory can ship a
+# library whose name collides with one of ours. Sony's CrAdapter/ carries its own
+# libusb-1.0.0.dylib — classifying that as ours reported a vendor minimum (11.1)
+# as our own build leaking its deployment target.
 is_ours() {
-  base="$(basename "$1")"
   case "$1" in
-    */camlibs/*|*/iolibs/*) return 0 ;;
+    "$DIR"/camlibs/*|"$DIR"/iolibs/*) return 0 ;;
   esac
-  [ "$base" = "toucan-camera-server" ] && return 0
+  # Only flat files at the bundle root can be ours; anything deeper that is not a
+  # plugin dir belongs to a vendor.
+  [ "$(dirname "$1")" = "$DIR" ] || return 1
+  base="$(basename "$1")"
+  [ "$base" = "$BINARY" ] && return 0
   [ -n "$MANIFEST" ] && [ -f "$MANIFEST" ] && grep -qx "$base" "$MANIFEST"
+}
+
+# A minimum higher than the floor is the leak we are looking for: the build
+# machine's OS ending up in the artifact. A lower one is harmless — it runs
+# anywhere the floor runs. The binary itself is held to the floor exactly, being
+# the one file whose minimum the release advertises.
+too_high() {
+  file="$1"
+  version="$2"
+  higher_than "$version" "$FLOOR" && return 0
+  [ "$(basename "$file")" = "$BINARY" ] && [ "$version" != "$FLOOR" ]
 }
 
 fail=0
@@ -75,14 +98,12 @@ while IFS= read -r f; do
   fi
   for v in $versions; do
     if is_ours "$f"; then
-      if [ "$v" != "$FLOOR" ]; then
-        echo "MIN VERSION FAIL: $(basename "$f") targets macOS $v, expected $FLOOR" \
-             "— set MACOSX_DEPLOYMENT_TARGET for this build"
+      if too_high "$f" "$v"; then
+        echo "MIN VERSION FAIL: $(basename "$f") targets macOS $v, expected $FLOOR — set MACOSX_DEPLOYMENT_TARGET for this build"
         fail=1
       fi
     elif higher_than "$v" "$FLOOR"; then
-      echo "NOTE: vendor runtime $(basename "$f") requires macOS $v (> $FLOOR)," \
-           "so the release cannot actually run below $v"
+      echo "NOTE: vendor runtime $(basename "$f") requires macOS $v (> $FLOOR) — it will not load below that. If it is linked at build time (Sony's Cr_Core) that is the release's real floor; a dlopen'd one (Nikon) just leaves its backend unavailable."
     fi
   done
 done <<EOF

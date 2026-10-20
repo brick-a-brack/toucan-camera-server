@@ -72,6 +72,32 @@ jobs:
       # 11.0 is the floor: arm64 macOS does not exist before Big Sur.
       # scripts/macos-check-min-version.sh asserts the artifact matches.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
+    env:
+      # Sony's CrSDK sets the floor of the standard artifact: libCr_Core.dylib is
+      # LINKED at build time, so dyld loads it at launch and the binary cannot start
+      # on a macOS older than the SDK supports. That minimum is documented nowhere
+      # in this repo — scripts/macos-check-min-version.sh prints each vendor
+      # runtime's own, which is how this value is known.
+      MACOS_MIN: "12.1"
+      MACOS_FEATURES: "backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-sony,backend-remote"
+      # Legacy artifact: the same build without the Sony backend, so it runs on
+      # macOS 11.x. 11.0 is the real floor — arm64 macOS does not exist before Big
+      # Sur. The Nikon runtime (12.0) is dlopen'd, so it is simply skipped there and
+      # ships in both artifacts; Canon, gphoto2 and the webcam backend all work.
+      MACOS_MIN_LEGACY: "11.0"
+      MACOS_FEATURES_LEGACY: "backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-remote"
+      # Default for every step, and the floor the shared C libraries (libgphoto2 and
+      # its deps, built once and bundled in both artifacts) must satisfy. The
+      # standard build raises it to MACOS_MIN per step.
+      #
+      # Declaring it at all is what matters: left unset, the compiler assumes the
+      # BUILD machine's OS (the runners track the newest macOS), so every API looks
+      # unconditionally present — a symbol introduced by a newer macOS is referenced
+      # strongly instead of weak_import and the `@available` guard written around it
+      # never runs. dyld then aborts at launch on an older machine, as seen on macOS
+      # 12.7 with `Symbol not found: _AVCaptureDeviceTypeExternal` (macOS 14+),
+      # which bridge.m does guard.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
     steps:
       - uses: actions/checkout@v4
 
@@ -212,114 +238,57 @@ jobs:
       - name: Build x86_64
         env:
           PKG_CONFIG_ALLOW_CROSS: "1"
+          MACOSX_DEPLOYMENT_TARGET: ${{ env.MACOS_MIN }}
         run: |
           # Link against the from-source Intel libgphoto2 and the x86_64 deps built
           # alongside it. No Homebrew path here: /opt/homebrew is the wrong arch and
           # there is no Intel Homebrew any more.
           export PKG_CONFIG_PATH="$HOME/gphoto2-x86/lib/pkgconfig:$HOME/gphoto2-deps-x86/lib/pkgconfig"
-          cargo build --release \
-            --target x86_64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-sony,backend-remote
+          cargo build --release --target x86_64-apple-darwin --features "$MACOS_FEATURES"
 
       - name: Build arm64
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ env.MACOS_MIN }}
         run: |
           export PKG_CONFIG_PATH="$HOME/gphoto2-arm/lib/pkgconfig:$HOME/gphoto2-deps-arm/lib/pkgconfig"
-          cargo build --release \
-            --target aarch64-apple-darwin \
-            --features backend-webcam-macos,backend-canon,backend-gphoto2,backend-nikon-zs2,backend-sony,backend-remote
-
-      - name: Create universal binary with lipo
-        run: |
-          lipo -create \
-            target/x86_64-apple-darwin/release/toucan-camera-server \
-            target/aarch64-apple-darwin/release/toucan-camera-server \
-            -output toucan-camera-server-macos
+          cargo build --release --target aarch64-apple-darwin --features "$MACOS_FEATURES"
 
       - name: Package into zip
+        # lipo-merges the two slices, bundles the Canon / gphoto2 / Nikon / Sony
+        # runtimes, asserts the minimum macOS version, zips.
+        run: bash scripts/package-macos.sh target dist/toucan-camera-server-macos "$MACOS_MIN" with-sony
+
+      # Legacy artifact — same code, no Sony backend, so it runs on macOS 11.x.
+      # Its own target dir: the feature set differs, and each artifact is packaged
+      # from its per-arch release dir (the gphoto2 bundle manifest and the staged
+      # vendor runtimes live there, and would otherwise be overwritten).
+      - name: Build x86_64 (legacy, without Sony)
+        env:
+          PKG_CONFIG_ALLOW_CROSS: "1"
         run: |
-          mkdir -p dist/toucan-camera-server-macos
+          export PKG_CONFIG_PATH="$HOME/gphoto2-x86/lib/pkgconfig:$HOME/gphoto2-deps-x86/lib/pkgconfig"
+          cargo build --release --target-dir target-legacy --target x86_64-apple-darwin --features "$MACOS_FEATURES_LEGACY"
 
-          cp toucan-camera-server-macos dist/toucan-camera-server-macos/toucan-camera-server
+      - name: Build arm64 (legacy, without Sony)
+        run: |
+          export PKG_CONFIG_PATH="$HOME/gphoto2-arm/lib/pkgconfig:$HOME/gphoto2-deps-arm/lib/pkgconfig"
+          cargo build --release --target-dir target-legacy --target aarch64-apple-darwin --features "$MACOS_FEATURES_LEGACY"
 
-          # Add a relative rpath so the binary finds EDSDK.framework next to itself
-          # when run outside the build tree.
-          install_name_tool \
-            -add_rpath @executable_path \
-            dist/toucan-camera-server-macos/toucan-camera-server
-
-          # Canon framework — only if present (SDK installed in CI)
-          FRAMEWORK_SRC="external/EDSDK/EDSDKv132010M/EDSDK.framework"
-          if [ -d "$FRAMEWORK_SRC" ]; then
-            cp -R "$FRAMEWORK_SRC" dist/toucan-camera-server-macos/
-          fi
-
-          # gphoto2 runtime: lipo-merge the per-arch libs/plugins staged by
-          # build.rs and rewrite their install names to be relocatable, so the
-          # universal binary ships without a system libgphoto2.
-          bash scripts/macos-bundle-gphoto2.sh \
-            target/x86_64-apple-darwin/release \
-            target/aarch64-apple-darwin/release \
-            dist/toucan-camera-server-macos
-
-          # Nikon runtime — staged and fixed-up by build.rs in the per-arch release
-          # dir; the SDK binaries are universal, so copy from one arch. The backend
-          # dlopen's "TypeCommon Module.bundle" next to the binary and resolves the
-          # sibling Frameworks/ via @loader_path, so both sit at the artifact root.
-          # Only present if the Nikon SDK was provided (see the Nikon staging step).
-          NIKON_REL="target/aarch64-apple-darwin/release"
-          if [ -d "$NIKON_REL/TypeCommon Module.bundle" ]; then
-            ditto "$NIKON_REL/TypeCommon Module.bundle" \
-                  "dist/toucan-camera-server-macos/TypeCommon Module.bundle"
-            ditto "$NIKON_REL/Frameworks" "dist/toucan-camera-server-macos/Frameworks"
-            for cfg in DC_PTP_Config.config MaidLayer.config RangeValue.config; do
-              [ -f "$NIKON_REL/$cfg" ] && cp "$NIKON_REL/$cfg" dist/toucan-camera-server-macos/
-            done
-            echo "Nikon runtime bundled into the macOS artifact"
-          fi
-
-          # Sony CrSDK runtime — Cr_Core + monitor_protocol dylibs + CrAdapter/
-          # transport plugins staged next to the per-arch binary by build.rs. The
-          # dylibs are universal, so copy from one arch; the binary resolves
-          # Cr_Core / monitor_protocol via @loader_path (rpath added by build.rs).
-          #
-          # macOS CrAdapter placement is what actually makes cameras appear:
-          # Cr_Core locates its transport plugins through NSBundle.mainBundle
-          # bundlePath + "Contents/Frameworks/CrAdapter", NOT flat next to the
-          # binary. A flat CrAdapter/ alone loads fine (SDK::Init succeeds) but
-          # EnumCameraObjects then returns CrError_Adaptor_Create (0x8703) and the
-          # camera never appears. build.rs stages BOTH the flat copy and the
-          # Contents/Frameworks/CrAdapter bundle copy; ship the bundle one.
-          #
-          # Cr_Core is linked at build time — a successful build means the runtime
-          # must be present. Fail hard rather than ship a zero-camera artifact.
-          SONY_REL="target/aarch64-apple-darwin/release"
-          for lib in libCr_Core.dylib libmonitor_protocol.dylib libmonitor_protocol_pf.dylib; do
-            [ -f "$SONY_REL/$lib" ] || { echo "ERROR: Sony runtime $lib missing in $SONY_REL"; exit 1; }
-            cp "$SONY_REL/$lib" dist/toucan-camera-server-macos/
-          done
-          # Flat copy (harmless, keeps the layout uniform across platforms).
-          [ -d "$SONY_REL/CrAdapter" ] || { echo "ERROR: Sony CrAdapter/ missing — camera would never enumerate"; exit 1; }
-          cp -R "$SONY_REL/CrAdapter" dist/toucan-camera-server-macos/
-          # Bundle-relative copy — the one Cr_Core actually reads on macOS.
-          SONY_BUNDLE="$SONY_REL/Contents/Frameworks/CrAdapter"
-          [ -n "$(ls -A "$SONY_BUNDLE" 2>/dev/null)" ] \
-            || { echo "ERROR: Contents/Frameworks/CrAdapter missing/empty — camera would never enumerate (0x8703)"; exit 1; }
-          mkdir -p dist/toucan-camera-server-macos/Contents/Frameworks
-          cp -R "$SONY_BUNDLE" dist/toucan-camera-server-macos/Contents/Frameworks/
-          echo "Sony CrSDK runtime bundled into the macOS artifact"
-
-          # Every Mach-O we build must claim MACOSX_DEPLOYMENT_TARGET, or it
-          # refuses to launch on the oldest macOS the release supports.
-          bash scripts/macos-check-min-version.sh dist/toucan-camera-server-macos "$MACOSX_DEPLOYMENT_TARGET" target/aarch64-apple-darwin/release/gphoto2-bundle.manifest
-
-          cd dist/toucan-camera-server-macos
-          zip -r ../toucan-camera-server-macos.zip .
+      - name: Package legacy zip
+        run: bash scripts/package-macos.sh target-legacy dist/toucan-camera-server-macos-legacy "$MACOS_MIN_LEGACY" without-sony
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: toucan-camera-server-macos
           path: dist/toucan-camera-server-macos.zip
+          if-no-files-found: error
+
+      - name: Upload legacy artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toucan-camera-server-macos-legacy
+          path: dist/toucan-camera-server-macos-legacy.zip
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
@@ -774,6 +743,12 @@ jobs:
           name: toucan-camera-server-macos
           path: dist/
 
+      - name: Download macOS legacy artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toucan-camera-server-macos-legacy
+          path: dist/
+
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
@@ -812,6 +787,7 @@ jobs:
             echo "Draft release found ($DRAFT_TAG) — uploading assets"
             gh release upload "$DRAFT_TAG" \
               dist/toucan-camera-server-macos.zip \
+              dist/toucan-camera-server-macos-legacy.zip \
               dist/toucan-camera-server-windows.zip \
               dist/toucan-camera-server-linux.zip \
               dist/toucan-camera-server-android.zip \
