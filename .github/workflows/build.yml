@@ -25,6 +25,22 @@ env:
   # libgphoto2 is compiled from source (the OS packages are often outdated).
   # Pin a branch, tag, or full commit SHA of github.com/gphoto/libgphoto2.
   LIBGPHOTO2_REF: "7fc007d0ba6b52b8608da7b46920ae2416a94358"
+
+  # macOS only. The universal binary links each slice against its own prefix, but
+  # `pkg-config` itself comes from the arm64 Homebrew, so its default search path
+  # offers /opt/homebrew/lib/pkgconfig to BOTH slices. libgphoto2's optional-library
+  # probes then find an arm64-only .pc, link-test it, and succeed on arm64 while
+  # failing on x86_64 — the two slices end up with different camlib dependencies
+  # and there is no universal dylib to lipo-merge (seen with libjpeg: the arm64
+  # ptp2.so needed /opt/homebrew/.../libjpeg.8.dylib, the x86_64 one did not).
+  # Restrict pkg-config to the system dir; the per-arch deps still arrive through
+  # PKG_CONFIG_PATH, which is searched first.
+  MACOS_PKG_CONFIG_LIBDIR: "/usr/lib/pkgconfig"
+  # ...and make the one optional library we could still pick up a deliberate
+  # decision rather than a detection accident. In libgphoto2, libjpeg is used only
+  # by CHDK (hacked PowerShot firmware) in ptp2 and by the toy-camera camlibs
+  # (ax203, jl2005c, sipix) — nothing a DSLR/mirrorless body goes through.
+  MACOS_LIBGPHOTO2_CONFIGURE: "--without-jpeg"
   # Sony Camera Remote SDK (CrSDK). Unlike the Canon/Nikon runtimes (loaded at run
   # time), Cr_Core is LINKED at build time, so backend-sony cannot build without it
   # — this URL is REQUIRED (the Sony staging step fails hard if empty). The archive
@@ -113,13 +129,15 @@ jobs:
         run: |
           DEPS="$HOME/gphoto2-deps-arm"
           export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
+          # Hide Homebrew from pkg-config (see MACOS_PKG_CONFIG_LIBDIR in env:).
+          export PKG_CONFIG_LIBDIR="$MACOS_PKG_CONFIG_LIBDIR"
           # GP_LIBLTDL has no .pc file to go by: it probes the default paths, then
           # /usr/local, /usr/pkg and `brew --prefix`. Pass it our prefix explicitly
           # — mandatory for the x86_64 slice, where `brew --prefix` would hand it
           # the arm64 libltdl.
           export LTDLINCL="-I$DEPS/include"
           export LIBLTDL="-L$DEPS/lib -lltdl"
-          bash scripts/build-libgphoto2.sh "$LIBGPHOTO2_REF" "$HOME/gphoto2-arm"
+          bash scripts/build-libgphoto2.sh "$LIBGPHOTO2_REF" "$HOME/gphoto2-arm" $MACOS_LIBGPHOTO2_CONFIGURE
 
       - name: Build libgphoto2 from source (x86_64)
         run: |
@@ -131,9 +149,10 @@ jobs:
             set -eo pipefail
             DEPS="$HOME/gphoto2-deps-x86"
             export PKG_CONFIG_PATH="$DEPS/lib/pkgconfig"
+            export PKG_CONFIG_LIBDIR="$MACOS_PKG_CONFIG_LIBDIR"
             export LTDLINCL="-I$DEPS/include"
             export LIBLTDL="-L$DEPS/lib -lltdl"
-            bash scripts/build-libgphoto2.sh "$LIBGPHOTO2_REF" "$HOME/gphoto2-x86"
+            bash scripts/build-libgphoto2.sh "$LIBGPHOTO2_REF" "$HOME/gphoto2-x86" $MACOS_LIBGPHOTO2_CONFIGURE
           '
 
       - name: Install Nikon Remote SDK runtime (best-effort)

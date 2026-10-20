@@ -64,9 +64,18 @@ while IFS= read -r lib || [ -n "$lib" ]; do
     install_name_tool -id "@executable_path/$lib" "$OUT/$lib"
     relink "$OUT/$lib" "@loader_path"
   else
-    echo "WARNING: '$lib' is in the manifest but missing from a per-arch dir" \
+    # One slice has the lib and the other does not: the two libgphoto2 builds were
+    # configured differently (typically an optional library detected on arm64 only,
+    # because pkg-config comes from the arm64 Homebrew — see MACOS_PKG_CONFIG_LIBDIR
+    # in the workflow). There is nothing to lipo-merge, and shipping a thin dylib
+    # would break the other architecture at load time, so stop rather than produce
+    # a half-universal bundle.
+    echo "ERROR: '$lib' is in the manifest but missing from a per-arch dir" \
          "(x86: $( [ -f "$X86_DIR/$lib" ] && echo yes || echo no )," \
-         "arm: $( [ -f "$ARM_DIR/$lib" ] && echo yes || echo no )) — not bundled"
+         "arm: $( [ -f "$ARM_DIR/$lib" ] && echo yes || echo no ))."
+    echo "       The two slices have diverging dependencies — fix the libgphoto2" \
+         "configuration so both arches detect the same optional libraries."
+    exit 1
   fi
 done < "$MANIFEST"
 
@@ -80,6 +89,13 @@ for sub in camlibs iolibs; do
     if [ -f "$X86_DIR/$sub/$name" ]; then
       lipo -create "$X86_DIR/$sub/$name" "$ARM_DIR/$sub/$name" -output "$OUT/$sub/$name"
       relink "$OUT/$sub/$name" "@loader_path/.."
+    else
+      # Same divergence as above, for a plugin: one build produced a camlib/iolib
+      # the other did not. Silently dropping it would quietly remove camera
+      # support from the release.
+      echo "ERROR: plugin '$sub/$name' was built for arm64 but not for x86_64 —"
+      echo "       the two libgphoto2 builds are not configured identically."
+      exit 1
     fi
   done
 done
