@@ -61,18 +61,6 @@ jobs:
     name: Build (macOS universal)
     runs-on: macos-latest
     env:
-      # The oldest macOS the release supports — and the reason it runs there at
-      # all. Left unset, the compiler assumes the BUILD machine's OS (the runner
-      # tracks the newest macOS): every API looks unconditionally present, so a
-      # symbol introduced by a newer OS is referenced strongly instead of
-      # weak_import and the `@available` guards written around it never run. dyld
-      # then aborts at launch on an older machine — seen on macOS 12.7 with
-      # `Symbol not found: _AVCaptureDeviceTypeExternal` (macOS 14+), which
-      # bridge.m does guard with @available(macOS 14.0, *).
-      # 11.0 is the floor: arm64 macOS does not exist before Big Sur.
-      # scripts/macos-check-min-version.sh asserts the artifact matches.
-      MACOSX_DEPLOYMENT_TARGET: "11.0"
-    env:
       # Sony's CrSDK sets the floor of the standard artifact: libCr_Core.dylib is
       # LINKED at build time, so dyld loads it at launch and the binary cannot start
       # on a macOS older than the SDK supports. That minimum is documented nowhere
