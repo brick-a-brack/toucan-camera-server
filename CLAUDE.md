@@ -146,6 +146,7 @@ DELETE /peers/{id}                   — remove a peer (204, or 404 if unknown)
 
 - Source: `src/backends/avfoundation/bridge.m` (Objective-C) + `src/backends/avfoundation/mod.rs` (Rust actor).
 - Build: `build.rs` compiles `bridge.m` with `cc` and links `AVFoundation`, `CoreMedia`, `CoreVideo`, `CoreImage`, `Foundation`, `IOKit` frameworks.
+- **The macOS build must declare `MACOSX_DEPLOYMENT_TARGET`** (`11.0`, set on the `build-macos` job — arm64 macOS does not exist before Big Sur). Unset, the compiler assumes the *build* machine's OS, so every API looks unconditionally present: a symbol introduced by a newer macOS is referenced strongly instead of `weak_import`, and the `@available` guard written around it never runs. dyld then aborts at launch on an older machine — observed on macOS 12.7 as `Symbol not found: _AVCaptureDeviceTypeExternal` (macOS 14+), which `bridge.m` *does* guard. CI runners always track the newest macOS, so this is invisible there: `bridge.m` is therefore compiled with `-Werror=unguarded-availability`, and `scripts/macos-check-min-version.sh` asserts every Mach-O we ship records that floor (vendor runtimes are only reported, their minimum being the vendor's).
 
 #### Parameter reading
 - Parameters are enumerated via **CoreMediaIO (CMIO)**: `wc_get_parameters` walks CMIO feature-control objects owned by the device.

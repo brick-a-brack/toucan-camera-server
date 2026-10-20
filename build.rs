@@ -87,6 +87,13 @@ fn main() {
             .include("src/backends/webcam_macos")
             .flag("-fobjc-arc")
             .flag("-fmodules")
+            // Using an API newer than MACOSX_DEPLOYMENT_TARGET without an
+            // `@available` guard is a build error, not a warning lost in the log.
+            // Unguarded, such a symbol is referenced strongly and dyld aborts at
+            // launch on an older macOS ("Symbol not found:
+            // _AVCaptureDeviceTypeExternal" on 12.7) — a failure the CI runners,
+            // always on the newest macOS, can never reproduce.
+            .flag("-Werror=unguarded-availability")
             .compile("webcam_macos_bridge");
 
         println!("cargo:rustc-link-lib=framework=AVFoundation");
