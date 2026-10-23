@@ -715,18 +715,31 @@ static void apply_tracked_settings(AcSession *s, ACaptureRequest *req, int is_pr
         if (ACameraMetadata_getConstEntry(s->chars,
                 ACAMERA_SENSOR_INFO_ACTIVE_ARRAY_SIZE, &entry) == ACAMERA_OK
             && entry.count >= 4) {
-            // Active array format: [left, top, right, bottom] (exclusive)
+            // BOTH rects are (left, top, WIDTH, HEIGHT) — the NDK's data
+            // representation, not the (left, top, right, bottom) of the Java
+            // android.graphics.Rect. Verified in NdkCameraMetadataTags.h: "The data
+            // representation is int[4], which maps to (left, top, width, height)"
+            // on ACAMERA_SENSOR_INFO_ACTIVE_ARRAY_SIZE and ACAMERA_SCALER_CROP_REGION
+            // alike.
+            //
+            // Writing (left, top, right, bottom) made the driver read the right/bottom
+            // edges as a width/height, i.e. a crop of W(1+1/z)/2 starting at (W-W/z)/2:
+            // it always ended exactly on the sensor's right/bottom edge, so zooming
+            // drifted into that corner instead of staying centred, and the effective
+            // factor was 2z/(z+1) (2× at most, however far the slider went).
             int32_t arr_x = entry.data.i32[0];
             int32_t arr_y = entry.data.i32[1];
-            int32_t arr_w = entry.data.i32[2] - arr_x;
-            int32_t arr_h = entry.data.i32[3] - arr_y;
+            int32_t arr_w = entry.data.i32[2];
+            int32_t arr_h = entry.data.i32[3];
             float zoom    = (float)s->cur_zoom_x100 / 100.0f;
             if (zoom < 1.0f) zoom = 1.0f;
             int32_t crop_w = (int32_t)((float)arr_w / zoom);
             int32_t crop_h = (int32_t)((float)arr_h / zoom);
+            if (crop_w < 1) crop_w = 1;
+            if (crop_h < 1) crop_h = 1;
             int32_t crop_x = arr_x + (arr_w - crop_w) / 2;
             int32_t crop_y = arr_y + (arr_h - crop_h) / 2;
-            int32_t region[4] = { crop_x, crop_y, crop_x + crop_w, crop_y + crop_h };
+            int32_t region[4] = { crop_x, crop_y, crop_w, crop_h };
             ACaptureRequest_setEntry_i32(req, ACAMERA_SCALER_CROP_REGION, 4, region);
         }
     }
