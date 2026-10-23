@@ -130,6 +130,14 @@ didFinishProcessingPhoto:(AVCapturePhoto *)photo
 // UVC direct I/O layer (IOKit ControlRequest)
 // ---------------------------------------------------------------------------
 
+// Every control transfer is bounded. ControlRequest (no timeout) blocks until the
+// kernel gives up, which is ~5 s — and these calls run on the single webcam actor
+// thread, so one unanswered 1-byte transfer stalls live view and parameter reads
+// for the whole backend. Observed on a Sony body in USB-streaming mode, whose
+// SET_CUR on WHITE_BALANCE_TEMPERATURE_AUTO never completes
+// (kIOUSBTransactionTimeout 0xE0004051 after 5.06 s).
+#define UVC_CONTROL_TIMEOUT_MS 250
+
 #define UVC_SET_CUR            0x01
 #define UVC_CS_INTERFACE       0x24
 #define UVC_VC_INPUT_TERMINAL  0x02
@@ -178,9 +186,16 @@ static int uvc_parse_config(IOUSBDeviceInterface **dev,
 }
 
 // Open the VideoControl interface for the camera identified by AVFoundation uniqueID.
-// Uses IOUSBInterfaceInterface::ControlRequest instead of IOUSBDeviceInterface::DeviceRequest.
-// The kernel allows class requests through the interface object even when AVFoundation holds
-// the device open (USBInterfaceOpen returns kIOReturnExclusiveAccess = 0xE00002C5 — acceptable).
+// Uses IOUSBInterfaceInterface::ControlRequestTO instead of IOUSBDeviceInterface::DeviceRequest.
+//
+// USBInterfaceOpen usually returns kIOReturnExclusiveAccess (0xE00002C5) because the
+// system's UVC driver owns the interface while the capture session streams, and we
+// carry on: on the cameras this was developed against, class requests still go
+// through the interface object. That is NOT universal — a Sony body in USB-streaming
+// mode accepts the open refusal and then never completes a SET_CUR
+// (kIOUSBTransactionTimeout). So the refusal is tolerated, never assumed harmless:
+// the write path reports the transfer's own IOReturn to the caller, and the
+// timeout is bounded (UVC_CONTROL_TIMEOUT_MS) instead of blocking for ~5 s.
 static IOUSBInterfaceInterface190 **uvc_open_vc_interface(NSString *uniqueID,
                                                            uint8_t *outVCIf,
                                                            uint8_t *outPU,
@@ -270,33 +285,45 @@ static IOUSBInterfaceInterface190 **uvc_open_vc_interface(NSString *uniqueID,
     return intf;
 }
 
+// Both directions go through ControlRequestTO rather than ControlRequest so the
+// call cannot block the actor thread for seconds (see UVC_CONTROL_TIMEOUT_MS).
+// `outKr` is optional; when given it receives the IOReturn so the caller can tell
+// "the camera refused this control" (kIOUSBPipeStalled) from "the camera never
+// answered" (kIOUSBTransactionTimeout) and report it instead of a blanket failure.
 static int uvc_set_cur(IOUSBInterfaceInterface190 **intf, uint8_t unitID, uint8_t selector,
-                        uint8_t ifNum, void *data, uint16_t len) {
-    IOUSBDevRequest req;
+                        uint8_t ifNum, void *data, uint16_t len, IOReturn *outKr) {
+    IOUSBDevRequestTO req;
     memset(&req, 0, sizeof(req));
-    req.bmRequestType = USBmakebmRequestType(kUSBOut, kUSBClass, kUSBInterface);
-    req.bRequest      = UVC_SET_CUR;
-    req.wValue        = (uint16_t)(selector << 8);
-    req.wIndex        = (uint16_t)((unitID << 8) | ifNum);
-    req.wLength       = len;
-    req.pData         = data;
-    IOReturn kr = (*intf)->ControlRequest(intf, 0, &req);
+    req.bmRequestType     = USBmakebmRequestType(kUSBOut, kUSBClass, kUSBInterface);
+    req.bRequest          = UVC_SET_CUR;
+    req.wValue            = (uint16_t)(selector << 8);
+    req.wIndex            = (uint16_t)((unitID << 8) | ifNum);
+    req.wLength           = len;
+    req.pData             = data;
+    req.noDataTimeout     = UVC_CONTROL_TIMEOUT_MS;
+    req.completionTimeout = UVC_CONTROL_TIMEOUT_MS;
+    IOReturn kr = (*intf)->ControlRequestTO(intf, 0, &req);
+    if (outKr) *outKr = kr;
     NSLog(@"[uvc] SET_CUR unit=%u sel=0x%02X if=%u len=%u -> kr=0x%X", unitID, selector, ifNum, len, kr);
     return (kr == kIOReturnSuccess) ? 0 : -1;
 }
 
 // request: GET_CUR=0x81, GET_MIN=0x82, GET_MAX=0x83, GET_RES=0x84
 static int uvc_get_req(IOUSBInterfaceInterface190 **intf, uint8_t request, uint8_t unitID,
-                        uint8_t selector, uint8_t ifNum, void *data, uint16_t len) {
-    IOUSBDevRequest req;
+                        uint8_t selector, uint8_t ifNum, void *data, uint16_t len,
+                        IOReturn *outKr) {
+    IOUSBDevRequestTO req;
     memset(&req, 0, sizeof(req));
-    req.bmRequestType = USBmakebmRequestType(kUSBIn, kUSBClass, kUSBInterface);
-    req.bRequest      = request;
-    req.wValue        = (uint16_t)(selector << 8);
-    req.wIndex        = (uint16_t)((unitID << 8) | ifNum);
-    req.wLength       = len;
-    req.pData         = data;
-    IOReturn kr = (*intf)->ControlRequest(intf, 0, &req);
+    req.bmRequestType     = USBmakebmRequestType(kUSBIn, kUSBClass, kUSBInterface);
+    req.bRequest          = request;
+    req.wValue            = (uint16_t)(selector << 8);
+    req.wIndex            = (uint16_t)((unitID << 8) | ifNum);
+    req.wLength           = len;
+    req.pData             = data;
+    req.noDataTimeout     = UVC_CONTROL_TIMEOUT_MS;
+    req.completionTimeout = UVC_CONTROL_TIMEOUT_MS;
+    IOReturn kr = (*intf)->ControlRequestTO(intf, 0, &req);
+    if (outKr) *outKr = kr;
     return (kr == kIOReturnSuccess) ? 0 : -1;
 }
 
@@ -305,7 +332,7 @@ static int uvc_get_req(IOUSBInterfaceInterface190 **intf, uint8_t request, uint8
 static int uvc_read_int(IOUSBInterfaceInterface190 **intf, uint8_t request, uint8_t unitID,
                          uint8_t selector, uint8_t ifNum, uint8_t size, int32_t *out) {
     uint8_t buf[4] = {0};
-    if (uvc_get_req(intf, request, unitID, selector, ifNum, buf, size) != 0) return -1;
+    if (uvc_get_req(intf, request, unitID, selector, ifNum, buf, size, NULL) != 0) return -1;
     switch (size) {
         case 1: *out = (int32_t)(uint8_t)buf[0]; break;
         case 2: { int16_t v; memcpy(&v, buf, 2); *out = (int32_t)v; break; }
@@ -337,7 +364,7 @@ typedef struct {
 // exposure_mode uses a non-standard UVC value mapping:
 //   read : UVC 1 (manual) → logical 0, UVC 8 (aperture priority) → logical 1
 //   write: logical 0 → UVC 1, logical 1 → UVC 8
-// This is handled by name in uvcWriteKind:value: and in wc_get_parameters.
+// This is handled by name in uvcWriteKind:value:status: and in wc_get_parameters.
 
 static const ControlDesc kControls[] = {
     // Processing Unit controls
@@ -394,11 +421,13 @@ static const int kControlCount = (int)(sizeof(kControls) / sizeof(kControls[0]))
 // Read any UVC control value via GET_CUR / GET_MIN / GET_MAX / GET_RES.
 - (int)uvcGetSelector:(uint8_t)selector request:(uint8_t)req isPU:(BOOL)isPU out:(int32_t *)out size:(uint8_t)size;
 // Write a UVC control by kind name (handles exposure_mode AE-mode mapping internally).
-- (int)uvcWriteKind:(const char *)kind value:(int32_t)value;
+// `outKr` (optional) receives the IOReturn of the transfer, so a refusal by the
+// camera can be reported as such instead of a generic failure.
+- (int)uvcWriteKind:(const char *)kind value:(int32_t)value status:(IOReturn *)outKr;
 // Read the combined 8-byte CT_PANTILT_ABSOLUTE control (pan + tilt) for one request.
 - (int)uvcGetPanTilt:(uint8_t)req pan:(int32_t *)pan tilt:(int32_t *)tilt;
 // Write the combined 8-byte CT_PANTILT_ABSOLUTE control (both axes at once).
-- (int)uvcSetPanTilt:(int32_t)pan tilt:(int32_t)tilt;
+- (int)uvcSetPanTilt:(int32_t)pan tilt:(int32_t)tilt status:(IOReturn *)outKr;
 @end
 
 @implementation WcSessionHandle {
@@ -441,7 +470,7 @@ static const int kControlCount = (int)(sizeof(kControls) / sizeof(kControls[0]))
     return uvc_read_int(_uvcIF, req, unitID, selector, _uvcVCIf, size, out);
 }
 
-- (int)uvcWriteKind:(const char *)kind value:(int32_t)value {
+- (int)uvcWriteKind:(const char *)kind value:(int32_t)value status:(IOReturn *)outKr {
     // Find the descriptor.
     const ControlDesc *d = NULL;
     for (int i = 0; i < kControlCount; i++) {
@@ -467,13 +496,13 @@ static const int kControlCount = (int)(sizeof(kControls) / sizeof(kControls[0]))
     }
     NSLog(@"[uvc] write kind=%s value=%d bytes=[%02X %02X %02X %02X]",
           kind, (int)uvcVal, buf[0], buf[1], buf[2], buf[3]);
-    return uvc_set_cur(_uvcIF, unitID, d->uvc_selector, _uvcVCIf, buf, d->uvc_size);
+    return uvc_set_cur(_uvcIF, unitID, d->uvc_selector, _uvcVCIf, buf, d->uvc_size, outKr);
 }
 
 - (int)uvcGetPanTilt:(uint8_t)req pan:(int32_t *)pan tilt:(int32_t *)tilt {
     if (!_uvcIF || !_uvcCT) return -1;
     uint8_t buf[8] = {0};
-    if (uvc_get_req(_uvcIF, req, _uvcCT, UVC_CT_PANTILT_ABSOLUTE, _uvcVCIf, buf, 8) != 0)
+    if (uvc_get_req(_uvcIF, req, _uvcCT, UVC_CT_PANTILT_ABSOLUTE, _uvcVCIf, buf, 8, NULL) != 0)
         return -1;
     int32_t p, t;
     memcpy(&p, buf,     4);  // dwPanAbsolute  (little-endian on the wire = host)
@@ -483,13 +512,13 @@ static const int kControlCount = (int)(sizeof(kControls) / sizeof(kControls[0]))
     return 0;
 }
 
-- (int)uvcSetPanTilt:(int32_t)pan tilt:(int32_t)tilt {
+- (int)uvcSetPanTilt:(int32_t)pan tilt:(int32_t)tilt status:(IOReturn *)outKr {
     if (!_uvcIF || !_uvcCT) return -1;
     uint8_t buf[8] = {0};
     memcpy(buf,     &pan,  4);
     memcpy(buf + 4, &tilt, 4);
     NSLog(@"[uvc] write pantilt pan=%d tilt=%d", pan, tilt);
-    return uvc_set_cur(_uvcIF, _uvcCT, UVC_CT_PANTILT_ABSOLUTE, _uvcVCIf, buf, 8);
+    return uvc_set_cur(_uvcIF, _uvcCT, UVC_CT_PANTILT_ABSOLUTE, _uvcVCIf, buf, 8, outKr);
 }
 @end
 
@@ -1084,8 +1113,9 @@ int wc_get_parameters(void *handle, WcParamDesc *out, int capacity) {
 // C interface — parameter setting
 // ---------------------------------------------------------------------------
 
-int wc_set_parameter(void *handle, const char *kind, int value) {
-    if (!handle || !kind) return -1;
+int wc_set_parameter(void *handle, const char *kind, int value, uint32_t *out_status) {
+    if (out_status) *out_status = 0;
+    if (!handle || !kind) return WC_SET_UNKNOWN_KIND;
     WcSessionHandle *h = (__bridge WcSessionHandle *)handle;
 
     // Video format switch — does not go through UVC, just changes activeFormat.
@@ -1097,7 +1127,7 @@ int wc_set_parameter(void *handle, const char *kind, int value) {
         if (!vf || value < 0 || (NSUInteger)value >= vf.count) {
             NSLog(@"[wc] video_format: invalid index %d (count=%lu)",
                   value, (unsigned long)vf.count);
-            return -1;
+            return WC_SET_BAD_VALUE;
         }
         AVCaptureDeviceFormat *fmt = vf[(NSUInteger)value];
         CMVideoDimensions d = CMVideoFormatDescriptionGetDimensions(fmt.formatDescription);
@@ -1109,7 +1139,7 @@ int wc_set_parameter(void *handle, const char *kind, int value) {
         if (![h.device lockForConfiguration:&lockErr]) {
             if (wasRunning) [h.session startRunning];
             NSLog(@"[wc] video_format: lockForConfiguration failed: %@", lockErr);
-            return -1;
+            return WC_SET_FAILED;
         }
 
         BOOL ok = YES;
@@ -1125,22 +1155,31 @@ int wc_set_parameter(void *handle, const char *kind, int value) {
 
         if (ok) {
             NSLog(@"[wc] video_format set to index %d (%dx%d)", value, d.width, d.height);
-            return 0;
+            return WC_SET_OK;
         }
-        return -1;
+        return WC_SET_FAILED;
     }
 
-    if (![h uvcAvailable]) return -1;
+    // No UVC write access at all: the device was not USB, was not found in the
+    // IOKit registry, or refused to open. Reads still work (they go through CMIO),
+    // which is why the parameter was offered in the first place.
+    if (![h uvcAvailable]) return WC_SET_NO_UVC;
+
+    IOReturn kr = kIOReturnSuccess;
 
     // PanTilt: combined 8-byte UVC control (selector 0x0D). Read the current pair,
     // replace only the requested axis, and write the pair back so the other axis
     // is preserved.
     if (strcmp(kind, "pan_absolute") == 0 || strcmp(kind, "tilt_absolute") == 0) {
         int32_t pan = 0, tilt = 0;
-        if ([h uvcGetPanTilt:0x81 pan:&pan tilt:&tilt] != 0) return -1;
+        if ([h uvcGetPanTilt:0x81 pan:&pan tilt:&tilt] != 0) return WC_SET_USB_FAILED;
         if (strcmp(kind, "pan_absolute") == 0) pan  = (int32_t)value;
         else                                   tilt = (int32_t)value;
-        return [h uvcSetPanTilt:pan tilt:tilt];
+        if ([h uvcSetPanTilt:pan tilt:tilt status:&kr] != 0) {
+            if (out_status) *out_status = (uint32_t)kr;
+            return WC_SET_USB_FAILED;
+        }
+        return WC_SET_OK;
     }
 
     // Look up descriptor.
@@ -1148,7 +1187,7 @@ int wc_set_parameter(void *handle, const char *kind, int value) {
     for (int i = 0; i < kControlCount; i++) {
         if (strcmp(kControls[i].kind, kind) == 0) { d = &kControls[i]; break; }
     }
-    if (!d) return -1;
+    if (!d) return WC_SET_UNKNOWN_KIND;
 
     // CMIO cooperation: switch the kernel driver's auto/manual state before the UVC write.
     // Range controls always force manual (0); auto toggles mirror the requested value.
@@ -1158,7 +1197,7 @@ int wc_set_parameter(void *handle, const char *kind, int value) {
         cmio_set_auto_manual(cmioID, d->cmio_auto_class, autoVal);
     }
 
-    int ret = [h uvcWriteKind:kind value:(int32_t)value];
+    int ret = [h uvcWriteKind:kind value:(int32_t)value status:&kr];
 
     // AVFoundation continuously re-applies its own auto modes; sync it after a successful write
     // so it stops fighting our UVC state.
@@ -1193,5 +1232,12 @@ int wc_set_parameter(void *handle, const char *kind, int value) {
         }
     }
 
-    return ret;
+    if (ret != 0) {
+        // kr untouched means uvcWriteKind gave up before issuing a transfer (no
+        // Processing Unit / Camera Terminal for this control, or an unencodable size).
+        if (kr == kIOReturnSuccess) return WC_SET_FAILED;
+        if (out_status) *out_status = (uint32_t)kr;
+        return WC_SET_USB_FAILED;
+    }
+    return WC_SET_OK;
 }

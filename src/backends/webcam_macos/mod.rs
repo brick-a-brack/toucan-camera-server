@@ -67,7 +67,12 @@ extern "C" {
     ) -> c_int;
     fn wc_free_frame(data: *mut u8);
     fn wc_get_parameters(handle: *mut c_void, out: *mut WcParamDesc, capacity: c_int) -> c_int;
-    fn wc_set_parameter(handle: *mut c_void, kind: *const c_char, value: c_int) -> c_int;
+    fn wc_set_parameter(
+        handle:     *mut c_void,
+        kind:       *const c_char,
+        value:      c_int,
+        out_status: *mut u32,
+    ) -> c_int;
 }
 
 // ---------------------------------------------------------------------------
@@ -421,17 +426,74 @@ fn set_parameter_impl(
     sessions: &HashMap<String, SessionHandle>,
 ) -> Result<(), CameraError> {
     let handle = sessions.get(device_id).ok_or(CameraError::NotConnected)?.0;
-    let c_kind = param_type_to_c_kind(param_type).ok_or(CameraError::NotSupported)?;
-    let c_kind = CString::new(c_kind).map_err(|_| CameraError::NotSupported)?;
+    let kind = param_type_to_c_kind(param_type).ok_or(CameraError::NotSupported)?;
+    let c_kind = CString::new(kind).map_err(|_| CameraError::NotSupported)?;
 
     let int_val: i32 = match value {
         "true"  => 1,
         "false" => 0,
-        v       => v.parse().map_err(|_| CameraError::NotSupported)?,
+        v       => v
+            .parse()
+            .map_err(|_| CameraError::Backend(format!("'{v}' is not a valid value for {kind}")))?,
     };
 
-    let ret = unsafe { wc_set_parameter(handle, c_kind.as_ptr(), int_val) };
-    if ret != 0 { Err(CameraError::NotSupported) } else { Ok(()) }
+    let mut status: u32 = 0;
+    let ret = unsafe { wc_set_parameter(handle, c_kind.as_ptr(), int_val, &mut status) };
+    set_outcome(ret, kind, status)
+}
+
+// Bridge outcome codes — keep in sync with the WC_SET_* defines in bridge.h.
+const WC_SET_OK: c_int = 0;
+const WC_SET_UNKNOWN_KIND: c_int = -1;
+const WC_SET_NO_UVC: c_int = -2;
+const WC_SET_BAD_VALUE: c_int = -3;
+const WC_SET_USB_FAILED: c_int = -4;
+const WC_SET_FAILED: c_int = -5;
+
+/// Turns a bridge outcome into an error that says what actually happened.
+///
+/// Only a genuinely unknown control maps to `NotSupported` — the route renders
+/// that as "unknown parameter type", which is what a failed UVC write used to be
+/// reported as, sending everyone looking for a mapping bug that did not exist.
+fn set_outcome(ret: c_int, kind: &str, status: u32) -> Result<(), CameraError> {
+    match ret {
+        WC_SET_OK => Ok(()),
+        WC_SET_UNKNOWN_KIND => Err(CameraError::NotSupported),
+        WC_SET_NO_UVC => Err(CameraError::Backend(format!(
+            "cannot write {kind}: no UVC control access to this camera (not a USB camera, or its control interface could not be opened)"
+        ))),
+        WC_SET_BAD_VALUE => Err(CameraError::Backend(format!(
+            "value rejected for {kind}"
+        ))),
+        WC_SET_USB_FAILED => Err(CameraError::Backend(format!(
+            "the camera did not accept the {kind} write: {}",
+            describe_io_return(status)
+        ))),
+        WC_SET_FAILED => Err(CameraError::Backend(format!(
+            "{kind} could not be applied to this camera"
+        ))),
+        other => Err(CameraError::Backend(format!(
+            "unexpected bridge status {other} while writing {kind}"
+        ))),
+    }
+}
+
+/// Human-readable form of an IOKit / IOUSBFamily `IOReturn`. The raw code is
+/// always included: these constants are not in any header we compile against, so
+/// the name is a hint and the number is the fact.
+fn describe_io_return(kr: u32) -> String {
+    let name = match kr {
+        0x0000_0000 => "success",
+        0xE000_02C0 => "kIOReturnNoDevice (the camera went away)",
+        0xE000_02C1 => "kIOReturnNotPermitted",
+        0xE000_02C5 => "kIOReturnExclusiveAccess (another process owns the camera)",
+        0xE000_02C7 => "kIOReturnUnsupported",
+        0xE000_02CD => "kIOReturnNotOpen (the control interface was never opened)",
+        0xE000_404F => "kIOUSBPipeStalled (the camera rejected this control)",
+        0xE000_4051 => "kIOUSBTransactionTimeout (the camera never answered)",
+        _ => "unrecognized IOKit status",
+    };
+    format!("{name} [0x{kr:08X}]")
 }
 
 /// Applies the cross-backend "disabled" rules so the macOS backend behaves like
@@ -627,4 +689,80 @@ fn capture_photo_impl(
     unsafe { wc_free_frame(data_ptr) };
 
     Ok(bytes)
+}
+
+// ---------------------------------------------------------------------------
+// Tests (macOS only, like the rest of this module — `cargo test` on a Mac)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(e: CameraError) -> String {
+        match e {
+            CameraError::Backend(s) => s,
+            other => format!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn ok_is_ok() {
+        assert!(set_outcome(WC_SET_OK, "white_balance_mode", 0).is_ok());
+    }
+
+    /// Only a control this backend does not know may answer `NotSupported` — the
+    /// route renders that as "unknown parameter type", which is exactly the
+    /// misdiagnosis this mapping exists to prevent.
+    #[test]
+    fn only_unknown_kind_is_not_supported() {
+        assert!(matches!(
+            set_outcome(WC_SET_UNKNOWN_KIND, "nope", 0),
+            Err(CameraError::NotSupported)
+        ));
+        for ret in [WC_SET_NO_UVC, WC_SET_BAD_VALUE, WC_SET_USB_FAILED, WC_SET_FAILED, -99] {
+            assert!(
+                matches!(
+                    set_outcome(ret, "white_balance_mode", 0),
+                    Err(CameraError::Backend(_))
+                ),
+                "ret {ret} must carry a message, not NotSupported"
+            );
+        }
+    }
+
+    /// The failure reported from the field: a Sony body in USB-streaming mode
+    /// never completing SET_CUR on WHITE_BALANCE_TEMPERATURE_AUTO.
+    #[test]
+    fn timeout_message_names_control_and_code() {
+        let m = msg(set_outcome(WC_SET_USB_FAILED, "white_balance_mode", 0xE000_4051).unwrap_err());
+        assert!(m.contains("white_balance_mode"), "{m}");
+        assert!(m.contains("never answered"), "{m}");
+        assert!(m.contains("0xE0004051"), "{m}");
+    }
+
+    /// "The camera refuses this control" and "the camera is not answering" are
+    /// different problems with different fixes; they must not read alike.
+    #[test]
+    fn stall_and_timeout_are_distinguishable() {
+        let stall = msg(set_outcome(WC_SET_USB_FAILED, "brightness", 0xE000_404F).unwrap_err());
+        let timeout = msg(set_outcome(WC_SET_USB_FAILED, "brightness", 0xE000_4051).unwrap_err());
+        assert!(stall.contains("rejected this control"), "{stall}");
+        assert!(timeout.contains("never answered"), "{timeout}");
+        assert_ne!(stall, timeout);
+    }
+
+    /// An unlabelled code must still be actionable: the raw hex is the fact.
+    #[test]
+    fn unknown_code_still_prints_hex() {
+        let m = describe_io_return(0xE000_1234);
+        assert!(m.contains("unrecognized"), "{m}");
+        assert!(m.contains("0xE0001234"), "{m}");
+    }
+
+    #[test]
+    fn no_uvc_access_is_explained() {
+        let m = msg(set_outcome(WC_SET_NO_UVC, "white_balance_mode", 0).unwrap_err());
+        assert!(m.contains("no UVC control access"), "{m}");
+    }
 }

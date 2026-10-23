@@ -61,6 +61,24 @@ void wc_free_frame(uint8_t *data);
 // Returns the number of WcParamDesc written into out[].
 int wc_get_parameters(void *handle, WcParamDesc *out, int capacity);
 
+// Outcome of wc_set_parameter. Negative values are refusals decided here; only
+// WC_SET_USB_FAILED involves the camera, and it is the one case where
+// *out_status carries something (the IOKit/USB IOReturn of the failed transfer).
+//
+// The distinction matters because the Rust side turns WC_SET_UNKNOWN_KIND into
+// "unsupported parameter" and everything else into a message naming the real
+// reason: a UVC write that times out or is refused by the camera used to be
+// reported to the user as "unknown parameter type".
+#define WC_SET_OK             0
+#define WC_SET_UNKNOWN_KIND (-1)  /* no such control in the table */
+#define WC_SET_NO_UVC       (-2)  /* this camera exposes no writable UVC interface */
+#define WC_SET_BAD_VALUE    (-3)  /* the value cannot be encoded for this control */
+#define WC_SET_USB_FAILED   (-4)  /* the USB control transfer failed; see *out_status */
+#define WC_SET_FAILED       (-5)  /* refused locally: AVFoundation (video_format), or
+                                     no unit implements this control, so nothing was
+                                     ever sent to the camera */
+
 // Set a parameter by kind name and integer value.
-// Returns 0 on success, -1 on error or unsupported kind.
-int wc_set_parameter(void *handle, const char *kind, int value);
+// Returns WC_SET_OK or one of the WC_SET_* codes above. `out_status` may be NULL;
+// when non-NULL it is always written (0 unless the result is WC_SET_USB_FAILED).
+int wc_set_parameter(void *handle, const char *kind, int value, uint32_t *out_status);
