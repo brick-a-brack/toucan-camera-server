@@ -90,7 +90,7 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 
 ### Live view & streaming
 - Live view is served as MJPEG over HTTP (`multipart/x-mixed-replace; boundary=frame`).
-- `LiveViewSenders` = `Arc<Mutex<HashMap<String, broadcast::Sender<Arc<Bytes>>>>>` — one sender per active device (keyed by opaque device ID).
+- `LiveViewSenders` = `Arc<Mutex<HashMap<String, LiveViewEntry>>>` — one entry (broadcast sender + `stopped` watch) per active device, keyed by opaque device ID.
 - Only one capture loop runs per device regardless of how many clients are connected. The map holds a `LiveViewEntry` (sender + `stopped` watch) that exists **exactly while its loop runs**: the handler spawns a loop only when it inserts a new entry, and the loop retires (removes its entry) under the same map lock once its last client is gone. Never decide on `receiver_count() == 1` — that raced with an exiting loop (two loops polling one camera, or a new client getting the dying loop's end-of-stream).
 - The loop checks *before every poll* that its entry is still the registered one, so a disconnect stops it immediately. `disconnect_camera` removes the entry, then **waits (≤ 3 s) for the loop's `stopped` signal before calling the backend's `disconnect`**: an in-flight frame poll must never overlap the session teardown. Covered by `tests/liveview.rs` (mock backend).
 - `EDS_ERR_OBJECT_NOTREADY` (0x0000A102) during frame capture is skipped (continue), not fatal.
