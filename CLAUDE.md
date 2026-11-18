@@ -186,6 +186,12 @@ DELETE /peers/{id}                   — remove a peer (204, or 404 if unknown)
 | exposure_time_absolute | CT | 0x04 | 4 (100µs units) |
 | zoom_absolute | CT | 0x0B | 2 |
 
+### Windows webcam backend (Media Foundation + DirectShow)
+- Source: `src/backends/webcam_windows/mod.rs`, one STA actor thread (`webcam-windows-sdk`) that pumps Windows messages. Media Foundation (`IMFSourceReader`) for regular webcams; DirectShow (native IDs prefixed `ds|`, custom sink filter) for devices MF does not expose.
+- **Sessions must release the camera when they end**, or the next connect opens a device the process still holds and live view never starts. MF: `close_device` drops the reader, `Shutdown`s the source, then `ShutdownObject`s the activate (which caches the source). DirectShow: `ds_teardown` stops the graph and `RemoveFilter`s both filters — our sink holds the graph from `JoinFilterGraph` and the graph holds our sink, so merely dropping the graph leaks the whole graph, capture filter included. Error paths of `connect` tear down too.
+- **The photo-stream probe (`probe_photo_stream`) uses its own activate**, shut down before the live-view source is opened: an MF device activate returns the same cached source to every `ActivateObject` caller, so a capture engine built on the reader's activate initialized on — and on release tore down — the live-view source.
+- **A failed source reader is reopened in place** (`reopen_device`, at most once per `REOPEN_INTERVAL`, keeping the chosen format): after a `ReadSample` error or `MF_SOURCE_READERF_ERROR` MF never delivers another sample, while the source still looks alive. A device that cannot be reopened is dropped so it reports disconnected.
+
 ### Camera2 backend (Android)
 - Source: `src/backends/camera2_android/bridge.c` (NDK Camera2 + Media NDK) + `src/backends/camera2_android/mod.rs` (Rust actor over `std::sync::mpsc`, like the other native backends).
 - `backend_id()` is `"camera2-android"`. Compiled only for `target_os = "android"`, gated behind `backend-camera2-android`.
