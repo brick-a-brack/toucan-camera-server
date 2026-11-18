@@ -53,6 +53,40 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
+  # Tests — unit tests (#[cfg(test)] modules) + integration tests (tests/)
+  # Runs every feature that builds without a vendor SDK: the Canon / Sony /
+  # Nikon backends link or stage proprietary runtimes and only compile in the
+  # build jobs. libgphoto2 comes from apt here — the unit tests exercise the
+  # backend's pure logic, so the pinned from-source build is not needed.
+  # The release is gated on this job.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # No features: the core (routes, DeviceId, frame averaging) and the
+          # pure-Rust JPEG rotation fallback.
+          - name: core
+            features: ""
+          # Every SDK-free backend, plus the libjpeg (mozjpeg-sys) rotation path.
+          - name: all SDK-free features
+            features: "backend-remote,backend-gphoto2,backend-webcam-linux,jpeg-rotate"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        if: matrix.features != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libgphoto2-dev
+
+      - name: Run tests
+        run: cargo test --locked --features "${{ matrix.features }}"
+
+  # ---------------------------------------------------------------------------
   # macOS — Universal Binary (x86_64 + arm64)
   # The Canon EDSDK.framework ships as a universal binary, so a single output
   # binary works natively on both Intel and Apple Silicon Macs.
@@ -720,7 +754,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: Attach to draft release
-    needs: [build-macos, build-windows, build-linux, build-android]
+    needs: [test, build-macos, build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
