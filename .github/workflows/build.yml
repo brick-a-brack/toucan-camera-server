@@ -716,8 +716,8 @@ jobs:
   # ---------------------------------------------------------------------------
   # WebAssembly — the camera API in a browser (wasm/README.md)
   # Rust crate → wasm32 + wasm-bindgen; libgphoto2 + libusb (WebUSB backend) →
-  # Emscripten, in the emscripten/emsdk Docker image. Same LIBGPHOTO2_REF as the
-  # native builds, so the browser and the server run the same libgphoto2.
+  # Emscripten, in the emscripten/emsdk Docker image. Upstream libgphoto2,
+  # unpatched, at the same LIBGPHOTO2_REF as the native builds.
   # ---------------------------------------------------------------------------
   build-wasm:
     name: Build (WebAssembly)
@@ -736,7 +736,8 @@ jobs:
         run: cargo test --manifest-path wasm/Cargo.toml
 
       - name: Build libgphoto2 for WebUSB (Emscripten)
-        run: wasm/gphoto2/build.sh LIBGPHOTO2_REF=${{ env.LIBGPHOTO2_REF }}
+        # The Makefile reads LIBGPHOTO2_REF from this file: one ref for every build.
+        run: wasm/gphoto2/build.sh
 
       - name: Build
         run: SKIP_GPHOTO2=1 wasm/build.sh

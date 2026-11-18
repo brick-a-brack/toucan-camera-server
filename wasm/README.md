@@ -42,7 +42,7 @@ backend only. The CI job `build-wasm` publishes the built site as
 | Need | Why |
 |---|---|
 | Secure context (`https://` or `http://localhost`) | `getUserMedia` and WebUSB require it |
-| Cross-origin isolation (`COOP: same-origin` + `COEP: require-corp`) | libgphoto2 is built with pthreads → `SharedArrayBuffer` |
+| Cross-origin isolation (`COOP: same-origin` + `COEP: require-corp`) | libusb's WebUSB backend waits on shared memory (`Atomics.waitAsync`), so the module is built with pthreads → `SharedArrayBuffer` |
 | Chromium (Chrome, Edge, Opera…) for USB cameras | WebUSB is not in Firefox/Safari; webcams work everywhere |
 
 `serve.mjs` sets the headers. Any other host must send them too.
@@ -104,12 +104,41 @@ wasm/
     webcam-bridge.js    getUserMedia, hidden <video>, frame grabs
     gphoto2-bridge.js   loads the Emscripten module, serialises calls, keep-alive
   gphoto2/              libgphoto2 → WebAssembly
-    toucan_gphoto2.cpp  embind API: autodetect, sessions per port, config, capture
+    toucan_gphoto2.cpp  embind API: autodetect, sessions per port, config, capture,
+                        plugin preload table, diagnostics, debug log
     Makefile, Dockerfile, build.sh
-    patches/libgphoto2-emscripten.patch
   www/index.html        test page
   serve.mjs             static server with COOP/COEP
 ```
+
+### libgphoto2: upstream, unmodified, same version as the server
+
+No fork and no patch. The Makefile checks out **upstream libgphoto2 at the
+`LIBGPHOTO2_REF` of `.github/workflows/build.yml`**, the ref the native
+releases are built from, so the browser and the server always run the same
+libgphoto2. Bumping that one line moves both. To try another ref:
+`wasm/gphoto2/build.sh LIBGPHOTO2_REF=<sha|tag|branch>`.
+
+web-gphoto2 patched libgphoto2's sources for two reasons, both now handled
+outside libgphoto2:
+
+- **Plugin discovery.** libgphoto2 lists its camlib/iolib directories and
+  `dlopen`s each plugin through libltdl, and WebAssembly has no `dlopen`. The
+  ptp2 camlib and the usb1 iolib are linked in as static archives instead.
+  `toucan_gphoto2.cpp` registers a libltdl preload table naming their six entry
+  points (`camera_id`, `gp_port_library_type`…), and writes one `.la` stub per
+  plugin into Emscripten's in-memory filesystem, where `CAMLIBS` / `IOLIBS`
+  point. libltdl then resolves the "files" from the table. The table is written
+  by hand because libtool's `-dlpreopen` prefixes every symbol with `lib` on an
+  OS it does not know (Emscripten), which is what the patch's `_LTX_` renames
+  worked around.
+- **Threads.** libusb's WebUSB backend needs shared memory, and wasm objects
+  with and without it cannot be linked together, so every library is compiled
+  with `-pthread`: a build flag instead of the patch's `configure.ac` change.
+
+`diagnostics()` (shown on the test page) reports what the build can drive:
+2468 camera models for the pinned ref. 0 would mean plugin discovery failed.
+Add `?debug` to the page URL to get libgphoto2's own log in the console.
 
 ### Why two WebAssembly modules
 
@@ -134,8 +163,8 @@ The libgphoto2 port builds on the work referenced in
   [Porting USB applications to the web: libusb](https://web.dev/articles/porting-libusb-to-webusb) /
   [gPhoto2](https://web.dev/articles/porting-gphoto2-to-the-web);
 - [edward-io/web-gphoto2](https://github.com/edward-io/web-gphoto2), the fork
-  updated to a current libgphoto2, whose `libgphoto2-emscripten.patch` is
-  vendored here unchanged.
+  updated to a current libgphoto2. Its patch showed what had to change; here
+  that is done without modifying libgphoto2 (see above).
 
 `toucan_gphoto2.cpp` is derived from web-gphoto2's `api.cpp`. Its changes:
 several cameras by port instead of "the first one", bytes instead of Blobs, and

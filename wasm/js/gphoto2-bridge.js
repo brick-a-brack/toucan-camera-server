@@ -66,9 +66,24 @@ export class GPhoto2Bridge {
   }
 
   /** libgphoto2's version string (loads the module). */
-  async version() {
-    const module = await this.#load();
-    return module.libgphoto2Version();
+  version() {
+    return this.#run((m) => m.libgphoto2Version());
+  }
+
+  /**
+   * What this libgphoto2 build can drive: `{ version, preloaded, models, ports }`.
+   * `models` is 0 when plugin discovery failed.
+   */
+  diagnostics() {
+    return this.#run((m) => m.diagnostics());
+  }
+
+  /**
+   * Prints libgphoto2's own log to the console (what `gphoto2 --debug` shows).
+   * `verbose` adds the raw USB/PTP data.
+   */
+  setDebugLog(verbose = false) {
+    return this.#run((m) => m.enableDebugLog(verbose));
   }
 
   // --- API used by the Rust backend -----------------------------------------
@@ -146,7 +161,9 @@ export class GPhoto2Bridge {
   }
 
   // libgphoto2 runs under Asyncify, which can only have one suspended call at
-  // a time across the whole module: every call goes through this queue.
+  // a time across the whole module — and entering the module at all while one
+  // is suspended (even a synchronous getter) corrupts it and the pending call
+  // never resolves. So EVERY call into the module goes through this queue.
   #run(op) {
     const result = this.#queue.then(async () => op(await this.#load()));
     this.#queue = result.catch(() => {});

@@ -122,6 +122,7 @@
           Webcams appear once camera access is allowed. A DSLR / mirrorless body must be granted
           through the USB picker (Chrome/Edge), plugged in, switched on, and set to PTP / "PC remote" mode.
           On Linux, unload the kernel's claim first if needed; on Windows the body needs the WinUSB driver.
+          Add <code>?debug</code> to the URL to get libgphoto2's log in the browser console.
         </p>
       </section>
 
@@ -572,7 +573,14 @@
       const extra = [];
       if (state.toucan.bridges.gphoto2) {
         try {
-          extra.push(['libgphoto2', 'ok', await state.toucan.bridges.gphoto2.version()]);
+          const d = await state.toucan.bridges.gphoto2.diagnostics();
+          const ok = d.models > 0 && d.ports.length > 0;
+          extra.push(['libgphoto2', ok ? 'ok' : 'err',
+            `${d.version} · ${d.models} camera models (${d.preloaded.join(', ')}) · ports: ${d.ports.join(', ') || 'none'}`]);
+          if (new URLSearchParams(location.search).has('debug')) {
+            await state.toucan.bridges.gphoto2.setDebugLog(false);
+            log('libgphoto2 debug log enabled (see the browser console)');
+          }
         } catch (err) {
           extra.push(['libgphoto2', 'err', `module failed to load: ${err.message}`]);
           log(`libgphoto2: ${err.message}`, 'e');
@@ -581,7 +589,10 @@
       renderChecks(extra);
       log(`ready — backends: ${health.backends.join(', ')}`);
       await refresh();
-      setInterval(refresh, 5000); // like the native web UI
+      // No polling (the native web UI polls every 5 s): the browser reports
+      // plugged/unplugged devices itself (usb connect/disconnect, devicechange,
+      // wired above), and a libgphoto2 listing holds its queue ~0.5 s, which
+      // would stall a DSLR live view on every poll.
     } catch (err) {
       $('version').textContent = 'failed to load';
       log(`startup: ${errorText(err)}`, 'e');
