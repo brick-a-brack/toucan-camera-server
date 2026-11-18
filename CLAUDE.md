@@ -18,7 +18,7 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 ### Device IDs
 - All device IDs exposed by the API are **opaque, URL-safe base64url strings**.
 - Format: `base64url("<backend_id>:<native_id>")` — e.g. `base64url("canon:USB:0,1,0")`.
-- Encoding/decoding is handled by `DeviceId` in `src/camera/mod.rs`.
+- Encoding/decoding is handled by `DeviceId` in `src/camera/types.rs` (re-exported by `src/camera/mod.rs`).
 - Backends work exclusively with **native IDs** (e.g. Canon port names). They never see or produce opaque IDs directly, except in `list_devices` where they call `DeviceId::new(...).encode()` to build the `DeviceInfo.id` field.
 - Opaque IDs allow direct backend routing without trying all backends: decode → read `backend` field → look up in `BackendState` HashMap.
 
@@ -104,7 +104,7 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 - Response headers: `Content-Type: image/jpeg`, `Content-Length: <size>`.
 - No base64, no JSON wrapper — raw binary only.
 - Only JPEG output is supported for now (no RAW/CR3).
-- **Frame averaging**: the optional `?frames=N` query parameter captures N consecutive shots and averages them pixel by pixel (random sensor noise cancels out; noise sigma drops by sqrt(N)). Default / absent / malformed / `0` → `1` (averaging disabled, the camera's JPEG is returned untouched — no re-encode), capped at `MAX_AVERAGING_FRAMES` = 20. The burst and the merge run in a single `spawn_blocking` (shots must be consecutive on the same session). Frames of differing sizes abort with 500 (`frame size inconsistency`); the merged image is re-encoded at JPEG quality 95. Logic + unit tests in `src/routes/cameras.rs` (`parse_frame_count`, `average_frames`).
+- **Frame averaging**: the optional `?frames=N` query parameter captures N consecutive shots and averages them pixel by pixel (random sensor noise cancels out; noise sigma drops by sqrt(N)). Default / absent / malformed / `0` → `1` (averaging disabled, the camera's JPEG is returned untouched — no re-encode), capped at `MAX_AVERAGING_FRAMES` = 20. The burst and the merge run in a single `spawn_blocking` (shots must be consecutive on the same session). Frames of differing sizes abort with 500 (`frame size inconsistency`); the merged image is re-encoded at JPEG quality 95. Logic + unit tests in `src/camera/averaging.rs` (`parse_frame_count`, `average_frames`), shared with the WebAssembly build.
 
 ### HTTP layer
 - Framework: `axum` (not actix-web).
@@ -250,7 +250,22 @@ DELETE /peers/{id}                   — remove a peer (204, or 404 if unknown)
   - Read-only widgets are skipped. Config-key name → `ParameterType` mapping is in `param_type_for`; the reverse (for `set_parameter`) is `config_key_for`.
 - **Keep-alive**: Canon bodies refuse to have `autopoweroff` disabled (PTP `0x2019` Device Busy), so a background `gphoto2-keepalive` thread (`spawn_keepalive`) pings every connected camera every 30 s via `camera.config()` — any PTP activity resets the body's idle timer (the EOS Utility trick), preventing it from sleeping and vanishing mid-session.
 - **Live view / capture**: `get_live_view_frame` uses `capture_preview()` (no shutter actuation); `capture_photo` uses `capture_image()` + in-memory download (JPEG only — make sure the body is in a JPEG image-quality mode).
-- Unit tests for the pure logic (key mapping, the auto/bulb/RAW heuristics incl. localized labels, Canon deferral) live in the file's `#[cfg(test)]` module; run with `cargo test --features backend-gphoto2`.
+- **Curation lives in `curation.rs`, not `mod.rs`**: everything that turns a widget into `CameraParameter`s (`leaf_params`, `curate`, `CONFIG_KEYS`, the auto/bulb/RAW heuristics) works on a backend-neutral `Leaf` (`Choice` / `Range` / `Toggle`) and depends only on `crate::camera`. `mod.rs` converts `gphoto2::Widget` → `Leaf`; the WebAssembly build converts its own JSON config tree → `Leaf` and `#[path]`-includes the same file. Keep it free of the `gphoto2` crate, `std::env`, threads and I/O, or the wasm build breaks.
+- Unit tests for the pure logic (key mapping, the auto/bulb/RAW heuristics incl. localized labels) live in `curation.rs`; the USB/dedup ones stay in `mod.rs`. Run with `cargo test --features backend-gphoto2` (and `cargo test --manifest-path wasm/Cargo.toml`, which runs the curation tests too).
+
+### WebAssembly build (`wasm/`)
+- The camera API in a browser page: a standalone crate (`wasm/Cargo.toml`, its own `[workspace]`, **not** a feature of the server crate — tokio/axum/the SDKs never reach wasm32) exposing `ToucanServer` via wasm-bindgen. Backends: `webcam-browser` (`getUserMedia`) and `gphoto2` (libgphoto2 compiled with Emscripten, over WebUSB). See `wasm/README.md`.
+- **Shared sources, not copies**: `wasm/src/lib.rs` `#[path]`-includes `src/camera/types.rs` (data model), `src/camera/averaging.rs` (`?frames=N`) and `src/backends/gphoto2/curation.rs`. Those files must stay dependency-light (base64/serde/thiserror/image only) and platform-neutral; a server-only need goes elsewhere. Their `#[cfg(test)]` modules run in both crates.
+- `WebBackend` (`wasm/src/backend.rs`) is `CameraBackend` made async (boxed `!Send` futures, `RefCell` state — a page is single-threaded). `wasm/src/api.rs` mirrors `routes/cameras.rs`: same paths, bodies, status codes and error strings, unit-tested against a fake backend. Keep the two in sync when a route changes. Live view is the one route served differently: the router answers `LiveView { id }` and `js/toucan.js` assembles the MJPEG stream from `liveViewFrame()` polls.
+- **Two wasm modules, one page**: Emscripten and wasm-bindgen output cannot be linked together, so libgphoto2 (`wasm/gphoto2/out/toucan_gphoto2.{mjs,wasm}`) and the Rust crate meet in JS (`js/gphoto2-bridge.js`), passing plain data only. `toucan_gphoto2.cpp` returns `{ error, code }` instead of throwing (the module builds without `-fexceptions`; `code` is libgphoto2's result code, used for the focus-drive refusal check).
+- **Asyncify allows one suspended call per module**: every call into the libgphoto2 module goes through the bridge's queue — **even synchronous getters** (`libgphoto2Version`, `enableDebugLog`): entering the module while another call is suspended corrupts it and the pending promise never resolves (an intermittent startup hang, seen with the page's `diagnostics()` racing `version()`), and every embind function that may touch USB is bound with `emscripten::async()`. `Session::close()` must be awaited before `delete()` — the C++ destructor must not do I/O.
+- **libgphoto2 build** (`wasm/gphoto2/Makefile`, run in the `emscripten/emsdk:3.1.73` image by `build.sh`): **upstream libgphoto2, unpatched, at the `LIBGPHOTO2_REF` of `.github/workflows/build.yml`** — the Makefile reads it from there, so the browser and the native releases always build the same libgphoto2; never vendor a patch or point at a fork. Plus libusb 1.0.27 (its WebUSB backend), libltdl, ptp2 camlib only.
+  - **Plugin discovery without dlopen**: libptp2.a / libusb1.a are linked as plain archives, and `toucan_gphoto2.cpp` (`kPreloaded`, `ensure_plugins`) registers a hand-written libltdl preload table + writes `.la` stubs (`old_library='libptp2.a'`) into MEMFS dirs that `CAMLIBS`/`IOLIBS` point at. Not libtool's `-dlpreopen`: on Emscripten (an OS libtool doesn't know, `need_lib_prefix=unknown`) it names every symbol `lib<sym>` and libltdl never finds `camera_id`. The table **must start with `{"@PROGRAM@", NULL}`**: a handle is the whole list and `vm_sym` skips its first two entries. Adding a camlib = add its archive to the link and its three entry points to the table (they would clash by name — at that point prefix them in the table with `<module>_LTX_`, which libltdl tries first, and keep the plain names unique).
+  - `diagnostics()` must report > 0 models (2468 for the pinned ref) — a regression check for the above; `?debug` on the test page enables libgphoto2's log.
+  - **`-pthread` on every library** (`COMMON_FLAGS`): libusb's WebUSB backend waits with `Atomics.waitAsync` on the heap even single-threaded (1.0.27 → 1.0.29), so shared memory is mandatory and objects cannot mix; pages need COOP/COEP.
+  - Gotchas met: the final link must use **libgphoto2's own generated `libtool`** (the system one compiles helper C with host `gcc`); configure's libltdl check must not be given a `.la` path (it link-tests with raw `emcc`); tarballs are downloaded to a file before `tar xf` (tar cannot detect compression on stdin).
+- The webcam bridge applies writes as `advanced` constraints (Chrome rejects `exact` for image-capture constraints like `exposureTime`) and then **reads `getSettings()` back**: an advanced constraint the camera cannot honour is silently skipped, so a value that did not stick is reported as an error. Fractional constraints (zoom 0.1, focus distance in metres) are scaled by a power of ten to fit the integer `Range` model (`scale_for`).
+- Test locally: `wasm/build.sh && node wasm/serve.mjs` → `http://localhost:8080/` (test page). Headless check: Chromium with `--use-fake-device-for-media-stream --use-fake-ui-for-media-stream` exercises the whole webcam path; the fake device only supports manual exposure/focus.
 
 ## Canon SDK
 - SDK files live in `external/EDSDK/` (git-ignored).
@@ -269,8 +284,10 @@ src/
                         build_router, Android JNI entry points (android_jni)
   auth.rs             — bearer-token auth middleware (Authorization header or ?token=)
   camera/
-    mod.rs            — CameraBackend trait, DeviceId, DeviceInfo, CameraError,
-                        CameraParameter, ParameterOption
+    mod.rs            — CameraBackend trait (re-exports types.rs)
+    types.rs          — DeviceId, DeviceInfo, CameraError, CameraParameter,
+                        ParameterOption (shared with wasm/)
+    averaging.rs      — ?frames=N frame averaging (shared with wasm/)
     rotation.rs       — device-orientation angle maths, JPEG SOF/EXIF inspection,
                         lossless (DCT) rotation + never-cropping re-encode fallback
     jpeg_rotate.c     — libjpeg pipeline behind a setjmp (jpeg_rotate.h): lossless
@@ -286,8 +303,9 @@ src/
       bridge.cpp      — flat C shim over the async C++ CrSDK (IDeviceCallback,
                         blocking connect/capture), bridge.h + README.md
     gphoto2/
-      mod.rs          — libgphoto2 backend (PTP/USB cameras): param curation,
+      mod.rs          — libgphoto2 backend (PTP/USB cameras): widget → Leaf,
                         LC_ALL=C labels, keep-alive thread, Canon deferral to EDSDK
+      curation.rs     — param curation on backend-neutral leaves (shared with wasm/)
     webcam_windows/
       mod.rs          — MediaFoundation + DirectShow backend (Windows webcams)
     webcam_macos/
@@ -309,6 +327,8 @@ android/              — Android app (Gradle, Compose) wrapping the cdylib
     ServerState.kt         — Kotlin mirror of serverStatusJson()
     MainActivity.kt        — Compose host, LAN address, token persistence
     ui/server/             — ServerUiState + screen and components
+wasm/                 — WebAssembly build (browser): Rust crate + JS bridges +
+                        libgphoto2/Emscripten build + test page (wasm/README.md)
 build.rs              — SDK linking + DLL copy based on active features and target OS
 ```
 

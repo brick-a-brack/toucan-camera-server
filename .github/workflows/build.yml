@@ -714,13 +714,52 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
+  # WebAssembly — the camera API in a browser (wasm/README.md)
+  # Rust crate → wasm32 + wasm-bindgen; libgphoto2 + libusb (WebUSB backend) →
+  # Emscripten, in the emscripten/emsdk Docker image. Upstream libgphoto2,
+  # unpatched, at the same LIBGPHOTO2_REF as the native builds.
+  # ---------------------------------------------------------------------------
+  build-wasm:
+    name: Build (WebAssembly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust wasm32 target and wasm-bindgen
+        run: |
+          rustup target add wasm32-unknown-unknown
+          WB=$(sed -n 's/^wasm-bindgen = "=\(.*\)"/\1/p' wasm/Cargo.toml)
+          cargo install wasm-bindgen-cli --version "$WB" --locked
+
+      - name: Test (host)
+        # The shared server sources (#[path]-included) run their own tests here too.
+        run: cargo test --manifest-path wasm/Cargo.toml
+
+      - name: Build libgphoto2 for WebUSB (Emscripten)
+        # The Makefile reads LIBGPHOTO2_REF from this file: one ref for every build.
+        run: wasm/gphoto2/build.sh
+
+      - name: Build
+        run: SKIP_GPHOTO2=1 wasm/build.sh
+
+      - name: Package
+        run: |
+          cp wasm/serve.mjs wasm/README.md wasm/dist/
+          (cd wasm/dist && zip -r ../../toucan-camera-server-wasm.zip .)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: toucan-camera-server-wasm
+          path: toucan-camera-server-wasm.zip
+
+  # ---------------------------------------------------------------------------
   # Attach to current draft release
   # Runs on master/dev pushes. Finds the most recent draft release and uploads
   # built binaries to it. Does nothing if no draft release exists.
   # ---------------------------------------------------------------------------
   release:
     name: Attach to draft release
-    needs: [build-macos, build-windows, build-linux, build-android]
+    needs: [build-macos, build-windows, build-linux, build-android, build-wasm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -761,6 +800,12 @@ jobs:
           name: toucan-camera-server-lib-android
           path: dist/
 
+      - name: Download WebAssembly artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: toucan-camera-server-wasm
+          path: dist/
+
       - name: Attach assets to current draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -780,6 +825,7 @@ jobs:
               dist/toucan-camera-server-linux.zip \
               dist/toucan-camera-server-android.zip \
               dist/toucan-camera-lib-android.zip \
+              dist/toucan-camera-server-wasm.zip \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
           else

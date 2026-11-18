@@ -74,6 +74,19 @@ native calls. See **[docs/android-embedding.md](docs/android-embedding.md)** for
 contract, and note the one constraint: JNI short names pin the declaring class to
 `com.brickfilms.toucancameraserver.CameraServerService`, whatever your own package is.
 
+## Run it in a browser (WebAssembly)
+
+`wasm/` builds the same camera API to WebAssembly, so it runs inside a web page with no
+install. Webcams go through `getUserMedia`, and DSLR / mirrorless bodies through libgphoto2
+compiled with Emscripten over WebUSB (Chrome / Edge). It has the same routes, the same
+parameter JSON, and the same `?frames=N` averaging, plus a test page:
+
+```sh
+wasm/build.sh && node wasm/serve.mjs   # then open http://localhost:8080/
+```
+
+See **[wasm/README.md](wasm/README.md)** for the requirements and the JS API.
+
 ## Contribute
 
 Feel free to make pull-requests or report issues 😉

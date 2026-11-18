@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Toucan WebAssembly test bench</title>
+  <style>
+    :root {
+      --bg: #0f0f10;
+      --panel: #18181b;
+      --panel-2: #212126;
+      --border: #2e2e35;
+      --text: #ececf1;
+      --muted: #9a9aa6;
+      --accent: #f2a541;
+      --accent-ink: #1b1306;
+      --ok: #4cc38a;
+      --warn: #e5b454;
+      --err: #ef6b6b;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color-scheme: dark;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f6f6f8; --panel: #ffffff; --panel-2: #f0f0f3; --border: #dcdce2;
+        --text: #18181b; --muted: #61616b; --accent: #c7761a; --accent-ink: #ffffff;
+        --ok: #1f8f5b; --warn: #a87613; --err: #c43c3c;
+        color-scheme: light;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, sans-serif; }
+    header { padding: 20px 24px 8px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; }
+    h1 { font-size: 1.35rem; margin: 0; font-weight: 650; }
+    h1 span { color: var(--accent); }
+    h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+    .sub { color: var(--muted); }
+    main { display: grid; grid-template-columns: minmax(280px, 360px) 1fr; gap: 16px; padding: 16px 24px 32px; align-items: start; }
+    @media (max-width: 900px) { main { grid-template-columns: 1fr; padding: 12px 16px; } header { padding: 16px 16px 4px; } }
+    section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; min-width: 0; }
+    .stack { display: grid; gap: 16px; min-width: 0; }
+    button, select, input, textarea { font: inherit; color: inherit; }
+    button {
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 7px 12px; cursor: pointer;
+    }
+    button:hover:not(:disabled) { border-color: var(--accent); }
+    button:disabled { opacity: .45; cursor: default; }
+    button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+    select, input[type=number], input[type=text], textarea {
+      background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px; min-width: 0;
+    }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .checks { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+    .checks li { display: flex; gap: 8px; align-items: baseline; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; transform: translateY(-1px); background: var(--muted); }
+    .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
+    .checks small { color: var(--muted); display: block; }
+    .cams { display: grid; gap: 8px; }
+    .cam {
+      border: 1px solid var(--border); border-radius: 8px; padding: 10px; display: grid; gap: 6px; background: var(--panel-2);
+      cursor: pointer; text-align: left;
+    }
+    .cam.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+    .cam .name { font-weight: 600; overflow-wrap: anywhere; }
+    .badge { font-size: .72rem; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+    .badge.on { color: var(--ok); border-color: var(--ok); }
+    .empty { color: var(--muted); font-style: italic; }
+    .viewer { display: grid; grid-template-columns: 1fr 300px; gap: 16px; }
+    @media (max-width: 1200px) { .viewer { grid-template-columns: 1fr; } }
+    .screen {
+      background: #000; border-radius: 8px; aspect-ratio: 16 / 10; display: grid; place-items: center; overflow: hidden; position: relative;
+    }
+    .screen img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+    .screen .hint { color: #8a8a94; padding: 16px; text-align: center; }
+    .stats { position: absolute; top: 8px; left: 8px; font: 12px var(--mono); background: rgba(0,0,0,.55); color: #ddd; padding: 2px 6px; border-radius: 4px; }
+    .params { display: grid; gap: 10px; max-height: 520px; overflow: auto; padding-right: 4px; }
+    .param { display: grid; gap: 4px; }
+    .param label { display: flex; justify-content: space-between; gap: 8px; font-size: .85rem; }
+    .param label code { color: var(--muted); font: 12px var(--mono); }
+    .param input[type=range] { width: 100%; accent-color: var(--accent); }
+    .param.disabled { opacity: .5; }
+    .param .bool { display: flex; align-items: center; gap: 8px; }
+    .shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-top: 12px; }
+    .shot { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: .78rem; }
+    .shot img { width: 100%; display: block; aspect-ratio: 4 / 3; object-fit: cover; background: #000; }
+    .shot div { padding: 6px 8px; display: flex; justify-content: space-between; gap: 6px; color: var(--muted); }
+    .shot a { color: var(--accent); }
+    .console { display: grid; gap: 8px; }
+    .console textarea { min-height: 54px; font: 12px var(--mono); resize: vertical; width: 100%; }
+    .console .row input[type=text] { flex: 1; font: 13px var(--mono); }
+    pre { margin: 0; background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 10px; overflow: auto; max-height: 280px; font: 12px var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .log { max-height: 220px; }
+    .log .e { color: var(--err); } .log .w { color: var(--warn); } .log .i { color: var(--muted); }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chips button { font-size: .78rem; padding: 3px 8px; }
+    .status-line { min-height: 1.4em; color: var(--muted); font-size: .85rem; }
+    .status-line.err { color: var(--err); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Toucan <span>WebAssembly</span> test bench</h1>
+    <div class="sub" id="version">loading…</div>
+  </header>
+
+  <main>
+    <div class="stack">
+      <section>
+        <h2>Environment</h2>
+        <ul class="checks" id="checks"></ul>
+      </section>
+
+      <section>
+        <h2>Cameras</h2>
+        <div class="row" style="margin-bottom:12px">
+          <button id="allow-webcams" class="primary">Allow webcams</button>
+          <button id="add-usb">Add a USB camera…</button>
+          <button id="refresh" title="GET /cameras">Refresh</button>
+        </div>
+        <div class="cams" id="cams"><div class="empty">No camera yet.</div></div>
+        <p class="sub" style="margin:12px 0 0;font-size:.8rem">
+          Webcams appear once camera access is allowed. A DSLR / mirrorless body must be granted
+          through the USB picker (Chrome/Edge), plugged in, switched on, and set to PTP / "PC remote" mode.
+          On Linux, unload the kernel's claim first if needed; on Windows the body needs the WinUSB driver.
+          Add <code>?debug</code> to the URL to get libgphoto2's log in the browser console.
+        </p>
+      </section>
+
+      <section>
+        <h2>Log</h2>
+        <pre class="log" id="log"></pre>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section>
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <h2 style="margin:0" id="cam-title">No camera selected</h2>
+          <div class="row">
+            <button id="connect" disabled>Connect</button>
+            <button id="disconnect" disabled>Disconnect</button>
+          </div>
+        </div>
+        <div class="viewer">
+          <div>
+            <div class="screen">
+              <img id="live" alt="" hidden>
+              <div class="hint" id="live-hint">Select and connect a camera, then start the live view.</div>
+              <div class="stats" id="live-stats" hidden></div>
+            </div>
+            <div class="row" style="margin-top:10px">
+              <button id="live-toggle" disabled>Start live view</button>
+              <span style="flex:1"></span>
+              <label class="row" style="gap:6px">Frames
+                <input type="number" id="frames" min="1" max="20" value="1" style="width:64px" title="?frames=N — average N consecutive shots">
+              </label>
+              <button id="capture" class="primary" disabled>Capture</button>
+            </div>
+            <div class="status-line" id="cam-status"></div>
+            <div class="shots" id="shots"></div>
+          </div>
+          <div>
+            <div class="row" style="justify-content:space-between;margin-bottom:8px">
+              <h2 style="margin:0">Parameters</h2>
+              <button id="params-refresh" disabled title="GET /cameras/{id}/parameters">Reload</button>
+            </div>
+            <div class="params" id="params"><div class="empty">Connect a camera to see its parameters.</div></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="console">
+        <h2>API console</h2>
+        <p class="sub" style="margin:0;font-size:.85rem">
+          The HTTP API of toucan-camera-server, answered in-page by <code>toucan.fetch()</code>.
+          <code>{id}</code> is replaced with the selected camera.
+        </p>
+        <div class="chips" id="examples"></div>
+        <div class="row">
+          <select id="method"><option>GET</option><option>PUT</option><option>POST</option><option>DELETE</option></select>
+          <input type="text" id="path" value="/cameras" spellcheck="false" aria-label="Path">
+          <button id="send" class="primary">Send</button>
+        </div>
+        <textarea id="body" placeholder="JSON body (PUT /cameras/{id}/parameters)" spellcheck="false"></textarea>
+        <div class="status-line" id="resp-status"></div>
+        <pre id="resp">—</pre>
+        <img id="resp-img" alt="" hidden style="max-width:100%;border-radius:8px">
+      </section>
+    </div>
+  </main>
+
+  <script>
+    // Outside the module: reports a module that fails to load or parse, which
+    // would otherwise leave the page stuck on "loading…".
+    addEventListener('error', (e) => {
+      const v = document.getElementById('version');
+      if (v && !window.toucan) v.textContent = `failed to load: ${e.message}`;
+    });
+  </script>
+  <script type="module">
+    import { createServer, WebcamBridge, GPhoto2Bridge } from './toucan.js';
+
+    const $ = (id) => document.getElementById(id);
+    const state = { toucan: null, cameras: [], selected: null, live: null, shots: 0 };
+
+    // --- log -------------------------------------------------------------------
+    function log(message, level = 'i') {
+      const line = document.createElement('div');
+      line.className = level;
+      line.textContent = `${new Date().toLocaleTimeString()}  ${message}`;
+      $('log').prepend(line);
+    }
+    for (const [fn, level] of [['warn', 'w'], ['error', 'e']]) {
+      const original = console[fn].bind(console);
+      console[fn] = (...args) => { original(...args); log(args.map(String).join(' '), level); };
+    }
+    window.addEventListener('unhandledrejection', (e) => log(`unhandled: ${e.reason?.message ?? e.reason}`, 'e'));
+
+    function errorText(err) {
+      return err?.status ? `${err.message} (HTTP ${err.status})` : (err?.message ?? String(err));
+    }
+
+    function setStatus(text, isError = false) {
+      $('cam-status').textContent = text;
+      $('cam-status').classList.toggle('err', isError);
+    }
+
+    // --- environment checks -----------------------------------------------------
+    function renderChecks(extra = []) {
+      const rows = [
+        ['WebAssembly module', state.toucan ? 'ok' : 'warn', state.toucan ? `v${state.toucan.version}` : 'loading'],
+        ['Secure context', isSecureContext ? 'ok' : 'err', isSecureContext ? location.origin : 'use https or http://localhost'],
+        ['Webcams (getUserMedia)', WebcamBridge.support().ok ? 'ok' : 'err', WebcamBridge.support().reason ?? 'available'],
+        ['USB cameras (WebUSB + libgphoto2)', GPhoto2Bridge.support().ok ? 'ok' : 'err', GPhoto2Bridge.support().reason ?? 'available'],
+        ...extra,
+      ];
+      $('checks').replaceChildren(...rows.map(([label, level, detail]) => {
+        const li = document.createElement('li');
+        li.innerHTML = `<span class="dot ${level}"></span><div><span></span><small></small></div>`;
+        li.querySelector('span:not(.dot)').textContent = label;
+        li.querySelector('small').textContent = detail;
+        return li;
+      }));
+    }
+
+    // --- cameras -----------------------------------------------------------------
+    function backendOf(id) {
+      try {
+        const raw = atob(id.replace(/-/g, '+').replace(/_/g, '/'));
+        return raw.slice(0, raw.indexOf(':'));
+      } catch { return '?'; }
+    }
+
+    async function refresh() {
+      if (!state.toucan) return;
+      try {
+        state.cameras = await state.toucan.server.listCameras();
+      } catch (err) {
+        log(`listCameras: ${errorText(err)}`, 'e');
+        return;
+      }
+      if (state.selected && !state.cameras.some((c) => c.id === state.selected)) {
+        stopLive();
+        state.selected = null;
+      }
+      renderCameras();
+      renderSelection();
+    }
+
+    function renderCameras() {
+      if (!state.cameras.length) {
+        $('cams').innerHTML = '<div class="empty">No camera yet.</div>';
+        return;
+      }
+      $('cams').replaceChildren(...state.cameras.map((cam) => {
+        const el = document.createElement('button');
+        el.className = 'cam' + (cam.id === state.selected ? ' selected' : '');
+        el.innerHTML = `<div class="name"></div><div class="row"><span class="badge backend"></span><span class="badge state"></span></div>`;
+        el.querySelector('.name').textContent = cam.name;
+        el.querySelector('.backend').textContent = backendOf(cam.id);
+        const badge = el.querySelector('.state');
+        badge.textContent = cam.connected ? 'connected' : 'idle';
+        badge.classList.toggle('on', cam.connected);
+        el.onclick = () => select(cam.id);
+        return el;
+      }));
+    }
+
+    function current() {
+      return state.cameras.find((c) => c.id === state.selected) ?? null;
+    }
+
+    function select(id) {
+      if (state.selected !== id) {
+        stopLive();
+        $('params').innerHTML = '<div class="empty">Connect a camera to see its parameters.</div>';
+      }
+      state.selected = id;
+      renderCameras();
+      renderSelection();
+      if (current()?.connected) loadParams();
+    }
+
+    function renderSelection() {
+      const cam = current();
+      $('cam-title').textContent = cam ? cam.name : 'No camera selected';
+      $('connect').disabled = !cam || cam.connected;
+      $('disconnect').disabled = !cam || !cam.connected;
+      $('live-toggle').disabled = !cam?.connected;
+      $('capture').disabled = !cam?.connected;
+      $('params-refresh').disabled = !cam?.connected;
+      $('live-toggle').textContent = state.live ? 'Stop live view' : 'Start live view';
+    }
+
+    async function connect() {
+      const cam = current();
+      if (!cam) return;
+      setStatus('Connecting…');
+      const t0 = performance.now();
+      try {
+        await state.toucan.server.connect(cam.id);
+        setStatus(`Connected in ${Math.round(performance.now() - t0)} ms`);
+        log(`connected ${cam.name}`);
+      } catch (err) {
+        setStatus(errorText(err), true);
+        log(`connect ${cam.name}: ${errorText(err)}`, 'e');
+      }
+      await refresh();
+      if (current()?.connected) loadParams();
+    }
+
+    async function disconnect() {
+      const cam = current();
+      if (!cam) return;
+      stopLive();
+      try {
+        await state.toucan.server.disconnect(cam.id);
+        setStatus('Disconnected');
+        log(`disconnected ${cam.name}`);
+      } catch (err) {
+        setStatus(errorText(err), true);
+      }
+      $('params').innerHTML = '<div class="empty">Connect a camera to see its parameters.</div>';
+      await refresh();
+    }
+
+    // --- live view -------------------------------------------------------------
+    async function startLive() {
+      const cam = current();
+      if (!cam || state.live) return;
+      const controller = new AbortController();
+      state.live = controller;
+      renderSelection();
+      $('live').hidden = false;
+      $('live-hint').hidden = true;
+      $('live-stats').hidden = false;
+      let count = 0, since = performance.now(), lastUrl = null;
+      for await (const jpeg of state.toucan.frames(cam.id, controller.signal)) {
+        const url = URL.createObjectURL(new Blob([jpeg], { type: 'image/jpeg' }));
+        $('live').src = url;
+        if (lastUrl) URL.revokeObjectURL(lastUrl);
+        lastUrl = url;
+        count++;
+        const elapsed = performance.now() - since;
+        if (elapsed > 1000) {
+          const { naturalWidth: w, naturalHeight: h } = $('live');
+          $('live-stats').textContent = `${(count * 1000 / elapsed).toFixed(1)} fps · ${w}×${h} · ${(jpeg.length / 1024).toFixed(0)} KB`;
+          count = 0; since = performance.now();
+        }
+      }
+      if (state.live === controller) state.live = null;
+      renderSelection();
+    }
+
+    function stopLive() {
+      state.live?.abort();
+      state.live = null;
+      $('live').hidden = true;
+      $('live-hint').hidden = false;
+      $('live-stats').hidden = true;
+      renderSelection();
+    }
+
+    // --- capture ---------------------------------------------------------------
+    async function capture() {
+      const cam = current();
+      if (!cam) return;
+      const frames = Math.max(1, Math.min(20, Number($('frames').value) || 1));
+      $('capture').disabled = true;
+      setStatus(frames > 1 ? `Capturing and averaging ${frames} frames…` : 'Capturing…');
+      const t0 = performance.now();
+      try {
+        const jpeg = await state.toucan.server.capture(cam.id, frames);
+        const ms = Math.round(performance.now() - t0);
+        const url = URL.createObjectURL(new Blob([jpeg], { type: 'image/jpeg' }));
+        const name = `toucan-${++state.shots}.jpg`;
+        const card = document.createElement('div');
+        card.className = 'shot';
+        card.innerHTML = `<a target="_blank"><img alt=""></a><div><span></span><a>save</a></div>`;
+        card.querySelector('a').href = url;
+        card.querySelector('img').src = url;
+        card.querySelector('div span').textContent = `${(jpeg.length / 1024).toFixed(0)} KB · ${ms} ms${frames > 1 ? ` · ×${frames}` : ''}`;
+        const save = card.querySelector('div a');
+        save.href = url; save.download = name;
+        $('shots').prepend(card);
+        setStatus(`Captured ${name} in ${ms} ms`);
+        log(`capture ${cam.name}: ${jpeg.length} bytes, ${ms} ms, frames=${frames}`);
+      } catch (err) {
+        setStatus(errorText(err), true);
+        log(`capture ${cam.name}: ${errorText(err)}`, 'e');
+      } finally {
+        $('capture').disabled = !current()?.connected;
+      }
+    }
+
+    // --- parameters ------------------------------------------------------------
+    const pretty = (type) => type.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+
+    async function loadParams() {
+      const cam = current();
+      if (!cam?.connected) return;
+      let params;
+      try {
+        params = await state.toucan.server.getParameters(cam.id);
+      } catch (err) {
+        $('params').innerHTML = '';
+        $('params').append(Object.assign(document.createElement('div'), { className: 'empty', textContent: errorText(err) }));
+        return;
+      }
+      if (!params.length) {
+        $('params').innerHTML = '<div class="empty">This camera exposes no settable parameter.</div>';
+        return;
+      }
+      $('params').replaceChildren(...params.map((p) => renderParam(cam.id, p)));
+    }
+
+    function renderParam(id, p) {
+      const wrap = document.createElement('div');
+      wrap.className = 'param' + (p.disabled ? ' disabled' : '');
+      const label = document.createElement('label');
+      label.innerHTML = '<span></span><code></code>';
+      label.querySelector('span').textContent = pretty(p.type);
+      label.querySelector('code').textContent = p.type;
+      wrap.append(label);
+
+      const send = async (value) => {
+        try {
+          await state.toucan.server.setParameter(id, p.type, String(value));
+          log(`set ${p.type} = ${value}`);
+        } catch (err) {
+          log(`set ${p.type} = ${value}: ${errorText(err)}`, 'e');
+        }
+        // Other parameters may change with this one (auto → manual…).
+        loadParams();
+      };
+
+      if (p.kind === 'boolean') {
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = p.current;
+        box.disabled = p.disabled;
+        box.onchange = () => send(box.checked);
+        const row = document.createElement('div');
+        row.className = 'bool';
+        row.append(box, document.createTextNode(p.current ? 'on' : 'off'));
+        wrap.append(row);
+      } else if (p.kind === 'range') {
+        const value = label.querySelector('code');
+        value.textContent = `${p.type} = ${p.current}`;
+        const slider = document.createElement('input');
+        slider.type = 'range';
+        Object.assign(slider, { min: p.min, max: p.max, step: p.step || 1, value: p.current, disabled: p.disabled });
+        slider.oninput = () => { value.textContent = `${p.type} = ${slider.value}`; };
+        slider.onchange = () => send(slider.value);
+        wrap.append(slider);
+      } else {
+        const select = document.createElement('select');
+        select.disabled = p.disabled;
+        for (const o of p.options) select.append(new Option(o.label, o.value, false, o.value === p.current));
+        select.onchange = () => send(select.value);
+        wrap.append(select);
+      }
+      return wrap;
+    }
+
+    // --- API console -----------------------------------------------------------
+    const EXAMPLES = [
+      ['GET', '/health'],
+      ['GET', '/cameras'],
+      ['PUT', '/cameras/{id}/connect'],
+      ['GET', '/cameras/{id}/parameters'],
+      ['PUT', '/cameras/{id}/parameters', '{"type": "focus_auto", "value": "true"}'],
+      ['POST', '/cameras/{id}/capture?frames=3'],
+      ['PUT', '/cameras/{id}/disconnect'],
+    ];
+    $('examples').replaceChildren(...EXAMPLES.map(([method, path, body]) => {
+      const b = document.createElement('button');
+      b.textContent = `${method} ${path}`;
+      b.onclick = () => { $('method').value = method; $('path').value = path; $('body').value = body ?? ''; };
+      return b;
+    }));
+
+    async function send() {
+      if (!state.toucan) return;
+      const method = $('method').value;
+      const path = $('path').value.replaceAll('{id}', state.selected ?? '{id}');
+      const body = $('body').value.trim() || undefined;
+      $('resp-img').hidden = true;
+      $('resp').textContent = '…';
+      const t0 = performance.now();
+      try {
+        const res = await state.toucan.fetch(path, { method, body });
+        const ms = Math.round(performance.now() - t0);
+        const type = res.headers.get('Content-Type') ?? '';
+        $('resp-status').textContent = `${method} ${path} → ${res.status} · ${type} · ${ms} ms`;
+        if (type.startsWith('image/')) {
+          const blob = await res.blob();
+          $('resp').textContent = `${blob.size} bytes`;
+          $('resp-img').src = URL.createObjectURL(blob);
+          $('resp-img').hidden = false;
+        } else if (type.startsWith('multipart/')) {
+          $('resp').textContent = 'MJPEG stream (multipart/x-mixed-replace) — use the live view above to watch it.';
+          res.body.cancel();
+        } else {
+          const text = await res.text();
+          try { $('resp').textContent = JSON.stringify(JSON.parse(text), null, 2); }
+          catch { $('resp').textContent = text || '(empty body)'; }
+        }
+      } catch (err) {
+        $('resp-status').textContent = 'request failed';
+        $('resp').textContent = errorText(err);
+      }
+      if (method !== 'GET') refresh();
+    }
+
+    // --- wiring ----------------------------------------------------------------
+    $('allow-webcams').onclick = async () => {
+      try {
+        await WebcamBridge.requestPermission();
+        log('webcam access granted');
+      } catch (err) {
+        log(`webcam access: ${errorText(err)}`, 'e');
+      }
+      refresh();
+    };
+    $('add-usb').onclick = async () => {
+      try {
+        const device = await GPhoto2Bridge.requestDevice();
+        log(`USB device granted: ${device.manufacturerName ?? ''} ${device.productName ?? ''}`.trim());
+      } catch (err) {
+        if (err?.name !== 'NotFoundError') log(`USB picker: ${errorText(err)}`, 'e');
+      }
+      refresh();
+    };
+    $('refresh').onclick = refresh;
+    $('connect').onclick = connect;
+    $('disconnect').onclick = disconnect;
+    $('live-toggle').onclick = () => (state.live ? stopLive() : startLive());
+    $('capture').onclick = capture;
+    $('params-refresh').onclick = loadParams;
+    $('send').onclick = send;
+    $('path').onkeydown = (e) => { if (e.key === 'Enter') send(); };
+    navigator.mediaDevices?.addEventListener?.('devicechange', refresh);
+    navigator.usb?.addEventListener?.('connect', refresh);
+    navigator.usb?.addEventListener?.('disconnect', refresh);
+
+    renderChecks();
+    try {
+      state.toucan = await createServer();
+      window.toucan = state.toucan; // for poking around in DevTools
+      const health = state.toucan.server.health();
+      $('version').textContent = `toucan-camera-server ${state.toucan.version} · backends: ${health.backends.join(', ') || 'none'}`;
+      const extra = [];
+      if (state.toucan.bridges.gphoto2) {
+        try {
+          const d = await state.toucan.bridges.gphoto2.diagnostics();
+          const ok = d.models > 0 && d.ports.length > 0;
+          extra.push(['libgphoto2', ok ? 'ok' : 'err',
+            `${d.version} · ${d.models} camera models (${d.preloaded.join(', ')}) · ports: ${d.ports.join(', ') || 'none'}`]);
+          if (new URLSearchParams(location.search).has('debug')) {
+            await state.toucan.bridges.gphoto2.setDebugLog(false);
+            log('libgphoto2 debug log enabled (see the browser console)');
+          }
+        } catch (err) {
+          extra.push(['libgphoto2', 'err', `module failed to load: ${err.message}`]);
+          log(`libgphoto2: ${err.message}`, 'e');
+        }
+      }
+      renderChecks(extra);
+      log(`ready — backends: ${health.backends.join(', ')}`);
+      await refresh();
+      // No polling (the native web UI polls every 5 s): the browser reports
+      // plugged/unplugged devices itself (usb connect/disconnect, devicechange,
+      // wired above), and a libgphoto2 listing holds its queue ~0.5 s, which
+      // would stall a DSLR live view on every poll.
+    } catch (err) {
+      $('version').textContent = 'failed to load';
+      log(`startup: ${errorText(err)}`, 'e');
+      renderChecks([['Startup', 'err', errorText(err)]]);
+    }
+  </script>
+</body>
+</html>

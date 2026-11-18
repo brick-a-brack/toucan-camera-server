@@ -1,0 +1,34 @@
+[package]
+name = "toucan-camera-wasm"
+version = "0.0.22"
+edition = "2021"
+publish = false
+description = "toucan-camera-server compiled to WebAssembly: the camera API in the browser, over getUserMedia (webcams) and WebUSB (libgphoto2)"
+
+# Standalone: not a member of the server's (non-)workspace, so the server's
+# native dependencies (tokio, axum, SDK bindings) never reach wasm32 and this
+# crate's never reach the server build.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Pinned exactly: the generated JS glue must come from the same version of the
+# wasm-bindgen CLI (`cargo install wasm-bindgen-cli --version 0.2.130`).
+wasm-bindgen = "=0.2.130"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde-wasm-bindgen = "0.6"
+# Shared with the server through #[path] includes of src/camera/types.rs
+# (base64, thiserror) and src/camera/averaging.rs (image).
+base64 = "0.22"
+thiserror = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
