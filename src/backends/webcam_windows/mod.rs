@@ -245,6 +245,7 @@ impl VideoFormatInfo {
 // Photo stream info for Path A (PHOTO_INDEPENDENT)
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 struct PhotoStreamInfo {
     /// Stream index within the device (used by IMFCaptureEngine).
     stream_idx:  u32,
@@ -426,6 +427,8 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
     // Device state lives exclusively on this thread.
     let mut connected: HashMap<String, DeviceState> = HashMap::new();
     let mut connected_ds: HashMap<String, DsState> = HashMap::new();
+    // When each device's source reader was last reopened (see `reopen_device`).
+    let mut last_reopen: HashMap<String, std::time::Instant> = HashMap::new();
 
     // STA COM requires this thread to pump Windows messages so that inter-apartment
     // calls and driver callbacks can be dispatched. We poll for commands with a short
@@ -494,18 +497,34 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
                         .ok_or(CameraError::NotConnected)
                         .and_then(ds_get_live_view_frame)
                 } else {
-                    let r = connected
-                        .get(&native_id)
-                        .ok_or(CameraError::NotConnected)
-                        .and_then(get_live_view_frame_impl);
-                    if r.is_err() {
-                        let dead = connected
-                            .get(&native_id)
-                            .map(|s| !is_source_alive(&s.source))
-                            .unwrap_or(false);
-                        if dead { force_disconnect(&native_id, &mut connected); }
+                    match connected.get(&native_id).map(read_frame) {
+                        None => Err(CameraError::NotConnected),
+                        Some(Ok(jpeg)) => Ok(jpeg),
+                        Some(Err(failure)) => {
+                            let alive = connected
+                                .get(&native_id)
+                                .is_some_and(|s| is_source_alive(&s.source));
+                            match failure {
+                                // Unplugged / driver reset: the device is gone.
+                                _ if !alive => {
+                                    force_disconnect(&native_id, &mut connected);
+                                    Err(CameraError::NotConnected)
+                                }
+                                FrameFailure::Reader(reason) => {
+                                    let due = last_reopen
+                                        .get(&native_id)
+                                        .is_none_or(|t| t.elapsed() >= REOPEN_INTERVAL);
+                                    if due {
+                                        last_reopen.insert(native_id.clone(), std::time::Instant::now());
+                                        reopen_device(&native_id, &reason, &mut connected);
+                                    }
+                                    // Not ready: the route keeps polling the reopened reader.
+                                    Err(CameraError::SdkError(0x0000_A102))
+                                }
+                                FrameFailure::Other(e) => Err(e),
+                            }
+                        }
                     }
-                    r
                 };
                 let _ = reply.send(result);
             }
@@ -542,11 +561,10 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
             // `return` skips the post-loop teardown so nothing is torn down twice.
             Ok(Command::PrepareExit { ack }) => {
                 for (_, state) in connected.drain() {
-                    unsafe { let _ = state.source.Shutdown(); }
+                    close_device(state);
                 }
                 for (_, state) in connected_ds.drain() {
-                    unsafe { let _ = state.control.Stop(); }
-                    drop(state);
+                    ds_close(state);
                 }
                 let _ = unsafe { MFShutdown() };
                 unsafe { CoUninitialize() };
@@ -560,11 +578,10 @@ fn sdk_thread(rx: mpsc::Receiver<Command>, init_tx: mpsc::Sender<Result<(), Came
     }
 
     for (_, state) in connected.drain() {
-        unsafe { let _ = state.source.Shutdown(); }
+        close_device(state);
     }
     for (_, state) in connected_ds.drain() {
-        unsafe { let _ = state.control.Stop(); }
-        drop(state);
+        ds_close(state);
     }
 
     let _ = unsafe { MFShutdown() };
@@ -590,7 +607,7 @@ fn is_source_alive(source: &IMFMediaSource) -> bool {
 /// Removes a device from `connected` and shuts down its source.
 fn force_disconnect(native_id: &str, connected: &mut HashMap<String, DeviceState>) {
     if let Some(state) = connected.remove(native_id) {
-        unsafe { let _ = state.source.Shutdown(); }
+        close_device(state);
     }
 }
 
@@ -682,72 +699,149 @@ fn connect_impl(
         return Ok(()); // idempotent
     }
 
+    // Probe for a PHOTO_INDEPENDENT stream (Path A capture) *before* opening the
+    // live-view source, on an activate of its own that is shut down afterwards.
+    // The probe used to run on the very activate the source reader had just been
+    // created from: an MF device activate hands every `ActivateObject` caller the
+    // same cached source, so the temporary capture engine initialized on — and,
+    // when released, tore down — the source the live view was about to stream
+    // from. Depending on how fast that teardown ran, live view worked or stayed
+    // dead for the whole session.
+    let photo_stream = probe_photo_stream(native_id);
+    let state = open_device(native_id, None, photo_stream)?;
+    connected.insert(native_id.to_string(), state);
+    Ok(())
+}
+
+/// Opens the device's media source and source reader. `preferred_format` keeps
+/// the stream format the client chose when reopening a session; `None` (or an
+/// index the device no longer offers) picks the best one.
+fn open_device(
+    native_id: &str,
+    preferred_format: Option<usize>,
+    photo_stream: Option<PhotoStreamInfo>,
+) -> Result<DeviceState, CameraError> {
     unsafe {
         let activate = find_activate(native_id)?;
 
         // Create IMFMediaSource from the activate object.
         let source: IMFMediaSource = activate.ActivateObject().map_err(win_err)?;
 
-        // Build source reader with video processing enabled for format conversion.
-        let mut reader_attrs: Option<IMFAttributes> = None;
-        MFCreateAttributes(&mut reader_attrs, 1).map_err(win_err)?;
-        let reader_attrs = reader_attrs.ok_or(CameraError::SdkError(0xFFFF_FFFF))?;
-        reader_attrs
-            .SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)
-            .map_err(win_err)?;
+        // From here on, a failure must release the device we just opened, or it
+        // stays held by this process and the next connect finds it busy.
+        let opened = (|| -> Result<_, CameraError> {
+            // Build source reader with video processing enabled for format conversion.
+            let mut reader_attrs: Option<IMFAttributes> = None;
+            MFCreateAttributes(&mut reader_attrs, 1).map_err(win_err)?;
+            let reader_attrs = reader_attrs.ok_or(CameraError::SdkError(0xFFFF_FFFF))?;
+            reader_attrs
+                .SetUINT32(&MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING, 1)
+                .map_err(win_err)?;
 
-        let reader: IMFSourceReader =
-            MFCreateSourceReaderFromMediaSource(&source, &reader_attrs).map_err(win_err)?;
+            let reader: IMFSourceReader =
+                MFCreateSourceReaderFromMediaSource(&source, &reader_attrs).map_err(win_err)?;
 
-        let formats = enumerate_video_formats(&reader);
-        if formats.is_empty() {
-            return Err(CameraError::SdkError(0xA102_0003));
-        }
-        let best_idx = select_best_format_index(&formats);
-        let mt = &formats[best_idx].media_type;
-        reader.SetCurrentMediaType(video_stream(), None, mt).map_err(win_err)?;
-        let codec  = formats[best_idx].codec;
-        let width  = formats[best_idx].width;
-        let height = formats[best_idx].height;
+            let formats = enumerate_video_formats(&reader);
+            if formats.is_empty() {
+                return Err(CameraError::SdkError(0xA102_0003));
+            }
+            let idx = preferred_format
+                .filter(|&i| i < formats.len())
+                .unwrap_or_else(|| select_best_format_index(&formats));
+            reader
+                .SetCurrentMediaType(video_stream(), None, &formats[idx].media_type)
+                .map_err(win_err)?;
+            Ok((reader, formats, idx))
+        })();
+        let (reader, formats, idx) = match opened {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = source.Shutdown();
+                let _ = activate.ShutdownObject();
+                return Err(e);
+            }
+        };
+        let codec  = formats[idx].codec;
+        let width  = formats[idx].width;
+        let height = formats[idx].height;
 
         let video_proc_amp = source.cast::<IAMVideoProcAmp>().ok();
         let camera_control = source.cast::<IAMCameraControl>().ok();
         let ks_prop_set    = ks_prop_set_from_source(&source);
 
-        // Detect PHOTO_INDEPENDENT stream for Path A photo capture.
-        // We probe via a temporary IMFCaptureEngine on the same activate.
-        // This must happen after ActivateObject — on some drivers the activate
-        // can only be used once, so we probe BEFORE calling ActivateObject a
-        // second time (we actually call DetachObject to reset it first).
-        let photo_stream = probe_photo_stream(&activate);
-
-        connected.insert(
-            native_id.to_string(),
-            DeviceState {
-                reader,
-                source,
-                video_proc_amp,
-                camera_control,
-                ks_prop_set,
-                formats,
-                current_format_idx: best_idx,
-                codec,
-                width,
-                height,
-                photo_stream,
-                activate,
-            },
-        );
-        Ok(())
+        Ok(DeviceState {
+            reader,
+            source,
+            video_proc_amp,
+            camera_control,
+            ks_prop_set,
+            formats,
+            current_format_idx: idx,
+            codec,
+            width,
+            height,
+            photo_stream,
+            activate,
+        })
     }
+}
+
+/// Releases a device session so the camera is free again when this returns: the
+/// reader first (it holds the source), then the source, then the activate's
+/// cached reference to it. Without `ShutdownObject`, the activate keeps the
+/// source object alive until the activate itself happens to be released.
+fn close_device(state: DeviceState) {
+    let DeviceState { reader, source, activate, .. } = state;
+    drop(reader);
+    unsafe {
+        let _ = source.Shutdown();
+        let _ = activate.ShutdownObject();
+    }
+}
+
+/// Minimum delay between two automatic reopenings of a device whose source
+/// reader failed, so a camera that keeps failing is not hammered.
+const REOPEN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Rebuilds the session of a device whose source reader has failed.
+///
+/// After `ReadSample` fails or flags `MF_SOURCE_READERF_ERROR`, the reader never
+/// delivers another sample, yet the source still answers `GetCharacteristics`,
+/// so the device kept reporting connected with a live view that could never come
+/// back — the only way out was a disconnect/connect, which is precisely what
+/// raced into this state (a camera is not always released instantly by the
+/// previous session). Reopen it in place instead, keeping the chosen format.
+/// If the device cannot be reopened it is dropped, so it reports disconnected.
+fn reopen_device(native_id: &str, reason: &str, connected: &mut HashMap<String, DeviceState>) {
+    let Some(old) = connected.remove(native_id) else { return };
+    eprintln!("[webcam-windows] {native_id}: source reader failed ({reason}), reopening the device");
+    let format = old.current_format_idx;
+    let photo_stream = old.photo_stream.clone();
+    close_device(old);
+    // The driver may need a moment to release the device it just closed.
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        match open_device(native_id, Some(format), photo_stream.clone()) {
+            Ok(state) => {
+                connected.insert(native_id.to_string(), state);
+                return;
+            }
+            Err(e) => eprintln!("[webcam-windows] {native_id}: reopen attempt {} failed: {e}", attempt + 1),
+        }
+    }
+    eprintln!("[webcam-windows] {native_id}: could not reopen the device; reporting it disconnected");
 }
 
 /// Attempts to probe for a PHOTO_INDEPENDENT stream using IMFCaptureEngine.
 /// Returns `None` silently on any failure (probe is best-effort).
-fn probe_photo_stream(activate: &IMFActivate) -> Option<PhotoStreamInfo> {
-    // Some drivers disallow a second ActivateObject while the first session is
-    // open. We accept that: if probing fails, we fall back to Path B.
-    let result = unsafe { init_capture_engine_for_photo(activate) };
+fn probe_photo_stream(native_id: &str) -> Option<PhotoStreamInfo> {
+    // A dedicated activate: the engine's source is never the one live view uses.
+    let activate = unsafe { find_activate(native_id) }.ok()?;
+    let result = unsafe { init_capture_engine_for_photo(&activate) };
+    // Release the device before the live-view source opens it.
+    unsafe { let _ = activate.ShutdownObject(); }
     result.ok()
 }
 
@@ -855,13 +949,35 @@ fn disconnect_impl(
     let state = connected
         .remove(native_id)
         .ok_or_else(|| CameraError::DeviceNotFound(native_id.to_string()))?;
-
-    unsafe { let _ = state.source.Shutdown(); }
-    // All COM interfaces in state are released via Drop.
+    close_device(state);
     Ok(())
 }
 
+/// Why a live-view read produced no frame.
+enum FrameFailure {
+    /// The source reader itself failed: it will never deliver another sample.
+    Reader(String),
+    /// Anything else (no payload yet, a conversion error) — retrying is enough.
+    Other(CameraError),
+}
+
+impl From<CameraError> for FrameFailure {
+    fn from(e: CameraError) -> Self {
+        FrameFailure::Other(e)
+    }
+}
+
+/// `SdkError` code reported for a failed source reader.
+const READER_FAILED: u32 = 0xA102_0001;
+
 fn get_live_view_frame_impl(state: &DeviceState) -> Result<Vec<u8>, CameraError> {
+    read_frame(state).map_err(|f| match f {
+        FrameFailure::Reader(_) => CameraError::SdkError(READER_FAILED),
+        FrameFailure::Other(e) => e,
+    })
+}
+
+fn read_frame(state: &DeviceState) -> Result<Vec<u8>, FrameFailure> {
     // ReadSample blocks until a frame is available (~33ms for 30fps).
     // Retry up to 10 times to skip stream ticks (gaps without payload).
     for _ in 0..10 {
@@ -872,11 +988,11 @@ fn get_live_view_frame_impl(state: &DeviceState) -> Result<Vec<u8>, CameraError>
             state
                 .reader
                 .ReadSample(video_stream(), 0, None, Some(&mut flags), None, Some(&mut sample))
-                .map_err(win_err)?;
+                .map_err(|e| FrameFailure::Reader(format!("ReadSample: {e}")))?;
         }
 
         if flags & MF_SOURCE_READERF_ERROR != 0 {
-            return Err(CameraError::SdkError(0xA102_0001));
+            return Err(FrameFailure::Reader("MF_SOURCE_READERF_ERROR".into()));
         }
         if flags & MF_SOURCE_READERF_STREAMTICK != 0 {
             continue;
@@ -894,14 +1010,14 @@ fn get_live_view_frame_impl(state: &DeviceState) -> Result<Vec<u8>, CameraError>
             bytes
         };
 
-        return match state.codec {
-            VideoCodec::Mjpeg => Ok(data),
-            VideoCodec::Yuy2  => yuyv_to_jpeg(&data, state.width, state.height),
-            VideoCodec::Nv12  => nv12_to_jpeg(&data, state.width, state.height),
-        };
+        return Ok(match state.codec {
+            VideoCodec::Mjpeg => data,
+            VideoCodec::Yuy2  => yuyv_to_jpeg(&data, state.width, state.height)?,
+            VideoCodec::Nv12  => nv12_to_jpeg(&data, state.width, state.height)?,
+        });
     }
 
-    Err(CameraError::SdkError(0xA102_0002))
+    Err(CameraError::SdkError(0xA102_0002).into())
 }
 
 fn capture_photo_impl(state: &DeviceState) -> Result<Vec<u8>, CameraError> {
@@ -1996,9 +2112,12 @@ impl IBaseFilter_Impl for DsSinkFilterCom_Impl {
 // ---------------------------------------------------------------------------
 
 struct DsState {
-    #[allow(dead_code)] // kept alive to maintain graph lifetime
     graph:          IGraphBuilder,
     control:        IMediaControl,
+    /// The device's filter and ours, removed explicitly at teardown (see
+    /// `ds_teardown`).
+    capture_filter: IBaseFilter,
+    sink_filter:    IBaseFilter,
     sink_inner:     Arc<DsSinkInner>,
     video_proc_amp: Option<IAMVideoProcAmp>,
     camera_control: Option<IAMCameraControl>,
@@ -2327,6 +2446,11 @@ fn ds_connect_impl(
             CoCreateInstance(&CLSID_FilterGraph, None, CLSCTX_INPROC_SERVER).map_err(win_err)?;
         graph.AddFilter(&capture_filter, windows::core::w!("Capture")).map_err(win_err)?;
 
+        // From here on the graph holds the device: any failure must tear it down,
+        // or the camera stays open in this process (see `ds_teardown`).
+        let mut sink: Option<(IBaseFilter, Arc<DsSinkInner>)> = None;
+        let built = (|| -> Result<(IMediaControl, Option<IAMVideoProcAmp>, Option<IAMCameraControl>), CameraError> {
+
         // Now that the filter is in the graph, enumerate its output pin.
         let output_pin = ds_first_output_pin(&capture_filter)?;
         let stream_config: IAMStreamConfig = output_pin.cast().map_err(win_err)?;
@@ -2345,6 +2469,7 @@ fn ds_connect_impl(
 
         // Codec/width/height are populated by ReceiveConnection during ConnectDirect.
         let (sink_filter, sink_inner) = create_ds_sink();
+        sink = Some((sink_filter.clone(), sink_inner.clone()));
 
         graph.AddFilter(&sink_filter, windows::core::w!("Sink")).map_err(win_err)?;
 
@@ -2355,12 +2480,23 @@ fn ds_connect_impl(
 
         let control: IMediaControl = graph.cast().map_err(win_err)?;
         control.Run().map_err(win_err)?;
+        Ok((control, video_proc_amp, camera_control))
+        })();
 
-        connected_ds.insert(native_id.to_string(), DsState {
-            graph, control, sink_inner,
-            video_proc_amp, camera_control,
-        });
-        Ok(())
+        match (built, sink) {
+            (Ok((control, video_proc_amp, camera_control)), Some((sink_filter, sink_inner))) => {
+                connected_ds.insert(native_id.to_string(), DsState {
+                    graph, control, capture_filter, sink_filter, sink_inner,
+                    video_proc_amp, camera_control,
+                });
+                Ok(())
+            }
+            (built, sink) => {
+                let (sink_filter, sink_inner) = sink.unzip();
+                ds_teardown(&graph, None, &capture_filter, sink_filter.as_ref(), sink_inner.as_ref());
+                Err(built.err().unwrap_or(CameraError::SdkError(0xDEAD_0042)))
+            }
+        }
     }
 }
 
@@ -2369,14 +2505,61 @@ fn ds_disconnect_impl(
     connected_ds: &mut HashMap<String, DsState>,
 ) -> Result<(), CameraError> {
     let state = connected_ds.remove(native_id).ok_or(CameraError::NotConnected)?;
-    // Close the raw frame channel before stopping the graph so the converter
-    // thread exits cleanly rather than waiting for more frames that will never come.
-    *state.sink_inner.raw_tx.lock().unwrap() = None;
-    unsafe {
-        let _ = state.control.Stop();
-    }
-    drop(state); // releases graph → triggers JoinFilterGraph(None) on our filter
+    ds_close(state);
     Ok(())
+}
+
+fn ds_close(state: DsState) {
+    ds_teardown(
+        &state.graph,
+        Some(&state.control),
+        &state.capture_filter,
+        Some(&state.sink_filter),
+        Some(&state.sink_inner),
+    );
+}
+
+/// Stops a graph and takes it apart so the camera is actually released.
+///
+/// Dropping the graph is not enough: our sink filter keeps a reference to the
+/// graph (set in `JoinFilterGraph`, needed for `QueryFilterInfo`) and the graph
+/// keeps one to our filter, so their refcounts never reach zero and the graph
+/// manager never runs the teardown that would call `JoinFilterGraph(None)` and
+/// break the cycle. The graph — and with it the device's capture filter — then
+/// stayed alive for the life of the process: the camera remained held, and the
+/// next connect got a graph that ran without ever delivering a frame.
+/// `RemoveFilter` disconnects each filter's pins and calls `JoinFilterGraph(None)`
+/// on it, which releases our back-references; the cycle is gone before the last
+/// `IGraphBuilder` reference is dropped.
+fn ds_teardown(
+    graph: &IGraphBuilder,
+    control: Option<&IMediaControl>,
+    capture_filter: &IBaseFilter,
+    sink_filter: Option<&IBaseFilter>,
+    sink_inner: Option<&Arc<DsSinkInner>>,
+) {
+    // Close the raw frame channel first so the converter thread exits instead of
+    // waiting for frames that will never come.
+    if let Some(inner) = sink_inner {
+        *inner.raw_tx.lock().unwrap() = None;
+    }
+    unsafe {
+        if let Some(control) = control {
+            let _ = control.Stop();
+        }
+        if let Some(sink) = sink_filter {
+            let _ = graph.RemoveFilter(sink);
+        }
+        let _ = graph.RemoveFilter(capture_filter);
+    }
+    // Belt and braces, should the graph manager have skipped a callback.
+    if let Some(inner) = sink_inner {
+        *inner.graph.lock().unwrap()         = None;
+        *inner.parent_filter.lock().unwrap() = None;
+        *inner.sink_pin.lock().unwrap()      = None;
+        *inner.connected_pin.lock().unwrap() = None;
+        *inner.clock.lock().unwrap()         = None;
+    }
 }
 
 fn ds_get_live_view_frame(state: &DsState) -> Result<Vec<u8>, CameraError> {
