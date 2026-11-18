@@ -322,7 +322,7 @@ build.rs              — SDK linking + DLL copy based on active features and ta
 - Integration tests live under `tests/`.
 - Every new route must have at least one integration test covering the happy path.
 - Backend-specific tests must be gated behind the same feature flag as the backend.
-- CI: the `test` job in `.github/workflows/build.yml` runs `cargo test --locked` on Linux twice — with no features, and with every SDK-free feature (`backend-remote,backend-gphoto2,backend-webcam-linux,jpeg-rotate`, libgphoto2 from apt). The vendor-SDK backends (Canon, Sony, Nikon) are only compiled by the build jobs. The `release` job needs `test`.
+- CI: the `test` job in `.github/workflows/build.yml` runs `cargo test --locked` on Linux twice — with no features, and with every SDK-free feature (`backend-remote,backend-gphoto2,backend-webcam-linux,jpeg-rotate`, libgphoto2 from apt). The vendor-SDK backends (Canon, Sony, Nikon) are only compiled by the build jobs. Every build job `needs: test`, so the builds only start once the tests pass.
 
 ## Git
 - Commit messages use the imperative mood: "Add Canon live view route", not "Added" or "Adding".

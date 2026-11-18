@@ -58,7 +58,8 @@ jobs:
   # Nikon backends link or stage proprietary runtimes and only compile in the
   # build jobs. libgphoto2 comes from apt here — the unit tests exercise the
   # backend's pure logic, so the pinned from-source build is not needed.
-  # The release is gated on this job.
+  # Every build job needs this one, so a failing test stops the pipeline before
+  # the (long, SDK-downloading) builds start.
   # ---------------------------------------------------------------------------
   test:
     name: Test (${{ matrix.name }})
@@ -93,6 +94,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-macos:
     name: Build (macOS universal)
+    needs: test
     runs-on: macos-latest
     env:
       # Sony's CrSDK sets the floor of the standard artifact: libCr_Core.dylib is
@@ -320,6 +322,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-windows:
     name: Build (Windows x86_64)
+    needs: test
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -479,6 +482,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-linux:
     name: Build (Linux x86_64)
+    needs: test
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -658,6 +662,7 @@ jobs:
   # ---------------------------------------------------------------------------
   build-android:
     name: Build (Android)
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -754,7 +759,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: Attach to draft release
-    needs: [test, build-macos, build-windows, build-linux, build-android]
+    needs: [build-macos, build-windows, build-linux, build-android]
     runs-on: ubuntu-latest
     permissions:
       contents: write
