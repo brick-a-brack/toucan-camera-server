@@ -1,0 +1,311 @@
+diff --git a/.gitignore b/.gitignore
+index 6d3971dc3..16f4c7bdd 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -30,6 +30,11 @@
+ *.i*86
+ *.x86_64
+ *.hex
++*.wasm
++*.js
++/examples/*.html
++/tests/*.html
++/packaging/generic/print-camera-list.html
+ 
+ # Debug files
+ *.dSYM/
+diff --git a/camlibs/ptp2/library.c b/camlibs/ptp2/library.c
+index a4c43bac4..19fcdf280 100644
+--- a/camlibs/ptp2/library.c
++++ b/camlibs/ptp2/library.c
+@@ -36,6 +36,11 @@
+ #endif
+ #include <unistd.h>
+ 
++/* Define _LTX_ names - required to prevent clashes when using libtool preloading. */
++#define camera_id libptp2_LTX_camera_id
++#define camera_abilities libptp2_LTX_camera_abilities
++#define camera_init libptp2_LTX_camera_init
++
+ #include <gphoto2/gphoto2-library.h>
+ #include <gphoto2/gphoto2-port-log.h>
+ #include <gphoto2/gphoto2-setting.h>
+diff --git a/configure.ac b/configure.ac
+index c467bc643..9937e9dbf 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -254,6 +254,13 @@ LT_INIT([
+   dlopen
+   win32-dll
+ ])
++
++# Emscripten tweaks
++AM_CONDITIONAL([HAVE_EMSCRIPTEN], [test "x$host_os" = "xemscripten"])
++AM_COND_IF([HAVE_EMSCRIPTEN], [
++	AM_LDFLAGS="$AM_LDFLAGS -lembind -s ASYNCIFY -s ALLOW_MEMORY_GROWTH"
++])
++
+ dnl
+ dnl LTDL_INIT([external])
+ dnl
+@@ -463,7 +470,7 @@ dnl dnl Solaris hack for grep and tr
+ dnl [
+ dnl if test -n "`echo $host_os | grep '[sS]olaris'`"; then
+ dnl   TR=/usr/xpg4/bin/tr
+-dnl   GREP=/usr/xpg4/bin/grep  
++dnl   GREP=/usr/xpg4/bin/grep
+ dnl else
+ dnl   TR=tr
+ dnl   GREP=grep
+@@ -609,7 +616,7 @@ AC_SUBST([pkgconfigdir])
+ dnl ---------------------------------------------------------------------------
+ dnl libexif: The CameraFilesystem can use libexif for extracting thumbnails
+ dnl	     out of EXIF data. Similarly, it can extract the mtime of
+-dnl	     a file. 
++dnl	     a file.
+ dnl	     libexif is available from
+ dnl	     http://www.sourceforge.net/projects/libexif
+ dnl ---------------------------------------------------------------------------
+diff --git a/examples/Makefile.am b/examples/Makefile.am
+index 43a4f49cf..1c7f12052 100644
+--- a/examples/Makefile.am
++++ b/examples/Makefile.am
+@@ -40,3 +40,8 @@ LDADD = $(top_builddir)/libgphoto2/libgphoto2.la \
+ 	$(LIBLTDL) \
+ 	$(LIBEXIF_LIBS) \
+ 	$(INTLLIBS)
++
++if HAVE_EMSCRIPTEN
++LDADD += -dlpreopen $(top_builddir)/libgphoto2_port/usb1.la \
++	-dlpreopen $(top_builddir)/camlibs/ptp2.la
++endif
+diff --git a/libgphoto2/gphoto2-abilities-list.c b/libgphoto2/gphoto2-abilities-list.c
+index 93d41d218..794791115 100644
+--- a/libgphoto2/gphoto2-abilities-list.c
++++ b/libgphoto2/gphoto2-abilities-list.c
+@@ -217,9 +217,14 @@ unlocked_gp_abilities_list_load_dir (CameraAbilitiesList *list, const char *dir,
+ 	if (1) { /* a new block in which we can define a temporary variable */
+ 		foreach_data_t foreach_data = { NULL, GP_OK };
+ 		foreach_data.list = flist;
++		LTDL_SET_PRELOADED_SYMBOLS();
+ 		lt_dlinit ();
++#ifdef __EMSCRIPTEN__
++		ret = foreach_func("libptp2", &foreach_data);
++#else
+ 		lt_dladdsearchdir (dir);
+ 		ret = lt_dlforeachfile (dir, foreach_func, &foreach_data);
++#endif
+ 		lt_dlexit ();
+ 		if (ret != 0) {
+ 			gp_list_free (flist);
+diff --git a/libgphoto2_port/Makefile.am b/libgphoto2_port/Makefile.am
+index 0b50c1cea..cb91c44cb 100644
+--- a/libgphoto2_port/Makefile.am
++++ b/libgphoto2_port/Makefile.am
+@@ -26,7 +26,7 @@ bin_SCRIPTS = gphoto2-port-config
+ 
+ # The . stands for the current dir, i.e. the iolibs to build.
+ # Make sure the iolibs are built before running tests on them.
+-SUBDIRS = po libgphoto2_port . tests doc
++SUBDIRS = po libgphoto2_port . doc
+ 
+ include gphoto-m4/Makefile-files
+ 
+@@ -40,6 +40,13 @@ all-local:
+ distclean-local:
+ 	@:
+ 
++# For Emscripten we use preloading, which would require building iolibs
++# before descending to the `test` directory, which would require a bit of
++# refactoring of the build system here. For now it's easier to disable test
++# builds on Emscripten.
++if !HAVE_EMSCRIPTEN
++SUBDIRS += tests
++endif
+ 
+ ########################################################################
+ # All iolibs are defined as EXTRA_LTLIBRARIES. This requires that
+diff --git a/libgphoto2_port/configure.ac b/libgphoto2_port/configure.ac
+index 5daea5e36..41e9d5d3b 100644
+--- a/libgphoto2_port/configure.ac
++++ b/libgphoto2_port/configure.ac
+@@ -90,6 +90,14 @@ LT_INIT([
+   dlopen
+   win32-dll
+ ])
++
++# Emscripten tweaks
++AM_CONDITIONAL([HAVE_EMSCRIPTEN], [test "x$host_cpu" = "xwasm32"])
++AM_COND_IF([HAVE_EMSCRIPTEN], [
++	AC_SUBST(EXEEXT, [.html])
++	AM_LDFLAGS="$AM_LDFLAGS --bind -s ASYNCIFY=1 -s ALLOW_MEMORY_GROWTH=1"
++])
++
+ dnl
+ dnl LTDL_INIT([external])
+ dnl
+@@ -211,7 +219,7 @@ GP_VA_COPY
+ dnl ---------------------------------------------------------------------------
+ dnl libexif: The virtual usb camera driver can use libexif for extracting thumbnails
+ dnl	     out of EXIF data. Similarly, it can extract the mtime of
+-dnl	     a file. 
++dnl	     a file.
+ dnl	     libexif is available from
+ dnl	     http://www.sourceforge.net/projects/libexif
+ dnl ---------------------------------------------------------------------------
+@@ -359,7 +367,10 @@ dnl ---------------------------------------------------------------------------
+ dnl libpthread is dynamically linked by libusb, which is dynamically loaded
+ dnl but newer Linux systems need it on startup, not later. So link libgphoto2_port
+ dnl against libpthread
+-AC_CHECK_LIB([pthread], [pthread_create])
++AC_CHECK_LIB([pthread], [pthread_create], [
++	CFLAGS="$CFLAGS -pthread"
++	CXXFLAGS="$CXXFLAGS -pthread"
++])
+ 
+ dnl ---------------------------------------------------------------------------
+ dnl libusb1
+diff --git a/libgphoto2_port/libgphoto2_port/gphoto2-port-info-list.c b/libgphoto2_port/libgphoto2_port/gphoto2-port-info-list.c
+index fed16327e..9124c4ceb 100644
+--- a/libgphoto2_port/libgphoto2_port/gphoto2-port-info-list.c
++++ b/libgphoto2_port/libgphoto2_port/gphoto2-port-info-list.c
+@@ -241,10 +241,10 @@ foreach_func (const char *filename, lt_ptr data)
+ 	char *prefix = getenv(IOLIBDIR_PREFIX_ENV);
+ 
+ 	GP_LOG_D ("Called for filename '%s'.", filename );
+-	if(prefix && !strstr(filename,prefix)) {
+-		GP_LOG_D("Skipping filename '%s' not matching %s.",filename,prefix);
+-		return (0);
+-	}
++    if(prefix && !strstr(filename,prefix)) {
++        GP_LOG_D("Skipping filename '%s' not matching %s.",filename,prefix);
++        return (0);
++    }
+ 
+ 	lh = lt_dlopenext (filename);
+ 	if (!lh) {
+@@ -322,9 +322,14 @@ gp_port_info_list_load (GPPortInfoList *list)
+ 
+ 	GP_LOG_D ("Using ltdl to load io-drivers from '%s'...", iolibs);
+ 	gpi_libltdl_lock();
++	LTDL_SET_PRELOADED_SYMBOLS();
+ 	lt_dlinit ();
++#ifdef __EMSCRIPTEN__
++	result = foreach_func("libusb1", list);
++#else
+ 	lt_dladdsearchdir (iolibs);
+ 	result = lt_dlforeachfile (iolibs, foreach_func, list);
++#endif
+ 	lt_dlexit ();
+ 	gpi_libltdl_unlock();
+ 	if (result < 0)
+diff --git a/libgphoto2_port/libusb1/libusb1.c b/libgphoto2_port/libusb1/libusb1.c
+index a669ea4cc..e3655de32 100644
+--- a/libgphoto2_port/libusb1/libusb1.c
++++ b/libgphoto2_port/libusb1/libusb1.c
+@@ -22,6 +22,12 @@
+  */
+ #define _DARWIN_C_SOURCE
+ #include "config.h"
++
++/* Define _LTX_ names - required to prevent clashes when using libtool preloading. */
++#define gp_port_library_type libusb1_LTX_gp_port_library_type
++#define gp_port_library_list libusb1_LTX_gp_port_library_list
++#define gp_port_library_operations libusb1_LTX_gp_port_library_operations
++
+ #include <gphoto2/gphoto2-port-library.h>
+ 
+ #include <stdlib.h>
+diff --git a/packaging/generic/Makefile.am b/packaging/generic/Makefile.am
+index 0b547a23b..7ef7fd52a 100644
+--- a/packaging/generic/Makefile.am
++++ b/packaging/generic/Makefile.am
+@@ -12,3 +12,8 @@ print_camera_list_LDADD = \
+ 	$(top_builddir)/libgphoto2_port/libgphoto2_port/libgphoto2_port.la \
+ 	$(LIBLTDL) \
+ 	$(LIBEXIF_LIBS)
++
++if HAVE_EMSCRIPTEN
++print_camera_list_LDADD += -dlpreopen $(top_builddir)/libgphoto2_port/usb1.la \
++	-dlpreopen $(top_builddir)/camlibs/ptp2.la
++endif
+diff --git a/tests/Makefile.am b/tests/Makefile.am
+index d87bc3d61..25ce9c4d9 100644
+--- a/tests/Makefile.am
++++ b/tests/Makefile.am
+@@ -45,45 +45,21 @@ test_i18n_LDADD     = $(INTLLIBS)
+ TESTS              += test-endian
+ check_PROGRAMS     += test-endian
+ test_endian_SOURCES = test-endian.c
+-test_endian_LDADD   = \
+-	$(top_builddir)/libgphoto2/libgphoto2.la \
+-	$(top_builddir)/libgphoto2_port/libgphoto2_port/libgphoto2_port.la \
+-	$(LIBLTDL) \
+-	$(LIBEXIF_LIBS) \
+-	$(INTLLIBS)
+ 
+ 
+ # Print the libgphoto2 version information for this libgphoto2 build
+ noinst_PROGRAMS                 += print-libgphoto2-version
+ print_libgphoto2_version_SOURCES = print-libgphoto2-version.c
+-print_libgphoto2_version_LDADD   =
+-print_libgphoto2_version_LDADD  += $(top_builddir)/libgphoto2/libgphoto2.la
+-print_libgphoto2_version_LDADD  += $(top_builddir)/libgphoto2_port/libgphoto2_port/libgphoto2_port.la
+-print_libgphoto2_version_LDADD  += $(LIBLTDL)
+-print_libgphoto2_version_LDADD  += $(LIBEXIF_LIBS)
+-print_libgphoto2_version_LDADD  += $(INTLLIBS)
+ 
+ 
+ # Test basic libgphoto2 functionality
+ noinst_PROGRAMS     += test-gphoto2
+ test_gphoto2_SOURCES = test-gphoto2.c
+-test_gphoto2_LDADD   = \
+-	$(top_builddir)/libgphoto2/libgphoto2.la \
+-	$(top_builddir)/libgphoto2_port/libgphoto2_port/libgphoto2_port.la \
+-	$(LIBLTDL) \
+-	$(LIBEXIF_LIBS) \
+-	$(INTLLIBS)
+ 
+ 
+ # Test gp_filesystem_* functions
+ noinst_PROGRAMS    += test-filesys
+ test_filesys_SOURCES = test-filesys.c
+-test_filesys_LDADD   = \
+-	$(top_builddir)/libgphoto2/libgphoto2.la \
+-	$(top_builddir)/libgphoto2_port/libgphoto2_port/libgphoto2_port.la \
+-	$(LIBLTDL) \
+-	$(LIBEXIF_LIBS) \
+-	$(INTLLIBS)
+ 
+ 
+ # Print a list of all cameras supported by this build of libgphoto2
+@@ -91,12 +67,6 @@ TESTS          += test-camera-list
+ INSTALL_TESTS  += test-camera-list
+ check_PROGRAMS         += test-camera-list
+ test_camera_list_SOURCES = test-camera-list.c
+-test_camera_list_LDADD   = \
+-	$(top_builddir)/libgphoto2/libgphoto2.la \
+-	$(top_builddir)/libgphoto2_port/libgphoto2_port/libgphoto2_port.la \
+-	$(LIBLTDL) \
+-	$(LIBEXIF_LIBS) \
+-	$(INTLLIBS)
+ 
+ 
+ TESTS          += test-init-localedir
+@@ -239,6 +209,16 @@ test_pedantic_cxx20_CXXFLAGS += $(generic_pedantic_cxxflags)
+ test_pedantic_cxx20_LDADD     =
+ test_pedantic_cxx20_LDFLAGS   =
+ 
++LDADD = $(top_builddir)/libgphoto2/libgphoto2.la \
++	$(top_builddir)/libgphoto2_port/libgphoto2_port/libgphoto2_port.la \
++	$(LIBLTDL) \
++	$(LIBEXIF_LIBS) \
++	$(INTLLIBS)
++
++if HAVE_EMSCRIPTEN
++LDADD += -dlpreopen $(top_builddir)/libgphoto2_port/usb1.la \
++	-dlpreopen $(top_builddir)/camlibs/ptp2.la
++endif
+ 
+ ########################################################################
+ # Implement the checks for the installed library
