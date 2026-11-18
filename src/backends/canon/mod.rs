@@ -824,6 +824,42 @@ fn force_jpeg_only_quality(camera_ref: EdsCameraRef) {
     }
 }
 
+/// Current `kEdsPropID_Evf_OutputDevice` bit field, or `None` if it can't be read.
+fn evf_output_device(camera_ref: EdsCameraRef) -> Option<u32> {
+    let mut value: u32 = 0;
+    let err = unsafe {
+        EdsGetPropertyData(
+            camera_ref,
+            EDS_PROP_EVF_OUTPUT_DEVICE,
+            0,
+            std::mem::size_of::<u32>() as u32,
+            &mut value as *mut u32 as *mut std::ffi::c_void,
+        )
+    };
+    (err == EDS_ERR_OK).then_some(value)
+}
+
+/// Adds (`on`) or removes the PC bit of `kEdsPropID_Evf_OutputDevice`, keeping
+/// the other output bits (the camera's own screen) as they are. Returns the
+/// EDSDK error of the write.
+fn set_evf_output_to_pc(camera_ref: EdsCameraRef, on: bool) -> u32 {
+    let current = evf_output_device(camera_ref).unwrap_or(0);
+    let wanted: u32 = if on {
+        current | EDS_EVF_OUTPUT_DEVICE_PC
+    } else {
+        current & !EDS_EVF_OUTPUT_DEVICE_PC
+    };
+    unsafe {
+        EdsSetPropertyData(
+            camera_ref,
+            EDS_PROP_EVF_OUTPUT_DEVICE,
+            0,
+            std::mem::size_of::<u32>() as u32,
+            &wanted as *const u32 as *const std::ffi::c_void,
+        )
+    }
+}
+
 fn connect_impl(
     device_id: &str,
     connected: &mut HashMap<String, EdsCameraRef>,
@@ -846,17 +882,16 @@ fn connect_impl(
         return Err(CameraError::SdkError(err));
     }
 
-    // Enable EVF output to the host PC once at connect time.
-    let output_device: u32 = EDS_EVF_OUTPUT_DEVICE_PC;
-    let err = unsafe {
-        EdsSetPropertyData(
-            camera_ref,
-            EDS_PROP_EVF_OUTPUT_DEVICE,
-            0,
-            std::mem::size_of::<u32>() as u32,
-            &output_device as *const u32 as *const std::ffi::c_void,
-        )
-    };
+    // Enable EVF output to the host PC once at connect time. If the body still
+    // routes EVF to the PC — a previous session that was not closed through
+    // `disconnect_impl` (process killed, cable pulled) — writing the same value is
+    // a no-op for the camera, which then never restarts the stream and answers
+    // every download with OBJECT_NOTREADY. Turn it off first so the write below is
+    // a real off → on transition.
+    if evf_output_device(camera_ref).is_some_and(|d| d & EDS_EVF_OUTPUT_DEVICE_PC != 0) {
+        set_evf_output_to_pc(camera_ref, false);
+    }
+    let err = set_evf_output_to_pc(camera_ref, true);
     if err != EDS_ERR_OK {
         unsafe {
             EdsCloseSession(camera_ref);
@@ -940,6 +975,13 @@ fn disconnect_impl(
 
     EVF_ZOOM_CACHE.with(|c| c.borrow_mut().remove(device_id));
     EVF_COORD_CACHE.with(|c| c.borrow_mut().remove(device_id));
+
+    // Hand the EVF back to the camera before closing the session, as the EDSDK
+    // expects when ending live view. Left routed to the PC, the body stays in
+    // remote live view after the session is gone, and the next session's
+    // `Evf_OutputDevice = PC` write changes nothing — so no frame ever arrives.
+    // Best-effort: the body may already be gone.
+    set_evf_output_to_pc(camera_ref, false);
 
     unsafe {
         EdsCloseSession(camera_ref);

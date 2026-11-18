@@ -68,7 +68,7 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 - Communication between the backend and its SDK thread uses `std::sync::mpsc` channels (actor pattern).
 - The SDK thread holds all Canon-internal state (open session refs, etc.) — raw pointers never leave the thread.
 - `EdsInitializeSDK` / `EdsTerminateSDK` are called on the SDK thread, not on the main thread.
-- EVF (live view) output is enabled once at `connect` time via `EdsSetPropertyData(kEdsPropID_Evf_OutputDevice, kEdsEvfOutputDevice_PC)` — not on every frame.
+- EVF (live view) output is enabled once at `connect` time via `EdsSetPropertyData(kEdsPropID_Evf_OutputDevice, kEdsEvfOutputDevice_PC)` — not on every frame. `disconnect_impl` clears the PC bit before `EdsCloseSession`, and `connect_impl` clears it first if a previous unclosed session left it set, so the write is always a real off → on transition (writing an unchanged value does not restart the EVF stream).
 
 ### Camera parameters
 - `get_parameters(native_id)` returns only the **currently settable** parameters for the connected device.
@@ -91,7 +91,8 @@ The API is protected by a bearer token (`auth.rs`: `Authorization: Bearer <token
 ### Live view & streaming
 - Live view is served as MJPEG over HTTP (`multipart/x-mixed-replace; boundary=frame`).
 - `LiveViewSenders` = `Arc<Mutex<HashMap<String, broadcast::Sender<Arc<Bytes>>>>>` — one sender per active device (keyed by opaque device ID).
-- Only one capture loop runs per device regardless of how many clients are connected. The loop starts when the first client subscribes and stops when the last one disconnects.
+- Only one capture loop runs per device regardless of how many clients are connected. The map holds a `LiveViewEntry` (sender + `stopped` watch) that exists **exactly while its loop runs**: the handler spawns a loop only when it inserts a new entry, and the loop retires (removes its entry) under the same map lock once its last client is gone. Never decide on `receiver_count() == 1` — that raced with an exiting loop (two loops polling one camera, or a new client getting the dying loop's end-of-stream).
+- The loop checks *before every poll* that its entry is still the registered one, so a disconnect stops it immediately. `disconnect_camera` removes the entry, then **waits (≤ 3 s) for the loop's `stopped` signal before calling the backend's `disconnect`**: an in-flight frame poll must never overlap the session teardown. Covered by `tests/liveview.rs` (mock backend).
 - `EDS_ERR_OBJECT_NOTREADY` (0x0000A102) during frame capture is skipped (continue), not fatal.
 - **A stream is only closed when the camera is gone for good** — i.e. it no longer appears in its backend's `list_devices` (checked every ~2 s once polls have been missing for ~1.5 s), or the loop's sender was replaced/removed (explicit disconnect, reconnect). Latency, a stalled pipeline or repeated backend errors never end the stream, however long they last.
 - Placeholders (`static/assets/nosignal.jpg`, `endofstream.jpg`): "no signal" is shown **only before the first frame ever** (after a ~2 s warm-up grace); once a frame has arrived, a gap keeps re-sending the last real frame (heartbeat-paced, so late subscribers get it) and "no signal" is never shown again. "End of stream" is the terminal frame, sent only when the stream actually ends as above (composited onto a canvas matching the last frame's resolution), followed by the closing `--frame--` boundary.
@@ -248,6 +249,7 @@ DELETE /peers/{id}                   — remove a peer (204, or 404 if unknown)
   - Image quality drops RAW / RAW+JPEG / cRAW formats (`is_jpeg_format`), since capture is JPEG-only.
   - `select`/`range_select` parameters with fewer than two options are hidden (no real choice — e.g. exposure compensation in Manual mode).
   - Read-only widgets are skipped. Config-key name → `ParameterType` mapping is in `param_type_for`; the reverse (for `set_parameter`) is `config_key_for`.
+- **Handles are `Arc<gphoto2::Camera>` and `disconnect` closes synchronously** (`close_camera`): the session only ends (`gp_camera_exit`) when the last clone drops, and an in-flight preview or keep-alive holds one — so `disconnect` waits for sole ownership before dropping it. Otherwise a fast reconnect opened a second handle while the old one was alive, and its late `gp_camera_exit` closed the new session / left the viewfinder. `connect` and `disconnect` are serialized by `lifecycle`.
 - **Keep-alive**: Canon bodies refuse to have `autopoweroff` disabled (PTP `0x2019` Device Busy), so a background `gphoto2-keepalive` thread (`spawn_keepalive`) pings every connected camera every 30 s via `camera.config()` — any PTP activity resets the body's idle timer (the EOS Utility trick), preventing it from sleeping and vanishing mid-session.
 - **Live view / capture**: `get_live_view_frame` uses `capture_preview()` (no shutter actuation); `capture_photo` uses `capture_image()` + in-memory download (JPEG only — make sure the body is in a JPEG image-quality mode).
 - Unit tests for the pure logic (key mapping, the auto/bulb/RAW heuristics incl. localized labels, Canon deferral) live in the file's `#[cfg(test)]` module; run with `cargo test --features backend-gphoto2`.
