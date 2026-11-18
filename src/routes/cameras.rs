@@ -10,7 +10,7 @@ use axum::{
 };
 use bytes::Bytes;
 use serde_json::json;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, watch, Mutex};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt;
 
@@ -24,11 +24,21 @@ use crate::camera::{CameraBackend, CameraError, DeviceId, DeviceInfo, ParameterT
 
 pub type BackendState = Arc<HashMap<String, Arc<dyn CameraBackend>>>;
 
-/// One broadcast sender per active live-view device.
-/// The key is the opaque (encoded) device ID.
-/// Wrapped in Arc so the capture loop can use ptr_eq to avoid removing a
-/// sender that was replaced by a newer connection while the loop was exiting.
-type LiveViewSenders = Arc<Mutex<HashMap<String, Arc<broadcast::Sender<Arc<Bytes>>>>>>;
+/// The running capture loop of one live-view device.
+pub struct LiveViewEntry {
+    /// Broadcast sender the loop feeds. Wrapped in `Arc` so the loop can tell, by
+    /// `ptr_eq`, whether the registered entry is still its own.
+    tx: Arc<broadcast::Sender<Arc<Bytes>>>,
+    /// Becomes `true` once the loop has returned, i.e. once it will never poll the
+    /// camera again. A disconnect waits for it before closing the session, so a
+    /// last in-flight frame poll cannot overlap the teardown.
+    stopped: watch::Receiver<bool>,
+}
+
+/// One running capture loop per live-view device, keyed by the opaque (encoded)
+/// device ID. An entry exists exactly while its loop runs: it is inserted with the
+/// loop and removed (under this lock) when the loop retires, or by a disconnect.
+type LiveViewSenders = Arc<Mutex<HashMap<String, LiveViewEntry>>>;
 
 /// Opaque device IDs with a capture currently in flight.
 ///
@@ -311,13 +321,29 @@ pub async fn get_parameters(
     }
 }
 
+/// How long a disconnect waits for the device's live-view loop to finish its
+/// in-flight frame poll before closing the session regardless.
+const LIVE_VIEW_STOP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
 pub async fn disconnect_camera(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    // Drop the live-view sender before disconnecting so the capture loop stops
-    // and the next connection always starts with a fresh sender.
-    state.live_views.lock().await.remove(&id);
+    // Retire the live-view loop before closing the session: removing its entry
+    // makes it stop at its next iteration (and send "end of stream" to its
+    // clients), and the next stream always starts a fresh loop. Then wait for it to
+    // have actually returned, so no frame poll is still running against the camera
+    // while the session is torn down — on some SDKs that overlap leaves the body in
+    // a state where the next session's live view never starts.
+    let entry = state.live_views.lock().await.remove(&id);
+    if let Some(mut entry) = entry {
+        let stopped = entry.stopped.wait_for(|stopped| *stopped);
+        // Bounded: a poll stuck behind a long capture must not hang the request.
+        // `wait_for` also returns (with an error) if the loop task is gone.
+        if tokio::time::timeout(LIVE_VIEW_STOP_TIMEOUT, stopped).await.is_err() {
+            eprintln!("[warn] live view loop for {id} still busy after {LIVE_VIEW_STOP_TIMEOUT:?}, disconnecting anyway");
+        }
+    }
     dispatch(&state.backends, &id, |b, native_id| b.disconnect(native_id)).await
 }
 
@@ -450,261 +476,41 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
         }
     }
 
-    // Subscribe to the shared broadcast channel, starting a capture loop if needed.
+    // Subscribe to the device's broadcast channel, starting its capture loop if
+    // there is none. The decision is taken under the map lock, and the loop only
+    // retires (removes its entry) under that same lock, so "an entry exists" is
+    // exactly "a loop is running and will feed this receiver". Deciding on
+    // `receiver_count() == 1` instead raced with a loop that was exiting: a client
+    // could subscribe to a dying loop (and get its end-of-stream frame), or two
+    // loops could end up polling the same camera.
     let rx = {
         let mut senders = state.live_views.lock().await;
-        let sender = senders.entry(id.clone()).or_insert_with(|| {
-            let (tx, _) = broadcast::channel::<Arc<Bytes>>(4);
-            Arc::new(tx)
-        }).clone();
-
-        let rx = sender.subscribe();
-
-        // If we are the first subscriber, spawn the capture loop.
-        // receiver_count includes the receiver we just created.
-        if sender.receiver_count() == 1 {
-            let tx = sender.clone();
-            let backend_loop = backend.clone();
-            let native_id = dev_id.native_id.clone();
-            let live_views_loop = state.live_views.clone();
-            let opaque_id_loop = id.clone();
-            let capturing_loop = state.capturing.clone();
-
-            tokio::spawn(async move {
-                // Cap at 30 fps (≈32 ms/frame). Backends slower than this run
-                // at their natural pace; fast backends (AVFoundation) are
-                // prevented from spinning at CPU speed.
-                // ~30 fps. This already oversamples real camera live-view rates
-                // (~20-30 fps unique), so it captures every fresh frame; polling
-                // faster (e.g. 16 ms) only wastes USB bandwidth — which matters when
-                // two cameras stream at once: aggressive per-frame USB reads (Canon
-                // EVF) starve another camera's passive SDK stream (Nikon).
-                let frame_interval = tokio::time::Duration::from_millis(32);
-                // Consecutive polls that returned no frame. Latency alone never
-                // ends the stream: a stall only freezes the preview on the last
-                // real frame (or shows "no signal" if there was never one) and
-                // triggers the periodic "is the device still there?" check below.
-                let mut consecutive_misses: u32 = 0;
-                // Grace period before showing the "no signal" placeholder while the
-                // camera is still warming up (before its very first frame). Without
-                // it, "no signal" flashes during normal initialization. ~2 s at
-                // ~32 ms/poll ≈ 60 misses.
-                const NOSIGNAL_GRACE_MISSES: u32 = 60;
-                // After this many consecutive misses the stall is no longer a
-                // hiccup, so start asking the backend whether the device is still
-                // enumerated. ~1.5 s at ~32 ms/poll ≈ 45 misses.
-                const STALL_MISSES: u32 = 45;
-                // Re-check device presence every ~2 s while stalled (≈64 polls).
-                // `list_devices` can hit USB/HTTP, so it must stay rare.
-                const DEVICE_CHECK_EVERY: u32 = 64;
-                // Whether the camera has ever delivered a real frame. Decides the
-                // terminal placeholder: "end of stream" if it worked and then
-                // stopped, "no signal" if it never produced anything.
-                let mut had_signal = false;
-                // Precomputed placeholder frames (built once, cloned per send).
-                let nosignal_frame = Arc::new(multipart_frame(NOSIGNAL_JPEG));
-                let endofstream_frame = Arc::new(multipart_frame(ENDOFSTREAM_JPEG));
-                // Only broadcast frames that actually changed, so polling faster
-                // than the camera's frame rate doesn't flood clients with duplicates.
-                let mut last_jpeg: Option<Bytes> = None;
-                // Cached multipart frame + when it was last sent, for the heartbeat
-                // below.
-                let mut last_frame: Option<Arc<Bytes>> = None;
-                let mut last_send = tokio::time::Instant::now();
-                // Re-send the cached frame at least this often (~15x/s) even when
-                // the bytes are unchanged. Real cameras have sensor noise so every
-                // frame differs and dedup rarely triggers; but virtual cameras
-                // (OBS, Logi Capture) re-emit byte-identical JPEGs on a static
-                // scene, which the dedup would otherwise drop forever — freezing
-                // the preview and starving late `broadcast` subscribers, who only
-                // receive frames sent after they subscribe. The heartbeat keeps a
-                // static virtual camera alive and feeds late subscribers within
-                // one interval.
-                const HEARTBEAT: tokio::time::Duration =
-                    tokio::time::Duration::from_millis(66);
-
-                loop {
-                    let tick = tokio::time::Instant::now();
-
-                    // No subscribers left — stop.
-                    if tx.receiver_count() == 0 {
-                        break;
-                    }
-
-                    let b = backend_loop.clone();
-                    let nid = native_id.clone();
-                    let result =
-                        tokio::task::spawn_blocking(move || b.get_live_view_frame(&nid)).await;
-
-                    // A poll that produced no frame ("miss"): either the camera is
-                    // not ready, or the backend errored. Neither ends the stream —
-                    // only the device disappearing from the backend's device list
-                    // does (handled after the match).
-                    let mut missed = false;
-
-                    match result {
-                        Ok(Ok(jpeg)) => {
-                            consecutive_misses = 0;
-                            had_signal = true;
-                            let jpeg = Bytes::from(jpeg);
-                            // Unchanged frame (we may poll faster than the camera
-                            // produces). Re-send the cached frame only on the
-                            // heartbeat, otherwise skip to save bandwidth.
-                            if last_jpeg.as_ref() == Some(&jpeg) {
-                                if last_send.elapsed() >= HEARTBEAT {
-                                    if let Some(frame) = &last_frame {
-                                        if tx.send(frame.clone()).is_err() {
-                                            break;
-                                        }
-                                        last_send = tokio::time::Instant::now();
-                                    }
-                                }
-                                let elapsed = tick.elapsed();
-                                if elapsed < frame_interval {
-                                    tokio::time::sleep(frame_interval - elapsed).await;
-                                }
-                                continue;
-                            }
-                            last_jpeg = Some(jpeg.clone());
-
-                            let frame = Arc::new(multipart_frame(&jpeg));
-                            last_frame = Some(frame.clone());
-                            // send() only errors when there are no receivers.
-                            if tx.send(frame).is_err() {
-                                break;
-                            }
-                            last_send = tokio::time::Instant::now();
-                        }
-                        Ok(Err(e)) => {
-                            // Not-ready is the normal gap; any other error (a "busy"
-                            // backend during a capture, a transient SDK failure) is
-                            // treated the same way — logged once per run of misses so
-                            // a permanently erroring camera can't flood the log.
-                            if !matches!(e, crate::camera::CameraError::SdkError(0x0000_A102))
-                                && consecutive_misses == 0
-                            {
-                                eprintln!("[warn] live view frame error for {native_id}: {e}");
-                            }
-                            missed = true;
-                        }
-                        Err(_) => break, // spawn_blocking panicked
-                    }
-
-                    if missed {
-                        if is_capturing(&capturing_loop, &opaque_id_loop) {
-                            // A capture holds this camera's channel: the gap is
-                            // expected, not a stall. Hold the last real frame.
-                            consecutive_misses = 0;
-                        } else {
-                            consecutive_misses += 1;
-                            if had_signal {
-                                // The stream was live: keep showing the last real
-                                // frame, heartbeat-paced so late subscribers get it
-                                // too. Never "no signal" — that is warm-up only.
-                                if last_send.elapsed() >= HEARTBEAT {
-                                    if let Some(frame) = &last_frame {
-                                        if tx.send(frame.clone()).is_err() {
-                                            break;
-                                        }
-                                        last_send = tokio::time::Instant::now();
-                                    }
-                                }
-                            } else if consecutive_misses >= NOSIGNAL_GRACE_MISSES
-                                && last_send.elapsed() >= HEARTBEAT
-                            {
-                                // Warm-up: the camera never produced a frame. After
-                                // the grace period show "no signal" so the client
-                                // sees a clear image instead of a blank panel.
-                                if tx.send(nosignal_frame.clone()).is_err() {
-                                    break;
-                                }
-                                last_send = tokio::time::Instant::now();
-                                // Force the next real frame to be broadcast even if
-                                // byte-identical to the placeholder gap.
-                                last_jpeg = None;
-                            }
-
-                            // Sustained stall. Latency is not a reason to close the
-                            // stream — the only one is the camera being gone for
-                            // good, so ask the backend periodically whether it is
-                            // still enumerated.
-                            if consecutive_misses >= STALL_MISSES
-                                && (consecutive_misses - STALL_MISSES)
-                                    .is_multiple_of(DEVICE_CHECK_EVERY)
-                            {
-                                if device_vanished(&backend_loop, &opaque_id_loop).await {
-                                    eprintln!("[warn] live view for {native_id}: device no longer listed, ending stream");
-                                    break;
-                                }
-                                // Still listed, but this loop's sender is no longer
-                                // the registered one (explicit disconnect, or a
-                                // reconnect installed a new sender): the loop is
-                                // orphaned, stop it.
-                                let orphaned = {
-                                    let senders = live_views_loop.lock().await;
-                                    match senders.get(&opaque_id_loop) {
-                                        Some(current) => !Arc::ptr_eq(current, &tx),
-                                        None => true,
-                                    }
-                                };
-                                if orphaned {
-                                    eprintln!("[warn] live view for {native_id}: session closed, ending stream");
-                                    break;
-                                }
-                            }
-                        }
-                    }
-
-                    let elapsed = tick.elapsed();
-                    if elapsed < frame_interval {
-                        tokio::time::sleep(frame_interval - elapsed).await;
-                    }
-                }
-
-                // Stream ended. Send a terminal placeholder as the final frame so
-                // the client sees a clear last image: "end of stream" if the camera
-                // had been delivering frames, otherwise "no signal" (it never
-                // started). Buffered broadcast frames are still delivered to
-                // subscribers after `tx` is dropped, so they receive it.
-                if tx.receiver_count() > 0 {
-                    let terminal = if had_signal {
-                        // Composite the end-of-stream art onto a canvas matching
-                        // the last real frame's resolution, so the placeholder
-                        // keeps the stream's aspect ratio (black padding fills
-                        // the difference) instead of snapping to the art's 16:9.
-                        // Falls back to the raw art if we have no last frame or
-                        // compositing fails.
-                        last_jpeg
-                            .as_ref()
-                            .and_then(|j| jpeg_dimensions(j))
-                            .and_then(|(w, h)| compose_endofstream(w, h))
-                            .map(|bytes| Arc::new(multipart_frame(&bytes)))
-                            .unwrap_or_else(|| endofstream_frame.clone())
-                    } else {
-                        nosignal_frame.clone()
-                    };
-                    let _ = tx.send(terminal);
-                    // Follow the terminal placeholder with a closing boundary. A
-                    // multipart/x-mixed-replace part is only rendered by the browser
-                    // once the NEXT boundary arrives; without this trailing marker
-                    // the final placeholder never displays and the client keeps
-                    // showing the previous (frozen) frame. This is the last thing
-                    // sent before the channel closes and the stream ends.
-                    let _ = tx.send(Arc::new(Bytes::from_static(b"--frame--\r\n")));
-                }
-
-                // Remove the sender only if it is still ours. A reconnect may have
-                // already replaced it with a new sender — in that case, leave it alone.
-                let mut senders = live_views_loop.lock().await;
-                if let Some(current) = senders.get(&opaque_id_loop) {
-                    if Arc::ptr_eq(current, &tx) {
-                        senders.remove(&opaque_id_loop);
-                    }
-                }
-            });
+        match senders.get(&id) {
+            Some(entry) => entry.tx.subscribe(),
+            None => {
+                let (tx, _) = broadcast::channel::<Arc<Bytes>>(4);
+                let tx = Arc::new(tx);
+                let rx = tx.subscribe();
+                let (stopped_tx, stopped_rx) = watch::channel(false);
+                senders.insert(
+                    id.clone(),
+                    LiveViewEntry {
+                        tx: tx.clone(),
+                        stopped: stopped_rx,
+                    },
+                );
+                tokio::spawn(capture_loop(CaptureLoop {
+                    tx,
+                    stopped: stopped_tx,
+                    backend: backend.clone(),
+                    native_id: dev_id.native_id.clone(),
+                    opaque_id: id.clone(),
+                    live_views: state.live_views.clone(),
+                    capturing: state.capturing.clone(),
+                }));
+                rx
+            }
         }
-
-        rx
     };
 
     // Convert the broadcast receiver into an HTTP body stream.
@@ -726,6 +532,262 @@ pub async fn live_view(State(state): State<AppState>, Path(id): Path<String>) ->
         )
         .body(Body::from_stream(stream))
         .unwrap()
+}
+
+/// Everything one device's capture loop owns.
+struct CaptureLoop {
+    tx: Arc<broadcast::Sender<Arc<Bytes>>>,
+    /// Set to `true` (and dropped) when the loop returns — see [`LiveViewEntry`].
+    stopped: watch::Sender<bool>,
+    backend: Arc<dyn CameraBackend>,
+    native_id: String,
+    opaque_id: String,
+    live_views: LiveViewSenders,
+    capturing: CapturingSet,
+}
+
+/// Why a capture loop stopped.
+enum LoopEnd {
+    /// Nobody is watching any more. The entry is already removed; nothing to send.
+    NoViewers,
+    /// The entry was removed or replaced by someone else (explicit disconnect).
+    Retired,
+    /// The device is no longer enumerated by its backend.
+    Vanished,
+    /// The blocking poll panicked.
+    Failed,
+}
+
+/// Polls one device's live view and broadcasts the frames until nobody watches,
+/// the session is closed, or the device is gone.
+async fn capture_loop(ctx: CaptureLoop) {
+    let CaptureLoop {
+        tx,
+        stopped,
+        backend,
+        native_id,
+        opaque_id,
+        live_views,
+        capturing,
+    } = ctx;
+
+    // ~30 fps. This already oversamples real camera live-view rates (~20-30 fps
+    // unique), so it captures every fresh frame; polling faster (e.g. 16 ms) only
+    // wastes USB bandwidth — which matters when two cameras stream at once:
+    // aggressive per-frame USB reads (Canon EVF) starve another camera's passive
+    // SDK stream (Nikon). Fast backends (AVFoundation) are kept from spinning at
+    // CPU speed.
+    let frame_interval = tokio::time::Duration::from_millis(32);
+    // Consecutive polls that returned no frame. Latency alone never ends the
+    // stream: a stall only freezes the preview on the last real frame (or shows
+    // "no signal" if there was never one) and triggers the periodic "is the device
+    // still there?" check below.
+    let mut consecutive_misses: u32 = 0;
+    // Grace period before showing the "no signal" placeholder while the camera is
+    // still warming up (before its very first frame). Without it, "no signal"
+    // flashes during normal initialization. ~2 s at ~32 ms/poll ≈ 60 misses.
+    const NOSIGNAL_GRACE_MISSES: u32 = 60;
+    // After this many consecutive misses the stall is no longer a hiccup, so start
+    // asking the backend whether the device is still enumerated. ~1.5 s at ~32
+    // ms/poll ≈ 45 misses.
+    const STALL_MISSES: u32 = 45;
+    // Re-check device presence every ~2 s while stalled (≈64 polls).
+    // `list_devices` can hit USB/HTTP, so it must stay rare.
+    const DEVICE_CHECK_EVERY: u32 = 64;
+    // Re-send the cached frame at least this often (~15x/s) even when the bytes
+    // are unchanged. Real cameras have sensor noise so every frame differs and
+    // dedup rarely triggers; but virtual cameras (OBS, Logi Capture) re-emit
+    // byte-identical JPEGs on a static scene, which the dedup would otherwise drop
+    // forever — freezing the preview and starving late `broadcast` subscribers,
+    // who only receive frames sent after they subscribe. The heartbeat keeps a
+    // static virtual camera alive and feeds late subscribers within one interval.
+    const HEARTBEAT: tokio::time::Duration = tokio::time::Duration::from_millis(66);
+
+    // Whether the camera has ever delivered a real frame. Decides the terminal
+    // placeholder: "end of stream" if it worked and then stopped, "no signal" if
+    // it never produced anything.
+    let mut had_signal = false;
+    // Precomputed placeholder frames (built once, cloned per send).
+    let nosignal_frame = Arc::new(multipart_frame(NOSIGNAL_JPEG));
+    let endofstream_frame = Arc::new(multipart_frame(ENDOFSTREAM_JPEG));
+    // Only broadcast frames that actually changed, so polling faster than the
+    // camera's frame rate doesn't flood clients with duplicates.
+    let mut last_jpeg: Option<Bytes> = None;
+    // Cached multipart frame + when it was last sent, for the heartbeat.
+    let mut last_frame: Option<Arc<Bytes>> = None;
+    let mut last_send = tokio::time::Instant::now();
+
+    // `send` only fails when there is no receiver left, which the check at the top
+    // of the next iteration handles, so its result is ignored throughout.
+    let end = loop {
+        let tick = tokio::time::Instant::now();
+
+        // Checked before *every* poll, not only during a stall: once a disconnect
+        // has removed this loop's entry, it must not touch the camera again. A loop
+        // that kept polling for a while after the disconnect would otherwise race
+        // the session teardown — and, if the client reconnected quickly, find a
+        // working session, never stall, and run unregistered for good next to the
+        // new loop, two loops driving one camera.
+        {
+            let mut senders = live_views.lock().await;
+            let ours = senders
+                .get(&opaque_id)
+                .is_some_and(|e| Arc::ptr_eq(&e.tx, &tx));
+            if !ours {
+                break LoopEnd::Retired;
+            }
+            // Retire under the lock, so no client can subscribe to this loop
+            // between the check and the removal.
+            if tx.receiver_count() == 0 {
+                senders.remove(&opaque_id);
+                break LoopEnd::NoViewers;
+            }
+        }
+
+        let b = backend.clone();
+        let nid = native_id.clone();
+        let result = tokio::task::spawn_blocking(move || b.get_live_view_frame(&nid)).await;
+
+        // A poll that produced no frame ("miss"): either the camera is not ready,
+        // or the backend errored. Neither ends the stream — only the device
+        // disappearing from the backend's device list does (handled below).
+        let mut missed = false;
+
+        match result {
+            Ok(Ok(jpeg)) => {
+                consecutive_misses = 0;
+                had_signal = true;
+                let jpeg = Bytes::from(jpeg);
+                if last_jpeg.as_ref() == Some(&jpeg) {
+                    // Unchanged frame (we may poll faster than the camera
+                    // produces). Re-send the cached frame only on the heartbeat.
+                    if last_send.elapsed() >= HEARTBEAT {
+                        if let Some(frame) = &last_frame {
+                            let _ = tx.send(frame.clone());
+                            last_send = tokio::time::Instant::now();
+                        }
+                    }
+                } else {
+                    last_jpeg = Some(jpeg.clone());
+                    let frame = Arc::new(multipart_frame(&jpeg));
+                    last_frame = Some(frame.clone());
+                    let _ = tx.send(frame);
+                    last_send = tokio::time::Instant::now();
+                }
+            }
+            Ok(Err(e)) => {
+                // Not-ready is the normal gap; any other error (a "busy" backend
+                // during a capture, a transient SDK failure) is treated the same
+                // way — logged once per run of misses so a permanently erroring
+                // camera can't flood the log.
+                if !matches!(e, CameraError::SdkError(0x0000_A102)) && consecutive_misses == 0 {
+                    eprintln!("[warn] live view frame error for {native_id}: {e}");
+                }
+                missed = true;
+            }
+            Err(_) => break LoopEnd::Failed, // spawn_blocking panicked
+        }
+
+        if missed {
+            if is_capturing(&capturing, &opaque_id) {
+                // A capture holds this camera's channel: the gap is expected, not
+                // a stall. Hold the last real frame.
+                consecutive_misses = 0;
+            } else {
+                consecutive_misses += 1;
+                if had_signal {
+                    // The stream was live: keep showing the last real frame,
+                    // heartbeat-paced so late subscribers get it too. Never "no
+                    // signal" — that is warm-up only.
+                    if last_send.elapsed() >= HEARTBEAT {
+                        if let Some(frame) = &last_frame {
+                            let _ = tx.send(frame.clone());
+                            last_send = tokio::time::Instant::now();
+                        }
+                    }
+                } else if consecutive_misses >= NOSIGNAL_GRACE_MISSES
+                    && last_send.elapsed() >= HEARTBEAT
+                {
+                    // Warm-up: the camera never produced a frame. After the grace
+                    // period show "no signal" so the client sees a clear image
+                    // instead of a blank panel.
+                    let _ = tx.send(nosignal_frame.clone());
+                    last_send = tokio::time::Instant::now();
+                    // Force the next real frame to be broadcast even if
+                    // byte-identical to the placeholder gap.
+                    last_jpeg = None;
+                }
+
+                // Sustained stall. Latency is not a reason to close the stream —
+                // the only one is the camera being gone for good, so ask the
+                // backend periodically whether it is still enumerated.
+                if consecutive_misses >= STALL_MISSES
+                    && (consecutive_misses - STALL_MISSES).is_multiple_of(DEVICE_CHECK_EVERY)
+                    && device_vanished(&backend, &opaque_id).await
+                {
+                    break LoopEnd::Vanished;
+                }
+            }
+        }
+
+        let elapsed = tick.elapsed();
+        if elapsed < frame_interval {
+            tokio::time::sleep(frame_interval - elapsed).await;
+        }
+    };
+
+    match end {
+        LoopEnd::NoViewers => {}
+        LoopEnd::Retired => eprintln!("[info] live view for {native_id}: session closed, ending stream"),
+        LoopEnd::Vanished => eprintln!("[warn] live view for {native_id}: device no longer listed, ending stream"),
+        LoopEnd::Failed => eprintln!("[warn] live view for {native_id}: frame poll panicked, ending stream"),
+    }
+
+    // Unregister before the terminal frames go out, so a client that subscribes
+    // from now on starts a fresh loop instead of joining this dying one. Only if
+    // the entry is still ours: a disconnect may already have removed it, and a
+    // new stream may have replaced it.
+    if matches!(end, LoopEnd::Vanished | LoopEnd::Failed) {
+        let mut senders = live_views.lock().await;
+        if senders
+            .get(&opaque_id)
+            .is_some_and(|e| Arc::ptr_eq(&e.tx, &tx))
+        {
+            senders.remove(&opaque_id);
+        }
+    }
+
+    // Send a terminal placeholder as the final frame so the client sees a clear
+    // last image: "end of stream" if the camera had been delivering frames,
+    // otherwise "no signal" (it never started). Buffered broadcast frames are
+    // still delivered to subscribers after `tx` is dropped, so they receive it.
+    if tx.receiver_count() > 0 {
+        let terminal = if had_signal {
+            // Composite the end-of-stream art onto a canvas matching the last real
+            // frame's resolution, so the placeholder keeps the stream's aspect
+            // ratio (black padding fills the difference) instead of snapping to the
+            // art's 16:9. Falls back to the raw art if we have no last frame or
+            // compositing fails.
+            last_jpeg
+                .as_ref()
+                .and_then(|j| jpeg_dimensions(j))
+                .and_then(|(w, h)| compose_endofstream(w, h))
+                .map(|bytes| Arc::new(multipart_frame(&bytes)))
+                .unwrap_or_else(|| endofstream_frame.clone())
+        } else {
+            nosignal_frame.clone()
+        };
+        let _ = tx.send(terminal);
+        // Follow the terminal placeholder with a closing boundary. A
+        // multipart/x-mixed-replace part is only rendered by the browser once the
+        // NEXT boundary arrives; without this trailing marker the final
+        // placeholder never displays and the client keeps showing the previous
+        // (frozen) frame. This is the last thing sent before the channel closes.
+        let _ = tx.send(Arc::new(Bytes::from_static(b"--frame--\r\n")));
+    }
+
+    // No poll is in flight any more: let a waiting disconnect proceed.
+    let _ = stopped.send(true);
 }
 
 #[derive(Deserialize)]

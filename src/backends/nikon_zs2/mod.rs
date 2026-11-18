@@ -463,10 +463,9 @@ static LATEST_LV_FRAME: Mutex<Option<(Vec<u8>, std::time::Instant)>> = Mutex::ne
 /// missed frames — well clear of normal jitter, yet quick enough to end the stream
 /// promptly once the body stops delivering frames.
 const LV_FRAME_STALE_AFTER: Duration = Duration::from_millis(500);
-/// Consecutive live-view polls with no fresh frame before the body is presumed
-/// gone and its session is torn down. The route layer gives up on a live view
-/// after 45 not-ready polls, so a smaller value tears the session down first —
-/// which also ends the stream with a real error.
+/// Consecutive live-view polls with no fresh frame before the stall is acted on:
+/// the session is dropped if the body has left the USB bus, otherwise live view is
+/// restarted (see `get_live_view_frame_impl`).
 const LV_STALL_LIMIT: u32 = 30;
 /// Latest live-view zoom window (magnification + scroll position), parsed from the
 /// frame header by `LiveViewDataProc`. Drives the `LiveViewPan` / `LiveViewTilt`
@@ -1403,9 +1402,30 @@ fn get_live_view_frame_impl(
                 })
                 .unwrap_or(0);
             if stalls >= LV_STALL_LIMIT {
+                // A stall alone does not mean the body is gone: right after a
+                // (re)connect a Z body can take well over a second to push its
+                // first frame. Dropping the session locally then — no
+                // DisconnectDevice, since that blocks against a vanished body — left
+                // the SDK still holding the device while we reported it
+                // disconnected, and the next connect landed in a session whose live
+                // view never started. Only a body that really left the bus is
+                // dropped; one that is still there gets its live view restarted.
+                if nikon_usb_present() {
+                    eprintln!(
+                        "[nikon] live view for {native_id} produced no frame for {stalls} polls; \
+                         body still on USB, restarting live view"
+                    );
+                    unsafe { (sdk.stop_live_view)(std::ptr::null_mut(), std::ptr::null_mut()) };
+                    *LATEST_LV_FRAME.lock().unwrap() = None;
+                    if let Some(s) = session.as_mut() {
+                        s.live_view_running = false;
+                        s.lv_stall = 0;
+                    }
+                    return Err(CameraError::SdkError(0x0000_A102));
+                }
                 eprintln!(
-                    "[nikon] live view for {native_id} produced no frame for {stalls} polls; \
-                     body appears gone, dropping session"
+                    "[nikon] live view for {native_id} produced no frame for {stalls} polls \
+                     and the body left USB; dropping session"
                 );
                 // The body is gone: reset local state only. Calling the SDK's
                 // StopLiveView / DisconnectDevice here would block on a PTP timeout

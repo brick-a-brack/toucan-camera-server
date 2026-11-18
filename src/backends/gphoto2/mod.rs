@@ -21,7 +21,12 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 /// shared `Arc<Mutex<HashMap>>` so the background keep-alive thread can ping them.
 pub struct GPhoto2Backend {
     context:   gphoto2::Context,
-    connected: Arc<Mutex<HashMap<String, gphoto2::Camera>>>,
+    connected: Arc<Mutex<HashMap<String, Arc<gphoto2::Camera>>>>,
+    /// Serializes `connect` / `disconnect`. Opening a body takes seconds, outside
+    /// the `connected` lock; without this, two overlapping connects would both
+    /// open the camera and the second insert would drop the first handle — whose
+    /// `gp_camera_exit` then closes the PTP session the surviving handle is using.
+    lifecycle: Mutex<()>,
     /// Whether a body can actually drive its focus motor, keyed by native ID
     /// (port). Filled once per device by `focus_drive_works`, because the widget
     /// alone does not answer the question (see there). Never cleared: a body that
@@ -47,10 +52,15 @@ impl GPhoto2Backend {
         Self::use_bundled_plugins();
 
         let context = gphoto2::Context::new().map_err(map_err)?;
-        let connected: Arc<Mutex<HashMap<String, gphoto2::Camera>>> =
+        let connected: Arc<Mutex<HashMap<String, Arc<gphoto2::Camera>>>> =
             Arc::new(Mutex::new(HashMap::new()));
         spawn_keepalive(connected.clone());
-        Ok(Self { context, connected, focus_drive: Arc::new(Mutex::new(HashMap::new())) })
+        Ok(Self {
+            context,
+            connected,
+            lifecycle: Mutex::new(()),
+            focus_drive: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     /// Point `CAMLIBS`/`IOLIBS` at plugin directories shipped next to the
@@ -73,7 +83,7 @@ impl GPhoto2Backend {
     /// Returns a clone of the live `Camera` handle for `native_id`.
     /// The clone is a refcount bump on the underlying gphoto2 camera, so we
     /// release the lock before doing any (potentially slow) SDK call.
-    fn camera_for(&self, native_id: &str) -> Result<gphoto2::Camera, CameraError> {
+    fn camera_for(&self, native_id: &str) -> Result<Arc<gphoto2::Camera>, CameraError> {
         let connected = self.connected.lock().expect("gphoto2 mutex poisoned");
         connected
             .get(native_id)
@@ -198,14 +208,14 @@ fn is_focus_refusal(err: &gphoto2::Error) -> bool {
 /// generate periodic activity — any PTP transaction resets the body's idle timer,
 /// the same trick EOS Utility uses. Runs for the whole process lifetime; cameras
 /// are pinged only while present in the map.
-fn spawn_keepalive(connected: Arc<Mutex<HashMap<String, gphoto2::Camera>>>) {
+fn spawn_keepalive(connected: Arc<Mutex<HashMap<String, Arc<gphoto2::Camera>>>>) {
     thread::Builder::new()
         .name("gphoto2-keepalive".into())
         .spawn(move || loop {
             thread::sleep(KEEPALIVE_INTERVAL);
             // Snapshot the handles, then release the lock before the (slow) PTP
             // reads so connect/disconnect/operations are never blocked on us.
-            let cameras: Vec<gphoto2::Camera> = {
+            let cameras: Vec<Arc<gphoto2::Camera>> = {
                 let map = connected.lock().expect("gphoto2 mutex poisoned");
                 map.values().cloned().collect()
             };
@@ -217,6 +227,47 @@ fn spawn_keepalive(connected: Arc<Mutex<HashMap<String, gphoto2::Camera>>>) {
             }
         })
         .expect("failed to spawn gphoto2 keep-alive thread");
+}
+
+/// How long `disconnect` waits for in-flight calls (a preview frame, a keep-alive
+/// config read) to release their handle clone before giving up on closing it
+/// synchronously.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Closes a camera handle *now*, i.e. before `disconnect` returns.
+///
+/// The session is only closed (`gp_camera_exit`: PTP `CloseSession`, end of the
+/// Canon/Nikon viewfinder mode, USB interface released) when the **last** handle
+/// clone is dropped. An operation still in flight — typically a live-view
+/// `capture_preview` — holds a clone, so simply removing the map entry closed the
+/// session later, on that thread. A reconnect in that window opened a second
+/// handle on a body the first one still owned ("Could not claim the USB device"),
+/// and the late `gp_camera_exit` then closed the session — or left the viewfinder —
+/// out from under the new handle, whose live view stayed dead until the camera was
+/// power-cycled. Waiting for the other clones to go makes the close deterministic.
+fn close_camera(native_id: &str, mut camera: Arc<gphoto2::Camera>) {
+    let deadline = std::time::Instant::now() + CLOSE_TIMEOUT;
+    loop {
+        match Arc::try_unwrap(camera) {
+            // Sole owner: dropping it runs gp_camera_exit here and now.
+            Ok(camera) => {
+                drop(camera);
+                return;
+            }
+            Err(shared) if std::time::Instant::now() < deadline => {
+                camera = shared;
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => {
+                // Something is stuck on the body; the last clone closes it.
+                eprintln!(
+                    "[gphoto2] {native_id}: handle still in use after {CLOSE_TIMEOUT:?}, \
+                     the session will close when that call returns"
+                );
+                return;
+            }
+        }
+    }
 }
 
 /// libgphoto2 errors carry a human-readable reason ("Camera is busy", "Could not
@@ -355,6 +406,7 @@ impl CameraBackend for GPhoto2Backend {
     }
 
     fn connect(&self, native_id: &str) -> Result<(), CameraError> {
+        let _lifecycle = self.lifecycle.lock().expect("gphoto2 mutex poisoned");
         // Idempotent: already connected → no-op.
         if self.is_connected(native_id) {
             return Ok(());
@@ -379,14 +431,19 @@ impl CameraBackend for GPhoto2Backend {
         // A background keep-alive thread (see `spawn_keepalive`) pings this
         // camera periodically to stop the body from sleeping mid-session.
         let mut connected = self.connected.lock().expect("gphoto2 mutex poisoned");
-        connected.insert(native_id.to_string(), camera);
+        connected.insert(native_id.to_string(), Arc::new(camera));
         Ok(())
     }
 
     fn disconnect(&self, native_id: &str) -> Result<(), CameraError> {
-        let mut connected = self.connected.lock().expect("gphoto2 mutex poisoned");
-        // Drop runs cleanup automatically; no explicit close call needed.
-        connected.remove(native_id);
+        let _lifecycle = self.lifecycle.lock().expect("gphoto2 mutex poisoned");
+        let removed = {
+            let mut connected = self.connected.lock().expect("gphoto2 mutex poisoned");
+            connected.remove(native_id)
+        };
+        if let Some(camera) = removed {
+            close_camera(native_id, camera);
+        }
         Ok(())
     }
 
